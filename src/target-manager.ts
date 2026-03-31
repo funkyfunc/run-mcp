@@ -8,7 +8,20 @@ export interface TargetStatus {
   connected: boolean;
   command: string;
   args: string[];
+  lastResponseTime: number | null;
+  stderrLineCount: number;
+  reconnectAttempts: number;
+  maxReconnectAttempts: number;
 }
+
+/** Minimum uptime (ms) before a crash is considered "transient" and worth retrying. */
+const MIN_UPTIME_FOR_RESTART_MS = 5_000;
+
+/** Maximum consecutive reconnect attempts before giving up. */
+const MAX_RECONNECT_ATTEMPTS = 3;
+
+/** After this many ms of stable connection, reset the retry counter. */
+const STABLE_CONNECTION_RESET_MS = 60_000;
 
 /**
  * Manages the lifecycle of a target MCP server process.
@@ -16,6 +29,12 @@ export interface TargetStatus {
  * Spawns the target as a child process via StdioClientTransport,
  * exposes the MCP Client for listTools/callTool, captures stderr,
  * and ensures graceful cleanup on exit.
+ *
+ * Auto-reconnect:
+ *   If the server crashes after being alive for ≥5s, it is treated as a
+ *   transient failure and automatically restarted (up to 3 times).
+ *   If it crashes within 5s of startup, it's considered a startup bug
+ *   and no retry is attempted.
  */
 export class TargetManager extends EventEmitter {
   private client: Client | null = null;
@@ -24,11 +43,30 @@ export class TargetManager extends EventEmitter {
   private childPid: number | null = null;
   private _connected = false;
 
+  // Enhanced status tracking
+  private _lastResponseTime: number | null = null;
+  private _stderrLineCount: number = 0;
+
+  // Auto-reconnect state
+  private _reconnectAttempts: number = 0;
+  private _stableTimer: ReturnType<typeof setTimeout> | null = null;
+  private _autoReconnect: boolean = false;
+  private _reconnecting: boolean = false;
+  private _intentionalClose: boolean = false;
+
   constructor(
     private readonly command: string,
     private readonly args: string[],
   ) {
     super();
+  }
+
+  /**
+   * Enable auto-reconnect behavior.
+   * Only applies to interactive REPL mode — proxy mode manages its own lifecycle.
+   */
+  enableAutoReconnect(): void {
+    this._autoReconnect = true;
   }
 
   /**
@@ -46,6 +84,7 @@ export class TargetManager extends EventEmitter {
     this.transport.stderr?.on("data", (chunk: Buffer) => {
       const text = chunk.toString().trimEnd();
       if (text) {
+        this._stderrLineCount += text.split("\n").length;
         this.emit("stderr", text);
       }
     });
@@ -57,7 +96,15 @@ export class TargetManager extends EventEmitter {
 
     this.client.onclose = () => {
       this._connected = false;
+      this._clearStableTimer();
+
+      if (this._intentionalClose) {
+        // User asked to close — don't reconnect
+        return;
+      }
+
       this.emit("disconnected");
+      this._maybeReconnect();
     };
 
     await this.client.connect(this.transport);
@@ -66,7 +113,6 @@ export class TargetManager extends EventEmitter {
     this.startTime = Date.now();
 
     // Try to capture child PID from transport internals
-    // StdioClientTransport exposes the child process indirectly
     const proc = (this.transport as any)._process;
     if (proc?.pid) {
       this.childPid = proc.pid;
@@ -74,6 +120,7 @@ export class TargetManager extends EventEmitter {
 
     this.emit("connected");
     this._registerCleanup();
+    this._startStableTimer();
   }
 
   get connected(): boolean {
@@ -81,11 +128,20 @@ export class TargetManager extends EventEmitter {
   }
 
   /**
+   * Record that a response was received (for status tracking).
+   */
+  recordResponse(): void {
+    this._lastResponseTime = Date.now();
+  }
+
+  /**
    * List all tools exposed by the target MCP server.
    */
   async listTools() {
     this._assertConnected();
-    return this.client!.listTools();
+    const result = await this.client!.listTools();
+    this.recordResponse();
+    return result;
   }
 
   /**
@@ -93,11 +149,13 @@ export class TargetManager extends EventEmitter {
    */
   async callTool(name: string, args: Record<string, unknown> = {}) {
     this._assertConnected();
-    return this.client!.callTool({ name, arguments: args });
+    const result = await this.client!.callTool({ name, arguments: args });
+    this.recordResponse();
+    return result;
   }
 
   /**
-   * Returns current connection status, PID, and uptime.
+   * Returns current connection status, PID, uptime, and diagnostics.
    */
   getStatus(): TargetStatus {
     return {
@@ -106,6 +164,10 @@ export class TargetManager extends EventEmitter {
       connected: this._connected,
       command: this.command,
       args: this.args,
+      lastResponseTime: this._lastResponseTime,
+      stderrLineCount: this._stderrLineCount,
+      reconnectAttempts: this._reconnectAttempts,
+      maxReconnectAttempts: MAX_RECONNECT_ATTEMPTS,
     };
   }
 
@@ -113,6 +175,9 @@ export class TargetManager extends EventEmitter {
    * Cleanly shut down the client connection and child process.
    */
   async close(): Promise<void> {
+    this._intentionalClose = true;
+    this._clearStableTimer();
+
     if (this.client) {
       try {
         await this.client.close();
@@ -133,29 +198,119 @@ export class TargetManager extends EventEmitter {
     this.childPid = null;
   }
 
+  // ─── Auto-reconnect logic ──────────────────────────────────────────────────
+
+  /**
+   * Decide whether to attempt auto-reconnect after a disconnect.
+   *
+   * Rules:
+   *  1. Auto-reconnect must be enabled
+   *  2. Server must have been alive for ≥5s (otherwise it's a startup bug)
+   *  3. Must not exceed MAX_RECONNECT_ATTEMPTS consecutive retries
+   *  4. Must not already be reconnecting
+   */
+  private async _maybeReconnect(): Promise<void> {
+    if (!this._autoReconnect || this._reconnecting) return;
+
+    const uptimeMs = Date.now() - this.startTime;
+
+    // Startup crash — don't retry, it's likely a bug
+    if (uptimeMs < MIN_UPTIME_FOR_RESTART_MS) {
+      this.emit("reconnect_failed", {
+        reason: "startup_crash",
+        message: `Server crashed after ${(uptimeMs / 1000).toFixed(1)}s — ` +
+          `too soon to be a transient failure (min ${MIN_UPTIME_FOR_RESTART_MS / 1000}s). Not retrying.`,
+      });
+      return;
+    }
+
+    // Too many retries
+    if (this._reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      this.emit("reconnect_failed", {
+        reason: "max_retries",
+        message: `Server has crashed ${this._reconnectAttempts} times in a row. Giving up.`,
+      });
+      return;
+    }
+
+    // Attempt reconnect
+    this._reconnecting = true;
+    this._reconnectAttempts++;
+
+    this.emit("reconnecting", {
+      attempt: this._reconnectAttempts,
+      maxAttempts: MAX_RECONNECT_ATTEMPTS,
+    });
+
+    // Clean up old connection state
+    this.client = null;
+    this.transport = null;
+    this.childPid = null;
+
+    try {
+      await this.connect();
+      this.emit("reconnected", { attempt: this._reconnectAttempts });
+    } catch (err: any) {
+      this.emit("reconnect_failed", {
+        reason: "connect_error",
+        message: `Reconnect attempt ${this._reconnectAttempts} failed: ${err.message}`,
+      });
+    } finally {
+      this._reconnecting = false;
+    }
+  }
+
+  /**
+   * After STABLE_CONNECTION_RESET_MS of being connected, reset the retry counter.
+   * This way, a server that crashes once after 10 minutes of stability
+   * gets a fresh set of retries.
+   */
+  private _startStableTimer(): void {
+    this._clearStableTimer();
+    this._stableTimer = setTimeout(() => {
+      if (this._connected) {
+        this._reconnectAttempts = 0;
+      }
+    }, STABLE_CONNECTION_RESET_MS);
+  }
+
+  private _clearStableTimer(): void {
+    if (this._stableTimer) {
+      clearTimeout(this._stableTimer);
+      this._stableTimer = null;
+    }
+  }
+
+  // ─── Internal helpers ──────────────────────────────────────────────────────
+
   private _assertConnected(): void {
     if (!this._connected || !this.client) {
       throw new Error("Not connected to target MCP server");
     }
   }
 
-  private _cleanupRegistered = false;
+  private static _cleanupRegistered = false;
+  private static _instances = new Set<TargetManager>();
 
   private _registerCleanup(): void {
-    if (this._cleanupRegistered) return;
-    this._cleanupRegistered = true;
+    TargetManager._instances.add(this);
 
-    const cleanup = () => {
-      this.close().catch(() => {});
+    if (TargetManager._cleanupRegistered) return;
+    TargetManager._cleanupRegistered = true;
+
+    const cleanupAll = () => {
+      for (const instance of TargetManager._instances) {
+        instance.close().catch(() => {});
+      }
     };
 
-    process.on("exit", cleanup);
+    process.on("exit", cleanupAll);
     process.on("SIGINT", () => {
-      cleanup();
+      cleanupAll();
       process.exit(130);
     });
     process.on("SIGTERM", () => {
-      cleanup();
+      cleanupAll();
       process.exit(143);
     });
   }

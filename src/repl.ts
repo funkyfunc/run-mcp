@@ -45,6 +45,27 @@ export async function startRepl(
   const status = target.getStatus();
   console.log(pc.green(`✓ Connected (PID: ${status.pid})`));
 
+  // Enable auto-reconnect for interactive mode (not script mode)
+  if (!opts.script) {
+    target.enableAutoReconnect();
+
+    target.on("reconnecting", ({ attempt, maxAttempts }: { attempt: number; maxAttempts: number }) => {
+      console.log(pc.yellow(`\n⟳ Server disconnected. Reconnecting (${attempt}/${maxAttempts})...`));
+    });
+
+    target.on("reconnected", ({ attempt }: { attempt: number }) => {
+      const s = target.getStatus();
+      console.log(pc.green(`✓ Reconnected (PID: ${s.pid}, attempt ${attempt})`));
+    });
+
+    target.on("reconnect_failed", ({ reason, message }: { reason: string; message: string }) => {
+      console.error(pc.red(`✗ ${message}`));
+      if (reason === "max_retries") {
+        console.log(pc.dim("  Use 'exit' to quit or wait for the server to be fixed and restart manually."));
+      }
+    });
+  }
+
   // List tools on startup
   try {
     const { tools } = await target.listTools();
@@ -273,11 +294,23 @@ async function cmdToolsCall(
 
 function cmdStatus(target: TargetManager): void {
   const s = target.getStatus();
+
+  const uptimeStr = s.uptime >= 60
+    ? `${Math.floor(s.uptime / 60)}m ${(s.uptime % 60).toFixed(0)}s`
+    : `${s.uptime.toFixed(1)}s`;
+
+  const lastRespStr = s.lastResponseTime
+    ? `${((Date.now() - s.lastResponseTime) / 1000).toFixed(1)}s ago`
+    : "never";
+
   console.log(pc.bold("\n  Target Server Status"));
-  console.log(`  ${pc.dim("Connected:")}  ${s.connected ? pc.green("yes") : pc.red("no")}`);
-  console.log(`  ${pc.dim("PID:")}        ${s.pid ?? "N/A"}`);
-  console.log(`  ${pc.dim("Uptime:")}     ${s.uptime.toFixed(1)}s`);
-  console.log(`  ${pc.dim("Command:")}    ${s.command} ${s.args.join(" ")}`);
+  console.log(`  ${pc.dim("Connected:")}      ${s.connected ? pc.green("yes") : pc.red("no")}`);
+  console.log(`  ${pc.dim("PID:")}            ${s.pid ?? "N/A"}`);
+  console.log(`  ${pc.dim("Uptime:")}         ${uptimeStr}`);
+  console.log(`  ${pc.dim("Last response:")}  ${lastRespStr}`);
+  console.log(`  ${pc.dim("Stderr lines:")}   ${s.stderrLineCount.toLocaleString()}`);
+  console.log(`  ${pc.dim("Reconnects:")}     ${s.reconnectAttempts}/${s.maxReconnectAttempts}`);
+  console.log(`  ${pc.dim("Command:")}        ${s.command} ${s.args.join(" ")}`);
   console.log();
 }
 

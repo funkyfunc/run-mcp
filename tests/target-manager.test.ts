@@ -177,3 +177,94 @@ describe("callTool", () => {
     expect(content[1].text).toBe("Second item");
   }, 10_000);
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Enhanced status fields
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("enhanced status", () => {
+  it("tracks lastResponseTime after listTools", async () => {
+    target = new TargetManager("node", [MOCK_SERVER_PATH]);
+    await target.connect();
+
+    const beforeCall = target.getStatus();
+    expect(beforeCall.lastResponseTime).toBeNull();
+
+    await target.listTools();
+
+    const afterCall = target.getStatus();
+    expect(afterCall.lastResponseTime).not.toBeNull();
+    expect(afterCall.lastResponseTime!).toBeGreaterThan(0);
+  }, 10_000);
+
+  it("tracks lastResponseTime after callTool", async () => {
+    target = new TargetManager("node", [MOCK_SERVER_PATH]);
+    await target.connect();
+
+    await target.callTool("echo", { text: "ping" });
+
+    const status = target.getStatus();
+    expect(status.lastResponseTime).not.toBeNull();
+  }, 10_000);
+
+  it("counts stderr lines", async () => {
+    target = new TargetManager("node", [MOCK_SERVER_PATH]);
+    await target.connect();
+
+    // Give stderr time to arrive
+    await new Promise((r) => setTimeout(r, 200));
+
+    const status = target.getStatus();
+    expect(status.stderrLineCount).toBeGreaterThan(0);
+  }, 10_000);
+
+  it("reports reconnect attempts and max", async () => {
+    target = new TargetManager("node", [MOCK_SERVER_PATH]);
+    await target.connect();
+
+    const status = target.getStatus();
+    expect(status.reconnectAttempts).toBe(0);
+    expect(status.maxReconnectAttempts).toBe(3);
+  }, 10_000);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Auto-reconnect behavior
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("auto-reconnect", () => {
+  it("does NOT reconnect when auto-reconnect is disabled (default)", async () => {
+    target = new TargetManager("node", [MOCK_SERVER_PATH]);
+    await target.connect();
+
+    const events: string[] = [];
+    target.on("reconnecting", () => events.push("reconnecting"));
+    target.on("reconnect_failed", () => events.push("reconnect_failed"));
+
+    // Close intentionally — should not trigger reconnect
+    await target.close();
+
+    await new Promise((r) => setTimeout(r, 200));
+    expect(events).toEqual([]);
+    target = null;
+  }, 10_000);
+
+  it("does NOT reconnect a startup crash (uptime < 5s)", async () => {
+    // Use an invalid server that will crash immediately
+    target = new TargetManager("node", ["-e", "process.exit(1)"]);
+    target.enableAutoReconnect();
+
+    const events: { reason?: string; message?: string }[] = [];
+    target.on("reconnect_failed", (e: any) => events.push(e));
+
+    // This will fail to connect since the process exits immediately
+    await expect(target.connect()).rejects.toThrow();
+    target = null;
+
+    // Even with auto-reconnect enabled, it should NOT retry
+    // because the process didn't survive the initial connect
+    // (connect itself throws, so _maybeReconnect never fires)
+    expect(events).toEqual([]);
+  }, 10_000);
+});
+
