@@ -18,10 +18,14 @@
     "run-mcp": "dist/index.js"
   },
   "scripts": {
-    "build": "tsc",
-    "dev": "tsc -w",
+    "build": "tsup",
+    "dev": "tsup --watch",
     "start": "node dist/index.js",
-    "pretest": "npx tsc && npx tsc -p tests/tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check",
+    "lint:fix": "biome check --write",
+    "format": "biome format --write",
+    "pretest": "tsup && tsc -p tests/tsconfig.json",
     "test": "vitest run"
   },
   "dependencies": {
@@ -31,7 +35,9 @@
     "zod": "^3.24.3"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.4.10",
     "@types/node": "^22.13.14",
+    "tsup": "^8.5.1",
     "typescript": "^5.8.2",
     "vitest": "^4.1.2"
   }

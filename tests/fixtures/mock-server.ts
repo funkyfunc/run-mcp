@@ -58,26 +58,21 @@ server.tool(
 
 // ─── Tool: screenshot ──────────────────────────────────────────────────────
 
-server.tool(
-  "screenshot",
-  "Returns a fake base64 PNG image",
-  {},
-  async () => {
-    // Create a minimal 1x1 pixel PNG (base64 encoded)
-    // This is a real, valid PNG — 67 bytes
-    const TINY_PNG_B64 =
-      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
-    return {
-      content: [
-        {
-          type: "image" as const,
-          data: TINY_PNG_B64,
-          mimeType: "image/png",
-        },
-      ],
-    };
-  },
-);
+server.tool("screenshot", "Returns a fake base64 PNG image", {}, async () => {
+  // Create a minimal 1x1 pixel PNG (base64 encoded)
+  // This is a real, valid PNG — 67 bytes
+  const TINY_PNG_B64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+  return {
+    content: [
+      {
+        type: "image" as const,
+        data: TINY_PNG_B64,
+        mimeType: "image/png",
+      },
+    ],
+  };
+});
 
 // ─── Tool: big_base64 ──────────────────────────────────────────────────────
 
@@ -113,17 +108,12 @@ server.tool(
 
 // ─── Tool: multi_content ───────────────────────────────────────────────────
 
-server.tool(
-  "multi_content",
-  "Returns multiple content items of different types",
-  {},
-  async () => ({
-    content: [
-      { type: "text", text: "First item" },
-      { type: "text", text: "Second item" },
-    ],
-  }),
-);
+server.tool("multi_content", "Returns multiple content items of different types", {}, async () => ({
+  content: [
+    { type: "text", text: "First item" },
+    { type: "text", text: "Second item" },
+  ],
+}));
 
 // ─── Start ─────────────────────────────────────────────────────────────────
 

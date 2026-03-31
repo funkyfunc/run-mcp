@@ -1,6 +1,6 @@
+import { EventEmitter } from "node:events";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { EventEmitter } from "node:events";
 
 export interface TargetStatus {
   pid: number | null;
@@ -89,10 +89,7 @@ export class TargetManager extends EventEmitter {
       }
     });
 
-    this.client = new Client(
-      { name: "run-mcp", version: "1.0.0" },
-      { capabilities: {} },
-    );
+    this.client = new Client({ name: "run-mcp", version: "1.0.0" }, { capabilities: {} });
 
     this.client.onclose = () => {
       this._connected = false;
@@ -218,7 +215,8 @@ export class TargetManager extends EventEmitter {
     if (uptimeMs < MIN_UPTIME_FOR_RESTART_MS) {
       this.emit("reconnect_failed", {
         reason: "startup_crash",
-        message: `Server crashed after ${(uptimeMs / 1000).toFixed(1)}s — ` +
+        message:
+          `Server crashed after ${(uptimeMs / 1000).toFixed(1)}s — ` +
           `too soon to be a transient failure (min ${MIN_UPTIME_FOR_RESTART_MS / 1000}s). Not retrying.`,
       });
       return;

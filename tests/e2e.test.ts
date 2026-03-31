@@ -1,10 +1,10 @@
-import { describe, it, expect, afterEach } from "vitest";
-import { TargetManager } from "../src/target-manager.js";
-import { ResponseInterceptor } from "../src/interceptor.js";
-import { resolve, join } from "node:path";
-import { tmpdir } from "node:os";
-import { rm, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { ResponseInterceptor } from "../src/interceptor.js";
+import { TargetManager } from "../src/target-manager.js";
 
 const MOCK_SERVER_PATH = resolve(import.meta.dirname, "fixtures/mock-server.js");
 
@@ -99,9 +99,9 @@ describe("end-to-end: interceptor with real target", () => {
       defaultTimeoutMs: 200,
     });
 
-    await expect(
-      interceptor.callTool(target, "slow", { ms: 5000 }),
-    ).rejects.toThrow('Tool "slow" timed out after 200ms');
+    await expect(interceptor.callTool(target, "slow", { ms: 5000 })).rejects.toThrow(
+      'Tool "slow" timed out after 200ms',
+    );
   }, 15_000);
 
   it("succeeds when slow tool responds within timeout", async () => {

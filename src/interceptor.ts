@@ -1,6 +1,6 @@
-import { writeFile, mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { TargetManager } from "./target-manager.js";
 
 /** Matches a large base64 blob in text content (1000+ chars of base64 alphabet). */
@@ -53,10 +53,7 @@ export class ResponseInterceptor {
     const timeout = timeoutMs ?? this.defaultTimeoutMs;
 
     // Race the actual call against a timeout
-    const result = await Promise.race([
-      target.callTool(name, args),
-      this._timeout(timeout, name),
-    ]);
+    const result = await Promise.race([target.callTool(name, args), this._timeout(timeout, name)]);
 
     // Process content array if present
     const content = (result as any).content;
@@ -100,10 +97,7 @@ export class ResponseInterceptor {
   /**
    * Decode base64, write to disk, return a text item with the file path.
    */
-  private async _saveImage(
-    base64Data: string,
-    mimeType: string,
-  ): Promise<ContentItem> {
+  private async _saveImage(base64Data: string, mimeType: string): Promise<ContentItem> {
     await mkdir(this.outDir, { recursive: true });
 
     const ext = this._extensionFromMime(mimeType);
@@ -130,10 +124,12 @@ export class ResponseInterceptor {
     return new Promise((_, reject) => {
       setTimeout(() => {
         const humanMs = ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
-        reject(new Error(
-          `Tool "${toolName}" timed out after ${ms}ms (${humanMs}). ` +
-          `Use --timeout <ms> to increase the limit.`,
-        ));
+        reject(
+          new Error(
+            `Tool "${toolName}" timed out after ${ms}ms (${humanMs}). ` +
+              `Use --timeout <ms> to increase the limit.`,
+          ),
+        );
       }, ms);
     });
   }

@@ -1,11 +1,8 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  ListToolsRequestSchema,
-  CallToolRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
-import { TargetManager } from "./target-manager.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { ResponseInterceptor } from "./interceptor.js";
+import { TargetManager } from "./target-manager.js";
 
 interface ProxyOptions {
   outDir?: string;
@@ -19,10 +16,7 @@ interface ProxyOptions {
  * responses through the ResponseInterceptor for image extraction, timeouts,
  * and truncation.
  */
-export async function startProxy(
-  targetCommand: string[],
-  opts: ProxyOptions,
-): Promise<void> {
+export async function startProxy(targetCommand: string[], opts: ProxyOptions): Promise<void> {
   const [command, ...args] = targetCommand;
   const target = new TargetManager(command, args);
   const interceptor = new ResponseInterceptor({ outDir: opts.outDir });

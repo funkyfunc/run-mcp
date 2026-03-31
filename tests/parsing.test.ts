@@ -1,5 +1,11 @@
-import { describe, it, expect } from "vitest";
-import { parseCommandLine, parseCallArgs, formatJson, levenshtein, suggestCommand } from "../src/parsing.js";
+import { describe, expect, it } from "vitest";
+import {
+  formatJson,
+  levenshtein,
+  parseCallArgs,
+  parseCommandLine,
+  suggestCommand,
+} from "../src/parsing.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // parseCommandLine
@@ -14,9 +20,9 @@ describe("parseCommandLine", () => {
   });
 
   it("parses a command with arguments", () => {
-    expect(parseCommandLine("tools/call echo {\"text\": \"hi\"}")).toEqual({
+    expect(parseCommandLine('tools/call echo {"text": "hi"}')).toEqual({
       cmd: "tools/call",
-      rest: "echo {\"text\": \"hi\"}",
+      rest: 'echo {"text": "hi"}',
     });
   });
 
@@ -81,9 +87,7 @@ describe("parseCallArgs", () => {
   });
 
   it("handles complex JSON with nested objects and spaces", () => {
-    const result = parseCallArgs(
-      'create {"name": "test project", "tags": ["a", "b c"]}'
-    );
+    const result = parseCallArgs('create {"name": "test project", "tags": ["a", "b c"]}');
     expect(result.toolName).toBe("create");
     const parsed = JSON.parse(result.jsonArgs);
     expect(parsed).toEqual({ name: "test project", tags: ["a", "b c"] });
@@ -178,10 +182,7 @@ describe("levenshtein", () => {
 // suggestCommand
 // ═══════════════════════════════════════════════════════════════════════════
 
-const COMMANDS = [
-  "tools/list", "tools/describe", "tools/call",
-  "status", "help", "exit", "quit",
-];
+const COMMANDS = ["tools/list", "tools/describe", "tools/call", "status", "help", "exit", "quit"];
 
 describe("suggestCommand", () => {
   it("suggests tools/list for tools/lst", () => {

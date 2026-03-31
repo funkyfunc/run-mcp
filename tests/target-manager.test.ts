@@ -1,6 +1,6 @@
-import { describe, it, expect, afterEach } from "vitest";
-import { TargetManager } from "../src/target-manager.js";
 import { resolve } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { TargetManager } from "../src/target-manager.js";
 
 // Path to the compiled mock server
 const MOCK_SERVER_PATH = resolve(import.meta.dirname, "fixtures/mock-server.js");
@@ -81,9 +81,7 @@ describe("connection lifecycle", () => {
   it("throws when calling callTool before connect", async () => {
     target = new TargetManager("node", [MOCK_SERVER_PATH]);
 
-    await expect(target.callTool("echo", { text: "hi" })).rejects.toThrow(
-      "Not connected",
-    );
+    await expect(target.callTool("echo", { text: "hi" })).rejects.toThrow("Not connected");
   });
 
   it("fails to connect with an invalid command", async () => {
@@ -267,4 +265,3 @@ describe("auto-reconnect", () => {
     expect(events).toEqual([]);
   }, 10_000);
 });
-

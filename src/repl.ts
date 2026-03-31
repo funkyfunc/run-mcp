@@ -1,14 +1,19 @@
-import { createInterface } from "node:readline";
 import { readFile } from "node:fs/promises";
+import { createInterface } from "node:readline";
 import pc from "picocolors";
-import { TargetManager } from "./target-manager.js";
 import { ResponseInterceptor } from "./interceptor.js";
-import { parseCommandLine, parseCallArgs, formatJson, suggestCommand } from "./parsing.js";
+import { formatJson, parseCallArgs, parseCommandLine, suggestCommand } from "./parsing.js";
+import { TargetManager } from "./target-manager.js";
 
 /** All known REPL commands for typo suggestion. */
 const KNOWN_COMMANDS = [
-  "tools/list", "tools/describe", "tools/call",
-  "status", "help", "exit", "quit",
+  "tools/list",
+  "tools/describe",
+  "tools/call",
+  "status",
+  "help",
+  "exit",
+  "quit",
 ];
 
 interface ReplOptions {
@@ -22,10 +27,7 @@ interface ReplOptions {
  * Auto-connects to the target MCP server, then accepts shorthand commands
  * like `tools/list`, `tools/call <name> <json>`, `tools/describe <name>`, etc.
  */
-export async function startRepl(
-  targetCommand: string[],
-  opts: ReplOptions,
-): Promise<void> {
+export async function startRepl(targetCommand: string[], opts: ReplOptions): Promise<void> {
   const [command, ...args] = targetCommand;
   const target = new TargetManager(command, args);
   const interceptor = new ResponseInterceptor({ outDir: opts.outDir });
@@ -62,9 +64,14 @@ export async function startRepl(
   if (!opts.script) {
     target.enableAutoReconnect();
 
-    target.on("reconnecting", ({ attempt, maxAttempts }: { attempt: number; maxAttempts: number }) => {
-      console.log(pc.yellow(`\n⟳ Server disconnected. Reconnecting (${attempt}/${maxAttempts})...`));
-    });
+    target.on(
+      "reconnecting",
+      ({ attempt, maxAttempts }: { attempt: number; maxAttempts: number }) => {
+        console.log(
+          pc.yellow(`\n⟳ Server disconnected. Reconnecting (${attempt}/${maxAttempts})...`),
+        );
+      },
+    );
 
     target.on("reconnected", ({ attempt }: { attempt: number }) => {
       const s = target.getStatus();
@@ -74,7 +81,9 @@ export async function startRepl(
     target.on("reconnect_failed", ({ reason, message }: { reason: string; message: string }) => {
       console.error(pc.red(`✗ ${message}`));
       if (reason === "max_retries") {
-        console.log(pc.dim("  Use 'exit' to quit or wait for the server to be fixed and restart manually."));
+        console.log(
+          pc.dim("  Use 'exit' to quit or wait for the server to be fixed and restart manually."),
+        );
       }
     });
   }
@@ -82,7 +91,9 @@ export async function startRepl(
   // List tools on startup
   try {
     const { tools } = await target.listTools();
-    console.log(pc.cyan(`  ${tools.length} tool(s) available. Type ${pc.bold("help")} for commands.\n`));
+    console.log(
+      pc.cyan(`  ${tools.length} tool(s) available. Type ${pc.bold("help")} for commands.\n`),
+    );
   } catch (err: any) {
     console.log(pc.yellow(`  Warning: Could not list tools: ${err.message}\n`));
   }
@@ -221,17 +232,13 @@ async function cmdToolsList(target: TargetManager): Promise<void> {
   // Print as a formatted table
   const nameWidth = Math.max(8, ...tools.map((t) => t.name.length));
 
-  console.log(
-    pc.bold(
-      `  ${"Name".padEnd(nameWidth)}  Description`,
-    ),
-  );
+  console.log(pc.bold(`  ${"Name".padEnd(nameWidth)}  Description`));
   console.log(pc.dim(`  ${"─".repeat(nameWidth)}  ${"─".repeat(50)}`));
 
   for (const tool of tools) {
     const desc = tool.description
       ? tool.description.length > 60
-        ? tool.description.slice(0, 57) + "..."
+        ? `${tool.description.slice(0, 57)}...`
         : tool.description
       : pc.dim("(no description)");
     console.log(`  ${pc.green(tool.name.padEnd(nameWidth))}  ${desc}`);
@@ -315,9 +322,10 @@ async function cmdToolsCall(
 function cmdStatus(target: TargetManager): void {
   const s = target.getStatus();
 
-  const uptimeStr = s.uptime >= 60
-    ? `${Math.floor(s.uptime / 60)}m ${(s.uptime % 60).toFixed(0)}s`
-    : `${s.uptime.toFixed(1)}s`;
+  const uptimeStr =
+    s.uptime >= 60
+      ? `${Math.floor(s.uptime / 60)}m ${(s.uptime % 60).toFixed(0)}s`
+      : `${s.uptime.toFixed(1)}s`;
 
   const lastRespStr = s.lastResponseTime
     ? `${((Date.now() - s.lastResponseTime) / 1000).toFixed(1)}s ago`
@@ -347,7 +355,7 @@ ${pc.bold("Available Commands:")}
   ${pc.green("exit")} / ${pc.green("quit")}                         Disconnect and exit
 
 ${pc.dim("Lines starting with # are treated as comments.")}
-${pc.dim("JSON arguments can contain spaces: tools/call say {\"message\": \"hello world\"}")}
+${pc.dim('JSON arguments can contain spaces: tools/call say {"message": "hello world"}')}
 `);
 }
 

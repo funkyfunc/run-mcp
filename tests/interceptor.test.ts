@@ -1,9 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { ResponseInterceptor } from "../src/interceptor.js";
-import { readFile, rm } from "node:fs/promises";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { existsSync } from "node:fs";
+import { readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ResponseInterceptor } from "../src/interceptor.js";
 
 // Helper: create a mock TargetManager with a configurable callTool response
 function mockTarget(response: Record<string, unknown>) {
@@ -15,9 +15,9 @@ function mockTarget(response: Record<string, unknown>) {
 // Helper: create a slow mock target that takes N ms to respond
 function slowMockTarget(ms: number, response: Record<string, unknown>) {
   return {
-    callTool: vi.fn().mockImplementation(
-      () => new Promise((resolve) => setTimeout(() => resolve(response), ms)),
-    ),
+    callTool: vi
+      .fn()
+      .mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve(response), ms))),
   } as any;
 }
 
@@ -119,9 +119,9 @@ describe("timeout enforcement", () => {
       content: [{ type: "text", text: "too slow" }],
     });
 
-    await expect(
-      interceptor.callTool(target, "slow", {}, 50),
-    ).rejects.toThrow('Tool "slow" timed out after 50ms');
+    await expect(interceptor.callTool(target, "slow", {}, 50)).rejects.toThrow(
+      'Tool "slow" timed out after 50ms',
+    );
   });
 
   it("succeeds when response arrives before timeout", async () => {

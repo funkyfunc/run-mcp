@@ -1,7 +1,7 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { resolve } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 
 /**
  * Tests for the proxy mode.
@@ -19,11 +19,19 @@ let transport: StdioClientTransport | null = null;
 
 afterEach(async () => {
   if (client) {
-    try { await client.close(); } catch { /* ignore */ }
+    try {
+      await client.close();
+    } catch {
+      /* ignore */
+    }
     client = null;
   }
   if (transport) {
-    try { await transport.close(); } catch { /* ignore */ }
+    try {
+      await transport.close();
+    } catch {
+      /* ignore */
+    }
     transport = null;
   }
 });
@@ -35,10 +43,7 @@ async function connectProxy(): Promise<Client> {
     stderr: "pipe",
   });
 
-  client = new Client(
-    { name: "proxy-test-client", version: "1.0.0" },
-    { capabilities: {} },
-  );
+  client = new Client({ name: "proxy-test-client", version: "1.0.0" }, { capabilities: {} });
 
   await client.connect(transport);
   return client;
