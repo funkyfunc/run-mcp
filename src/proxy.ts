@@ -48,7 +48,7 @@ export async function startProxy(targetCommand: string[], opts: ProxyOptions): P
   const mcpServer = new McpServer(
     {
       name: "run-mcp-proxy",
-      version: "1.0.0",
+      version: "1.1.0",
     },
     { capabilities: { tools: {} } },
   );

@@ -14,7 +14,7 @@ program
       "  proxy  - Transparent MCP proxy that intercepts images, enforces timeouts,\n" +
       "           and truncates large payloads to protect an AI agent's context window",
   )
-  .version("1.0.0")
+  .version("1.1.0")
   .addHelpText(
     "after",
     `
