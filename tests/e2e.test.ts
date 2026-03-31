@@ -1,12 +1,11 @@
 import { existsSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ResponseInterceptor } from "../src/interceptor.js";
 import { TargetManager } from "../src/target-manager.js";
-
-const MOCK_SERVER_PATH = resolve(import.meta.dirname, "fixtures/mock-server.js");
+import { MOCK_SERVER_ARGS, MOCK_SERVER_CMD } from "./helpers.js";
 
 /**
  * End-to-end integration tests using the real TargetManager + ResponseInterceptor
@@ -33,7 +32,7 @@ afterEach(async () => {
 describe("end-to-end: interceptor with real target", () => {
   it("passes through echo call unchanged", async () => {
     testOutDir = join(tmpdir(), `run-mcp-e2e-${Date.now()}`);
-    target = new TargetManager("node", [MOCK_SERVER_PATH]);
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
     await target.connect();
 
     const interceptor = new ResponseInterceptor({ outDir: testOutDir });
@@ -45,7 +44,7 @@ describe("end-to-end: interceptor with real target", () => {
 
   it("intercepts screenshot and saves to disk", async () => {
     testOutDir = join(tmpdir(), `run-mcp-e2e-${Date.now()}`);
-    target = new TargetManager("node", [MOCK_SERVER_PATH]);
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
     await target.connect();
 
     const interceptor = new ResponseInterceptor({ outDir: testOutDir });
@@ -64,7 +63,7 @@ describe("end-to-end: interceptor with real target", () => {
 
   it("intercepts big_base64 text blobs", async () => {
     testOutDir = join(tmpdir(), `run-mcp-e2e-${Date.now()}`);
-    target = new TargetManager("node", [MOCK_SERVER_PATH]);
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
     await target.connect();
 
     const interceptor = new ResponseInterceptor({ outDir: testOutDir });
@@ -77,7 +76,7 @@ describe("end-to-end: interceptor with real target", () => {
 
   it("truncates big_response text", async () => {
     testOutDir = join(tmpdir(), `run-mcp-e2e-${Date.now()}`);
-    target = new TargetManager("node", [MOCK_SERVER_PATH]);
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
     await target.connect();
 
     const interceptor = new ResponseInterceptor({ outDir: testOutDir });
@@ -91,7 +90,7 @@ describe("end-to-end: interceptor with real target", () => {
 
   it("enforces timeout on slow tool call", async () => {
     testOutDir = join(tmpdir(), `run-mcp-e2e-${Date.now()}`);
-    target = new TargetManager("node", [MOCK_SERVER_PATH]);
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
     await target.connect();
 
     const interceptor = new ResponseInterceptor({
@@ -106,7 +105,7 @@ describe("end-to-end: interceptor with real target", () => {
 
   it("succeeds when slow tool responds within timeout", async () => {
     testOutDir = join(tmpdir(), `run-mcp-e2e-${Date.now()}`);
-    target = new TargetManager("node", [MOCK_SERVER_PATH]);
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
     await target.connect();
 
     const interceptor = new ResponseInterceptor({

@@ -6,8 +6,7 @@ export default defineConfig({
   target: "node18",
   outDir: "dist",
   clean: true,
-  sourcemap: true,
+  sourcemap: false,
   dts: false,
-  // Don't bundle node_modules — keep them as external imports
   external: ["@modelcontextprotocol/sdk", "commander", "picocolors", "zod"],
 });

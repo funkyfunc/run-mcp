@@ -22,10 +22,12 @@ const server = new McpServer({
 
 // ─── Tool: echo ────────────────────────────────────────────────────────────
 
-server.tool(
+server.registerTool(
   "echo",
-  "Echoes back the provided text",
-  { text: z.string().describe("Text to echo back") },
+  {
+    description: "Echoes back the provided text",
+    inputSchema: { text: z.string().describe("Text to echo back") },
+  },
   async ({ text }) => ({
     content: [{ type: "text", text }],
   }),
@@ -33,10 +35,12 @@ server.tool(
 
 // ─── Tool: greet ───────────────────────────────────────────────────────────
 
-server.tool(
+server.registerTool(
   "greet",
-  "Returns a greeting",
-  { name: z.string().describe("Name to greet") },
+  {
+    description: "Returns a greeting",
+    inputSchema: { name: z.string().describe("Name to greet") },
+  },
   async ({ name }) => ({
     content: [{ type: "text", text: `Hello, ${name}!` }],
   }),
@@ -44,10 +48,12 @@ server.tool(
 
 // ─── Tool: slow ────────────────────────────────────────────────────────────
 
-server.tool(
+server.registerTool(
   "slow",
-  "Waits for the specified duration before responding",
-  { ms: z.number().describe("Milliseconds to wait") },
+  {
+    description: "Waits for the specified duration before responding",
+    inputSchema: { ms: z.number().describe("Milliseconds to wait") },
+  },
   async ({ ms }) => {
     await new Promise((resolve) => setTimeout(resolve, ms));
     return {
@@ -58,28 +64,35 @@ server.tool(
 
 // ─── Tool: screenshot ──────────────────────────────────────────────────────
 
-server.tool("screenshot", "Returns a fake base64 PNG image", {}, async () => {
-  // Create a minimal 1x1 pixel PNG (base64 encoded)
-  // This is a real, valid PNG — 67 bytes
-  const TINY_PNG_B64 =
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
-  return {
-    content: [
-      {
-        type: "image" as const,
-        data: TINY_PNG_B64,
-        mimeType: "image/png",
-      },
-    ],
-  };
-});
+server.registerTool(
+  "screenshot",
+  {
+    description: "Returns a fake base64 PNG image",
+  },
+  async () => {
+    // Create a minimal 1x1 pixel PNG (base64 encoded)
+    // This is a real, valid PNG — 67 bytes
+    const TINY_PNG_B64 =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+    return {
+      content: [
+        {
+          type: "image" as const,
+          data: TINY_PNG_B64,
+          mimeType: "image/png",
+        },
+      ],
+    };
+  },
+);
 
 // ─── Tool: big_base64 ──────────────────────────────────────────────────────
 
-server.tool(
+server.registerTool(
   "big_base64",
-  "Returns a large base64 blob as text (for heuristic detection testing)",
-  {},
+  {
+    description: "Returns a large base64 blob as text (for heuristic detection testing)",
+  },
   async () => {
     // Generate a large base64 string (> 1000 chars)
     const bigBuffer = Buffer.alloc(2000, 0x42); // 2000 bytes of 'B'
@@ -92,10 +105,12 @@ server.tool(
 
 // ─── Tool: big_response ────────────────────────────────────────────────────
 
-server.tool(
+server.registerTool(
   "big_response",
-  "Returns a very large text response for truncation testing",
-  { size: z.number().describe("Size of the response in characters") },
+  {
+    description: "Returns a very large text response for truncation testing",
+    inputSchema: { size: z.number().describe("Size of the response in characters") },
+  },
   async ({ size }) => {
     // Use text with spaces/punctuation so it doesn't trigger base64 heuristic
     const filler = "The quick brown fox jumped. ";
@@ -108,12 +123,18 @@ server.tool(
 
 // ─── Tool: multi_content ───────────────────────────────────────────────────
 
-server.tool("multi_content", "Returns multiple content items of different types", {}, async () => ({
-  content: [
-    { type: "text", text: "First item" },
-    { type: "text", text: "Second item" },
-  ],
-}));
+server.registerTool(
+  "multi_content",
+  {
+    description: "Returns multiple content items of different types",
+  },
+  async () => ({
+    content: [
+      { type: "text", text: "First item" },
+      { type: "text", text: "Second item" },
+    ],
+  }),
+);
 
 // ─── Start ─────────────────────────────────────────────────────────────────
 

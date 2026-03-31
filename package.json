@@ -14,6 +14,16 @@
   "author": "",
   "type": "module",
   "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "proxy",
+    "repl",
+    "cli"
+  ],
   "bin": {
     "run-mcp": "dist/index.js"
   },
@@ -25,8 +35,9 @@
     "lint": "biome check",
     "lint:fix": "biome check --write",
     "format": "biome format --write",
-    "pretest": "tsup && tsc -p tests/tsconfig.json",
-    "test": "vitest run"
+    "pretest": "tsup",
+    "test": "vitest run",
+    "prepublishOnly": "tsup"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
@@ -38,6 +49,7 @@
     "@biomejs/biome": "^2.4.10",
     "@types/node": "^22.13.14",
     "tsup": "^8.5.1",
+    "tsx": "^4.21.0",
     "typescript": "^5.8.2",
     "vitest": "^4.1.2"
   }

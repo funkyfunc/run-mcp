@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { afterEach, describe, expect, it } from "vitest";
+import { MOCK_SERVER_ARGS, MOCK_SERVER_CMD } from "./helpers.js";
 
 /**
  * Tests for the proxy mode.
@@ -11,7 +12,6 @@ import { afterEach, describe, expect, it } from "vitest";
  * that tools are forwarded correctly.
  */
 
-const MOCK_SERVER_PATH = resolve(import.meta.dirname, "fixtures/mock-server.js");
 const PROXY_BIN = resolve(import.meta.dirname, "../dist/index.js");
 
 let client: Client | null = null;
@@ -39,7 +39,7 @@ afterEach(async () => {
 async function connectProxy(): Promise<Client> {
   transport = new StdioClientTransport({
     command: "node",
-    args: [PROXY_BIN, "proxy", "node", MOCK_SERVER_PATH],
+    args: [PROXY_BIN, "proxy", MOCK_SERVER_CMD, ...MOCK_SERVER_ARGS],
     stderr: "pipe",
   });
 

@@ -1,3 +1,5 @@
+// Server (low-level API) is intentionally used here for transparent proxying — McpServer
+// re-validates tool schemas which breaks passthrough. See registerTool discussion in proxy.ts.
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -15,6 +17,9 @@ interface ProxyOptions {
  * proxies tools/list and tools/call to the target MCP server, running all
  * responses through the ResponseInterceptor for image extraction, timeouts,
  * and truncation.
+ *
+ * Uses the low-level Server API (not McpServer) because a transparent proxy
+ * must forward tool schemas and arguments without re-validation.
  */
 export async function startProxy(targetCommand: string[], opts: ProxyOptions): Promise<void> {
   const [command, ...args] = targetCommand;
@@ -38,7 +43,7 @@ export async function startProxy(targetCommand: string[], opts: ProxyOptions): P
   const status = target.getStatus();
   process.stderr.write(`[proxy] Connected to target (PID: ${status.pid})\n`);
 
-  // Create the proxy MCP server
+  // Create the proxy MCP server (low-level API for transparent forwarding)
   const server = new Server(
     { name: "run-mcp-proxy", version: "1.0.0" },
     { capabilities: { tools: {} } },
@@ -63,10 +68,15 @@ export async function startProxy(targetCommand: string[], opts: ProxyOptions): P
         (toolArgs as Record<string, unknown>) ?? {},
       );
 
-      return result as {
-        content: Array<{ type: string; text?: string; [key: string]: unknown }>;
-        isError?: boolean;
-      };
+      // Map intercepted content to proper MCP content types
+      const content = ((result as any).content ?? []).map((item: any) => {
+        if (item.type === "image") {
+          return { type: "image" as const, data: item.data, mimeType: item.mimeType };
+        }
+        return { type: "text" as const, text: String(item.text ?? "") };
+      });
+
+      return { content };
     } catch (err: any) {
       return {
         content: [{ type: "text" as const, text: `Error: ${err.message}` }],

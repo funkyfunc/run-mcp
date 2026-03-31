@@ -1,9 +1,6 @@
-import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { TargetManager } from "../src/target-manager.js";
-
-// Path to the compiled mock server
-const MOCK_SERVER_PATH = resolve(import.meta.dirname, "fixtures/mock-server.js");
+import { MOCK_SERVER_ARGS, MOCK_SERVER_CMD } from "./helpers.js";
 
 /**
  * Integration tests for TargetManager using the mock MCP server.
@@ -27,25 +24,25 @@ afterEach(async () => {
 
 describe("connection lifecycle", () => {
   it("connects to a target MCP server", async () => {
-    target = new TargetManager("node", [MOCK_SERVER_PATH]);
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
     await target.connect();
 
     expect(target.connected).toBe(true);
   }, 10_000);
 
   it("reports status after connecting", async () => {
-    target = new TargetManager("node", [MOCK_SERVER_PATH]);
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
     await target.connect();
 
     const status = target.getStatus();
     expect(status.connected).toBe(true);
-    expect(status.command).toBe("node");
-    expect(status.args).toEqual([MOCK_SERVER_PATH]);
+    expect(status.command).toBe(MOCK_SERVER_CMD);
+    expect(status.args).toEqual(MOCK_SERVER_ARGS);
     expect(status.uptime).toBeGreaterThanOrEqual(0);
   }, 10_000);
 
   it("emits stderr from the child process", async () => {
-    target = new TargetManager("node", [MOCK_SERVER_PATH]);
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
 
     const stderrLines: string[] = [];
     target.on("stderr", (text: string) => stderrLines.push(text));
@@ -59,7 +56,7 @@ describe("connection lifecycle", () => {
   }, 10_000);
 
   it("disconnects cleanly", async () => {
-    target = new TargetManager("node", [MOCK_SERVER_PATH]);
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
     await target.connect();
     expect(target.connected).toBe(true);
 
@@ -73,13 +70,13 @@ describe("connection lifecycle", () => {
   }, 10_000);
 
   it("throws when calling listTools before connect", async () => {
-    target = new TargetManager("node", [MOCK_SERVER_PATH]);
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
 
     await expect(target.listTools()).rejects.toThrow("Not connected");
   });
 
   it("throws when calling callTool before connect", async () => {
-    target = new TargetManager("node", [MOCK_SERVER_PATH]);
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
 
     await expect(target.callTool("echo", { text: "hi" })).rejects.toThrow("Not connected");
   });
@@ -98,7 +95,7 @@ describe("connection lifecycle", () => {
 
 describe("listTools", () => {
   it("lists all tools from the mock server", async () => {
-    target = new TargetManager("node", [MOCK_SERVER_PATH]);
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
     await target.connect();
 
     const result = await target.listTools();
@@ -113,7 +110,7 @@ describe("listTools", () => {
   }, 10_000);
 
   it("returns tool descriptions", async () => {
-    target = new TargetManager("node", [MOCK_SERVER_PATH]);
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
     await target.connect();
 
     const result = await target.listTools();
@@ -130,7 +127,7 @@ describe("listTools", () => {
 
 describe("callTool", () => {
   it("calls echo and gets the text back", async () => {
-    target = new TargetManager("node", [MOCK_SERVER_PATH]);
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
     await target.connect();
 
     const result = await target.callTool("echo", { text: "hello from test" });
@@ -141,7 +138,7 @@ describe("callTool", () => {
   }, 10_000);
 
   it("calls greet with a name", async () => {
-    target = new TargetManager("node", [MOCK_SERVER_PATH]);
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
     await target.connect();
 
     const result = await target.callTool("greet", { name: "Vitest" });
@@ -151,7 +148,7 @@ describe("callTool", () => {
   }, 10_000);
 
   it("calls screenshot and gets an image response", async () => {
-    target = new TargetManager("node", [MOCK_SERVER_PATH]);
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
     await target.connect();
 
     const result = await target.callTool("screenshot", {});
@@ -164,7 +161,7 @@ describe("callTool", () => {
   }, 10_000);
 
   it("calls multi_content and gets multiple items", async () => {
-    target = new TargetManager("node", [MOCK_SERVER_PATH]);
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
     await target.connect();
 
     const result = await target.callTool("multi_content", {});
@@ -182,7 +179,7 @@ describe("callTool", () => {
 
 describe("enhanced status", () => {
   it("tracks lastResponseTime after listTools", async () => {
-    target = new TargetManager("node", [MOCK_SERVER_PATH]);
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
     await target.connect();
 
     const beforeCall = target.getStatus();
@@ -196,7 +193,7 @@ describe("enhanced status", () => {
   }, 10_000);
 
   it("tracks lastResponseTime after callTool", async () => {
-    target = new TargetManager("node", [MOCK_SERVER_PATH]);
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
     await target.connect();
 
     await target.callTool("echo", { text: "ping" });
@@ -206,7 +203,7 @@ describe("enhanced status", () => {
   }, 10_000);
 
   it("counts stderr lines", async () => {
-    target = new TargetManager("node", [MOCK_SERVER_PATH]);
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
     await target.connect();
 
     // Give stderr time to arrive
@@ -217,7 +214,7 @@ describe("enhanced status", () => {
   }, 10_000);
 
   it("reports reconnect attempts and max", async () => {
-    target = new TargetManager("node", [MOCK_SERVER_PATH]);
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
     await target.connect();
 
     const status = target.getStatus();
@@ -232,7 +229,7 @@ describe("enhanced status", () => {
 
 describe("auto-reconnect", () => {
   it("does NOT reconnect when auto-reconnect is disabled (default)", async () => {
-    target = new TargetManager("node", [MOCK_SERVER_PATH]);
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
     await target.connect();
 
     const events: string[] = [];

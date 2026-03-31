@@ -6,6 +6,7 @@ import { startRepl } from "./repl.js";
 
 program
   .name("run-mcp")
+  .enablePositionalOptions()
   .description(
     "A smart proxy and interactive REPL for Model Context Protocol (MCP) servers.\n\n" +
       "Operates in two modes:\n" +
@@ -37,6 +38,8 @@ if (process.argv.length <= 2) {
 program
   .command("repl")
   .description("Start an interactive REPL session with a target MCP server")
+  .passThroughOptions()
+  .allowUnknownOption()
   .argument("<target_command...>", "Command to spawn the target MCP server")
   .option("-s, --script <file>", "Read commands from a file instead of stdin")
   .option("-o, --out-dir <path>", "Directory to save intercepted images")
@@ -64,6 +67,8 @@ REPL Commands (once connected):
 program
   .command("proxy")
   .description("Start as a transparent MCP proxy between an AI agent and a target server")
+  .passThroughOptions()
+  .allowUnknownOption()
   .argument("<target_command...>", "Command to spawn the target MCP server")
   .option("-o, --out-dir <path>", "Directory to save intercepted images")
   .addHelpText(
