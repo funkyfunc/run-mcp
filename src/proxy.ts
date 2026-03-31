@@ -1,6 +1,4 @@
-// Server (low-level API) is intentionally used here for transparent proxying — McpServer
-// re-validates tool schemas which breaks passthrough. See registerTool discussion in proxy.ts.
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { ResponseInterceptor } from "./interceptor.js";
@@ -18,8 +16,9 @@ interface ProxyOptions {
  * responses through the ResponseInterceptor for image extraction, timeouts,
  * and truncation.
  *
- * Uses the low-level Server API (not McpServer) because a transparent proxy
- * must forward tool schemas and arguments without re-validation.
+ * Uses McpServer but registers handlers on the underlying `.server` property
+ * to bypass McpServer's schema re-validation — a transparent proxy must
+ * forward tool schemas and arguments as-is.
  */
 export async function startProxy(targetCommand: string[], opts: ProxyOptions): Promise<void> {
   const [command, ...args] = targetCommand;
@@ -43,11 +42,17 @@ export async function startProxy(targetCommand: string[], opts: ProxyOptions): P
   const status = target.getStatus();
   process.stderr.write(`[proxy] Connected to target (PID: ${status.pid})\n`);
 
-  // Create the proxy MCP server (low-level API for transparent forwarding)
-  const server = new Server(
-    { name: "run-mcp-proxy", version: "1.0.0" },
+  // Create McpServer, then use the underlying low-level server for transparent
+  // request handling (McpServer.registerTool re-validates schemas, which breaks
+  // passthrough of arbitrary tool arguments).
+  const mcpServer = new McpServer(
+    {
+      name: "run-mcp-proxy",
+      version: "1.0.0",
+    },
     { capabilities: { tools: {} } },
   );
+  const server = mcpServer.server;
 
   // ─── ListTools: pass through from target ──────────────────────────────────
 
@@ -95,7 +100,7 @@ export async function startProxy(targetCommand: string[], opts: ProxyOptions): P
     process.exit(0);
   };
 
-  await server.connect(transport);
+  await mcpServer.connect(transport);
   process.stderr.write("[proxy] Proxy server running on stdio.\n");
 
   // Clean up target if we get terminated
