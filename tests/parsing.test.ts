@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseCommandLine, parseCallArgs, formatJson } from "../src/parsing.js";
+import { parseCommandLine, parseCallArgs, formatJson, levenshtein, suggestCommand } from "../src/parsing.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // parseCommandLine
@@ -143,5 +143,82 @@ describe("formatJson", () => {
     expect(formatJson(null)).toContain("null");
     expect(formatJson(42)).toContain("42");
     expect(formatJson("hello")).toContain('"hello"');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// levenshtein
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("levenshtein", () => {
+  it("returns 0 for identical strings", () => {
+    expect(levenshtein("hello", "hello")).toBe(0);
+    expect(levenshtein("", "")).toBe(0);
+  });
+
+  it("returns string length for empty vs non-empty", () => {
+    expect(levenshtein("", "abc")).toBe(3);
+    expect(levenshtein("abc", "")).toBe(3);
+  });
+
+  it("detects single-character edits", () => {
+    expect(levenshtein("cat", "bat")).toBe(1); // substitution
+    expect(levenshtein("cat", "cats")).toBe(1); // insertion
+    expect(levenshtein("cats", "cat")).toBe(1); // deletion
+  });
+
+  it("handles realistic typos", () => {
+    expect(levenshtein("tools/lst", "tools/list")).toBe(1);
+    expect(levenshtein("toosl/list", "tools/list")).toBe(2);
+    expect(levenshtein("stats", "status")).toBe(1); // insertion of 'u'
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// suggestCommand
+// ═══════════════════════════════════════════════════════════════════════════
+
+const COMMANDS = [
+  "tools/list", "tools/describe", "tools/call",
+  "status", "help", "exit", "quit",
+];
+
+describe("suggestCommand", () => {
+  it("suggests tools/list for tools/lst", () => {
+    expect(suggestCommand("tools/lst", COMMANDS)).toBe("tools/list");
+  });
+
+  it("suggests tools/list for tols/list", () => {
+    expect(suggestCommand("tols/list", COMMANDS)).toBe("tools/list");
+  });
+
+  it("suggests tools/call for tools/cal", () => {
+    expect(suggestCommand("tools/cal", COMMANDS)).toBe("tools/call");
+  });
+
+  it("suggests tools/describe for tools/descrbe", () => {
+    expect(suggestCommand("tools/descrbe", COMMANDS)).toBe("tools/describe");
+  });
+
+  it("suggests status for stats", () => {
+    expect(suggestCommand("stats", COMMANDS)).toBe("status");
+  });
+
+  it("suggests help for hlep", () => {
+    expect(suggestCommand("hlep", COMMANDS)).toBe("help");
+  });
+
+  it("returns null for completely unrelated input", () => {
+    expect(suggestCommand("xyzzy", COMMANDS)).toBeNull();
+    expect(suggestCommand("foobar", COMMANDS)).toBeNull();
+  });
+
+  it("returns null for empty input", () => {
+    expect(suggestCommand("", COMMANDS)).toBeNull();
+  });
+
+  it("returns exact match if it exists", () => {
+    expect(suggestCommand("help", COMMANDS)).toBe("help");
+    expect(suggestCommand("tools/list", COMMANDS)).toBe("tools/list");
   });
 });

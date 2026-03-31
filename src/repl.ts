@@ -3,7 +3,13 @@ import { readFile } from "node:fs/promises";
 import pc from "picocolors";
 import { TargetManager } from "./target-manager.js";
 import { ResponseInterceptor } from "./interceptor.js";
-import { parseCommandLine, parseCallArgs, formatJson } from "./parsing.js";
+import { parseCommandLine, parseCallArgs, formatJson, suggestCommand } from "./parsing.js";
+
+/** All known REPL commands for typo suggestion. */
+const KNOWN_COMMANDS = [
+  "tools/list", "tools/describe", "tools/call",
+  "status", "help", "exit", "quit",
+];
 
 interface ReplOptions {
   script?: string;
@@ -38,7 +44,14 @@ export async function startRepl(
   try {
     await target.connect();
   } catch (err: any) {
-    console.error(pc.red(`✗ Failed to connect: ${err.message}`));
+    const msg = err.message ?? String(err);
+    if (msg.includes("ENOENT") || msg.includes("spawn")) {
+      console.error(pc.red(`✗ Failed to start server: command "${command}" not found.`));
+      console.error(pc.dim(`  Check that "${command}" is installed and in your PATH.`));
+    } else {
+      console.error(pc.red(`✗ Failed to connect: ${msg}`));
+      console.error(pc.dim(`  Check that the target command starts a valid MCP server on stdio.`));
+    }
     process.exit(1);
   }
 
@@ -183,8 +196,15 @@ async function handleCommand(
       process.emit("SIGINT", "SIGINT");
       return;
 
-    default:
-      console.log(pc.yellow(`Unknown command: ${cmd}. Type ${pc.bold("help")} for usage.`));
+    default: {
+      // Suggest the closest known command if it's a likely typo
+      const suggestion = suggestCommand(cmd, KNOWN_COMMANDS);
+      if (suggestion) {
+        console.log(pc.yellow(`Unknown command: ${cmd}. Did you mean ${pc.bold(suggestion)}?`));
+      } else {
+        console.log(pc.yellow(`Unknown command: ${cmd}. Type ${pc.bold("help")} for usage.`));
+      }
+    }
   }
 }
 

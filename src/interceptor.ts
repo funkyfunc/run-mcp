@@ -129,7 +129,11 @@ export class ResponseInterceptor {
   private _timeout(ms: number, toolName: string): Promise<never> {
     return new Promise((_, reject) => {
       setTimeout(() => {
-        reject(new Error(`Tool "${toolName}" timed out after ${ms}ms`));
+        const humanMs = ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
+        reject(new Error(
+          `Tool "${toolName}" timed out after ${ms}ms (${humanMs}). ` +
+          `Use --timeout <ms> to increase the limit.`,
+        ));
       }, ms);
     });
   }
