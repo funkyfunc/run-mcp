@@ -82,6 +82,10 @@ out
 .nuxt
 dist
 
+# Compiled test fixtures
+tests/fixtures/*.js
+tests/fixtures/*.js.map
+
 # Gatsby files
 .cache/
 # Comment in the public line in if your project uses Gatsby and not Next.js

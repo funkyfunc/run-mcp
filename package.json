@@ -1,0 +1,38 @@
+{
+  "name": "run-mcp",
+  "version": "1.0.0",
+  "description": "A smart proxy and interactive REPL for Model Context Protocol (MCP) servers",
+  "homepage": "https://github.com/funkyfunc/run-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/funkyfunc/run-mcp/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/funkyfunc/run-mcp.git"
+  },
+  "license": "ISC",
+  "author": "",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "run-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc -w",
+    "start": "node dist/index.js",
+    "pretest": "npx tsc && npx tsc -p tests/tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "commander": "^13.1.0",
+    "picocolors": "^1.1.1",
+    "zod": "^3.24.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.14",
+    "typescript": "^5.8.2",
+    "vitest": "^4.1.2"
+  }
+}
