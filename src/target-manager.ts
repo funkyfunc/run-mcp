@@ -181,7 +181,11 @@ export class TargetManager extends EventEmitter {
   async callTool(name: string, args: Record<string, unknown> = {}, _timeoutMs?: number) {
     this._assertConnected();
     const requestOptions = { timeout: 3600_000 * 10 }; // 10 hours
-    const result = await this.client!.callTool({ name, arguments: args }, undefined, requestOptions);
+    const result = await this.client!.callTool(
+      { name, arguments: args },
+      undefined,
+      requestOptions,
+    );
     this.recordResponse();
     return result;
   }

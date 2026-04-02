@@ -258,7 +258,8 @@ export async function startServer(opts: ServerOptions): Promise<void> {
     "describe_mcp_tool",
     {
       title: "Describe MCP Tool",
-      description: "Get the description and input schema for a specific tool on the connected server.",
+      description:
+        "Get the description and input schema for a specific tool on the connected server.",
       inputSchema: {
         name: z.string().describe("Name of the tool to describe"),
       },
@@ -267,7 +268,10 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       if (!target?.connected) {
         return {
           content: [
-             { type: "text" as const, text: "No target server connected. Use connect_to_mcp first." }
+            {
+              type: "text" as const,
+              text: "No target server connected. Use connect_to_mcp first.",
+            },
           ],
           isError: true,
         };
@@ -281,16 +285,17 @@ export async function startServer(opts: ServerOptions): Promise<void> {
           const available = result.tools.map((t) => t.name).join(", ");
           return {
             content: [
-              { type: "text" as const, text: `Tool "${name}" not found.\nAvailable tools: ${available}` }
+              {
+                type: "text" as const,
+                text: `Tool "${name}" not found.\nAvailable tools: ${available}`,
+              },
             ],
-            isError: true
+            isError: true,
           };
         }
 
         return {
-          content: [
-            { type: "text" as const, text: JSON.stringify(tool, null, 2) }
-          ]
+          content: [{ type: "text" as const, text: JSON.stringify(tool, null, 2) }],
         };
       } catch (err: any) {
         return {
@@ -298,7 +303,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
           isError: true,
         };
       }
-    }
+    },
   );
 
   // ─── call_mcp_tool ──────────────────────────────────────────────────────

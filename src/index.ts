@@ -66,26 +66,6 @@ REPL Mode Commands (once connected):
     ) => {
       // If we have a target command, start the REPL mode
       if (targetCommand && targetCommand.length > 0) {
-        // Intercept common typo: user ran `run-mcp repl` or `run-mcp mcp` out of habit
-        const firstArg = targetCommand[0];
-        if (firstArg === "repl" || firstArg === "mcp" || firstArg === "server") {
-          targetCommand.shift();
-          if (targetCommand.length === 0) {
-            if (firstArg === "repl") {
-              console.error(
-                "Error: REPL mode requires a target command (e.g. run-mcp node server.js)",
-              );
-              process.exit(1);
-            }
-            // fallback to agent mode for 'run-mcp mcp' or 'run-mcp server'
-            await startServer({
-              outDir: opts.outDir,
-              timeoutMs: opts.timeout ? Number.parseInt(opts.timeout, 10) : undefined,
-              maxTextLength: opts.maxText ? Number.parseInt(opts.maxText, 10) : undefined,
-            });
-            return;
-          }
-        }
         await startRepl(targetCommand, { script: opts.script, outDir: opts.outDir });
       } else {
         // Agent server mode
