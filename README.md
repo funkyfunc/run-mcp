@@ -55,38 +55,25 @@ You'll see an interactive prompt:
 
 ## Usage
 
-```
-run-mcp <command> [options]
-
-Commands:
-  mcp [options]               Start as an MCP server for agents (default)
-  repl <target_command...>    Start an interactive REPL session
+run-mcp [options] [target_command...]
 
 Options:
   -V, --version               Show version number
-  -h, --help                  Show help
-```
+  -o, --out-dir <path>        Directory to save intercepted images and audio
+  -t, --timeout <ms>          Default tool call timeout in milliseconds (default: 300000) (Agent Mode only)
+      --max-text <chars>      Max text response length before truncation (default: 50000) (Agent Mode only)
+  -s, --script <file>         Read commands from a file instead of stdin (REPL Mode only)
+  -h, --help                  Display help for command
 
-### REPL Command
+Examples:
+  $ run-mcp                                       # Test harness (agent mode)
+  $ run-mcp node my-server.js                     # Interactive testing (human REPL mode)
+  $ run-mcp node my-server.js -s test.txt         # Run a script in REPL mode
+  $ run-mcp npx -y some-mcp-server                # Test an npx server
+  $ run-mcp --out-dir ./test-output               # Agent mode with options
+  $ run-mcp --out-dir ./screenshots node srv.js   # REPL mode with options
 
-```
-run-mcp repl <target_command...> [options]
 
-Options:
-  -s, --script <file>    Read commands from a file instead of stdin
-  -o, --out-dir <path>   Directory to save intercepted images (default: $TMPDIR/run-mcp)
-```
-
-### Agent MCP Server (Default)
-
-```
-run-mcp [options]
-
-Options:
-  -o, --out-dir <path>     Directory to save intercepted images and audio
-  -t, --timeout <ms>       Default tool call timeout in milliseconds (default: 300000)
-      --max-text <chars>   Max text response length before truncation (default: 50000)
-```
 
 ## Agent Use Cases
 
@@ -124,9 +111,9 @@ Then use these tools from your agent:
 | `get_mcp_prompt` | Get a prompt by name |
 | `get_mcp_server_stderr` | View target server stderr output |
 
-## REPL Commands
+## REPL Mode Commands
 
-Once in the REPL, these commands are available:
+Once connected via `run-mcp <command>`, the following shorthand commands are available:
 
 | Command | Description |
 |---------|-------------|

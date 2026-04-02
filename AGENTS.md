@@ -43,7 +43,7 @@ A user should be able to wrap any MCP server with `run-mcp proxy node my-server.
 
 Follow the Unix philosophy: `run-mcp` reads from stdin, writes to stdout, logs to stderr, and returns meaningful exit codes. This means:
 
-- **Script mode**: `run-mcp repl ... --script commands.txt` exits `0` on success, `1` on first error. Composable with CI pipelines.
+- **Script mode**: `run-mcp node foo.js --script commands.txt` exits `0` on success, `1` on first error. Composable with CI pipelines.
 - **Process cleanup**: Always kill child processes on exit (SIGINT, SIGTERM, process.exit). Never leave orphaned server processes.
 
 ### 6. Typo Tolerance
@@ -85,7 +85,7 @@ The system has a simple layered architecture where every tool call flows through
 
 | Module | File | Responsibility |
 |--------|------|----------------|
-| **CLI Entry** | `src/index.ts` | Commander-based CLI with `repl` and `mcp` subcommands, defaulting to `mcp`. Bare invocation `run-mcp` defaults to `mcp`. |
+| **CLI Entry** | `src/index.ts` | Commander-based CLI with a unified root command. Parses options and delegates to `server.ts` (0 positional args) or `repl.ts` (1+ positional args). |
 | **TargetManager** | `src/target-manager.ts` | Spawns the target MCP server as a child process, wraps it in an MCP `Client`, exposes the full MCP protocol surface (tools, resources, prompts, logging, completion), captures stderr, tracks process lifecycle. Handles auto-reconnect with loop protection (5s min-uptime guard, 3-retry cap, 60s stability reset). |
 | **ResponseInterceptor** | `src/interceptor.ts` | Middleware layer that wraps `callTool` with `Promise.race` timeouts, extracts base64 images and audio to disk, detects raw base64 text blobs via regex heuristic, and truncates oversized text responses. Configurable via `InterceptorOptions` (timeout, max text length, output directory). |
 | **REPL** | `src/repl.ts` | Interactive readline interface. Parses shorthand commands (`tools/list`, `tools/call <name> <json>`), supports script mode (`--script`), streams server stderr in dim text, and suggests corrections for typos. |

@@ -51,7 +51,7 @@ afterEach(async () => {
 async function startRunMcpServer(extraArgs: string[] = []): Promise<Client> {
   transport = new StdioClientTransport({
     command: "node",
-    args: [SERVER_BIN, "mcp", ...extraArgs],
+    args: [SERVER_BIN, ...extraArgs],
     stderr: "pipe",
   });
 

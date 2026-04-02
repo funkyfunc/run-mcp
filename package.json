@@ -1,6 +1,6 @@
 {
   "name": "run-mcp",
-  "version": "1.3.3",
+  "version": "1.3.4",
   "description": "A smart proxy and interactive REPL for Model Context Protocol (MCP) servers",
   "homepage": "https://github.com/funkyfunc/run-mcp#readme",
   "bugs": {
