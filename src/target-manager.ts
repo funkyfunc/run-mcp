@@ -47,6 +47,8 @@ export class TargetManager extends EventEmitter {
   // Enhanced status tracking
   private _lastResponseTime: number | null = null;
   private _stderrLineCount: number = 0;
+  private _stderrLines: string[] = [];
+  private static readonly MAX_STDERR_LINES = 200;
 
   // Auto-reconnect state
   private _reconnectAttempts: number = 0;
@@ -85,7 +87,13 @@ export class TargetManager extends EventEmitter {
     this.transport.stderr?.on("data", (chunk: Buffer) => {
       const text = chunk.toString().trimEnd();
       if (text) {
-        this._stderrLineCount += text.split("\n").length;
+        const lines = text.split("\n");
+        this._stderrLineCount += lines.length;
+        // Store in ring buffer for later retrieval
+        this._stderrLines.push(...lines);
+        if (this._stderrLines.length > TargetManager.MAX_STDERR_LINES) {
+          this._stderrLines = this._stderrLines.slice(-TargetManager.MAX_STDERR_LINES);
+        }
         this.emit("stderr", text);
       }
     });
@@ -286,6 +294,15 @@ export class TargetManager extends EventEmitter {
   }
 
   // ─── Status & lifecycle ─────────────────────────────────────────────────────
+
+  /**
+   * Returns the last N lines of stderr output from the target server.
+   * Useful for debugging crashes or unexpected behavior.
+   */
+  getStderrLines(count?: number): string[] {
+    if (!count || count >= this._stderrLines.length) return [...this._stderrLines];
+    return this._stderrLines.slice(-count);
+  }
 
   /**
    * Returns current connection status, PID, uptime, and diagnostics.

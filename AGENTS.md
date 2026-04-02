@@ -12,8 +12,9 @@ These principles define the soul of the project. Every feature, error message, a
 
 - **Humans** (REPL mode) — developers who want to quickly test and explore an MCP server without writing client code.
 - **AI agents** (Proxy mode) — LLMs that need a protective layer between them and a target server.
+- **AI agents** (Server mode) — LLMs building MCP servers that need to dynamically test them without config changes.
 
-Both modes share the same `TargetManager` → `ResponseInterceptor` pipeline. The only difference is the input interface (readline vs. MCP Server). When designing a feature, ask: *"Does this benefit the REPL user, the agent, or both?"* and scope it accordingly.
+All three modes share the same `TargetManager` → `ResponseInterceptor` pipeline. The differences are in the input interface (readline vs. MCP passthrough vs. MCP tools).
 
 ### 2. Transparent by Default, Protective When Needed
 
@@ -92,6 +93,7 @@ The system has a simple layered architecture where every tool call flows through
 | **ResponseInterceptor** | `src/interceptor.ts` | Middleware layer that wraps `callTool` with `Promise.race` timeouts, extracts base64 images and audio to disk, detects raw base64 text blobs via regex heuristic, and truncates oversized text responses. Configurable via `InterceptorOptions` (timeout, max text length, output directory). |
 | **REPL** | `src/repl.ts` | Interactive readline interface. Parses shorthand commands (`tools/list`, `tools/call <name> <json>`), supports script mode (`--script`), streams server stderr in dim text, and suggests corrections for typos. |
 | **Proxy** | `src/proxy.ts` | MCP Server that transparently forwards ALL MCP primitives (tools, resources, prompts, logging, completion) from the parent agent to the target server. Dynamically mirrors target capabilities so agents see the full feature surface. Tool responses run through the interceptor; everything else passes through as-is. |
+| **Server** | `src/server.ts` | MCP Server exposing run-mcp's own tools (`connect_to_mcp`, `call_mcp_tool`, etc.) so agents can dynamically connect to, inspect, and test local MCP servers without config changes. Uses `registerTool()` with Zod schemas. |
 | **Parsing** | `src/parsing.ts` | Pure functions extracted for testability: command line splitting, `tools/call` argument parsing, JSON formatting, Levenshtein distance, and typo suggestion. |
 
 ### Proxy Architecture
@@ -247,7 +249,8 @@ This prevents `MaxListenersExceeded` warnings when tests create many instances �
 | `tests/target-manager.test.ts` | 19 | Full integration: spawns the mock server, tests connect/disconnect/listTools/callTool/auto-reconnect |
 | `tests/e2e.test.ts` | 6 | End-to-end: TargetManager + ResponseInterceptor against the mock server |
 | `tests/proxy.test.ts` | 17 | Full protocol proxy: capabilities, tools (annotations, isError), resources (list/read/templates), prompts (list/get), audio, CLI options |
-| **Total** | **90** | |
+| `tests/server.test.ts` | 19 | Server mode: tool discovery, connection lifecycle, tool/resource/prompt operations, interception, diagnostics |
+| **Total** | **109** | |
 
 ### Running Tests
 
@@ -330,7 +333,7 @@ npm test             # pretest (build) + vitest run
 ### Before Committing
 
 1. `npm run lint:fix` — fix formatting and lint issues
-2. `npm test` — ensure all 90 tests pass
+2. `npm test` — ensure all 109 tests pass
 3. `npm run typecheck` — catch type errors not covered by tsup
 
 ### npx Compatibility

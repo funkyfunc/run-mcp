@@ -3,25 +3,28 @@
 import { program } from "commander";
 import { startProxy } from "./proxy.js";
 import { startRepl } from "./repl.js";
+import { startServer } from "./server.js";
 
 program
   .name("run-mcp")
   .enablePositionalOptions()
   .description(
-    "A smart proxy and interactive REPL for Model Context Protocol (MCP) servers.\n\n" +
-      "Operates in two modes:\n" +
-      "  repl   - Human-friendly CLI for testing MCP servers interactively\n" +
-      "  proxy  - Transparent MCP proxy that intercepts images, enforces timeouts,\n" +
-      "           and truncates large payloads to protect an AI agent's context window",
+    "A smart proxy, interactive REPL, and live test harness for MCP servers.\n\n" +
+      "Operates in three modes:\n" +
+      "  repl    - Human-friendly CLI for testing MCP servers interactively\n" +
+      "  proxy   - Transparent MCP proxy that intercepts images, enforces timeouts,\n" +
+      "            and truncates large payloads to protect an AI agent's context window\n" +
+      "  server  - MCP server that lets AI agents dynamically test local MCP servers",
   )
   .version("1.2.0")
   .addHelpText(
     "after",
     `
 Examples:
-  $ run-mcp repl node my-server.js               # Interactive testing
+  $ run-mcp repl node my-server.js               # Interactive testing (human)
   $ run-mcp repl node my-server.js -s test.txt    # Run a script
-  $ run-mcp proxy node my-server.js               # Proxy for AI agents
+  $ run-mcp proxy node my-server.js               # Transparent proxy (agent)
+  $ run-mcp server                                # Test harness (agent)
   $ run-mcp repl npx -y some-mcp-server           # Test an npx server
 
 Run 'run-mcp <command> --help' for detailed options.`,
@@ -104,5 +107,45 @@ Use this in your MCP client configuration to wrap any MCP server:
       });
     },
   );
+
+// ─── Server Mode ────────────────────────────────────────────────────────────
+
+program
+  .command("server")
+  .description("Start as an MCP server that lets AI agents dynamically test local MCP servers")
+  .option("-o, --out-dir <path>", "Directory to save intercepted images and audio")
+  .option("-t, --timeout <ms>", "Default tool call timeout in milliseconds (default: 60000)")
+  .option("--max-text <chars>", "Max text response length before truncation (default: 50000)")
+  .addHelpText(
+    "after",
+    `
+Examples:
+  $ run-mcp server
+  $ run-mcp server --out-dir ./test-output
+  $ run-mcp server --timeout 120000
+
+Add to your MCP client configuration:
+  {
+    "mcpServers": {
+      "run-mcp": {
+        "command": "npx",
+        "args": ["-y", "run-mcp", "server"]
+      }
+    }
+  }
+
+Then use these tools from your agent:
+  connect_to_mcp      → Spawn and connect to a local MCP server
+  list_mcp_tools      → List tools on the connected server
+  call_mcp_tool       → Call a tool (with interception)
+  disconnect_from_mcp → Tear down and reconnect after changes`,
+  )
+  .action(async (opts: { outDir?: string; timeout?: string; maxText?: string }) => {
+    await startServer({
+      outDir: opts.outDir,
+      timeoutMs: opts.timeout ? Number.parseInt(opts.timeout, 10) : undefined,
+      maxTextLength: opts.maxText ? Number.parseInt(opts.maxText, 10) : undefined,
+    });
+  });
 
 program.parse();

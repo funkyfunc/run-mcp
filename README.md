@@ -1,13 +1,14 @@
 # run-mcp
 
-A smart proxy and interactive REPL for [Model Context Protocol](https://modelcontextprotocol.io) (MCP) servers.
+A smart proxy, interactive REPL, and live test harness for [Model Context Protocol](https://modelcontextprotocol.io) (MCP) servers.
 
-`run-mcp` wraps any MCP server and operates in two modes:
+`run-mcp` wraps any MCP server and operates in three modes:
 
 | Mode | Audience | Purpose |
 |------|----------|---------|
 | **`repl`** | Humans / developers | Interactive CLI for testing and exploring MCP servers with shorthand commands |
-| **`proxy`** | AI agents | Transparent MCP proxy that intercepts responses to save images to disk, enforce timeouts, and truncate massive payloads |
+| **`proxy`** | AI agents (transparent) | Transparent MCP proxy that intercepts responses to save images to disk, enforce timeouts, and truncate massive payloads |
+| **`server`** | AI agents (explicit) | MCP server that lets agents dynamically connect to, inspect, and test local MCP servers |
 
 ## Why?
 
@@ -97,6 +98,45 @@ Options:
   -t, --timeout <ms>       Default tool call timeout in milliseconds (default: 60000)
       --max-text <chars>   Max text response length before truncation (default: 50000)
 ```
+
+### Server Command
+
+```
+run-mcp server [options]
+
+Options:
+  -o, --out-dir <path>     Directory to save intercepted images and audio (default: $TMPDIR/run-mcp)
+  -t, --timeout <ms>       Default tool call timeout in milliseconds (default: 60000)
+      --max-text <chars>   Max text response length before truncation (default: 50000)
+```
+
+Add to your MCP client configuration:
+
+```json
+{
+  "mcpServers": {
+    "run-mcp": {
+      "command": "npx",
+      "args": ["-y", "run-mcp", "server"]
+    }
+  }
+}
+```
+
+Then use these tools from your agent:
+
+| Tool | Description |
+|------|-------------|
+| `connect_to_mcp` | Spawn and connect to a local MCP server |
+| `disconnect_from_mcp` | Tear down the connection |
+| `mcp_server_status` | Check connection status |
+| `list_mcp_tools` | List tools on the connected server |
+| `call_mcp_tool` | Call a tool (with interception) |
+| `list_mcp_resources` | List resources |
+| `read_mcp_resource` | Read a resource by URI |
+| `list_mcp_prompts` | List prompts |
+| `get_mcp_prompt` | Get a prompt by name |
+| `get_mcp_server_stderr` | View target server stderr output |
 
 ## REPL Commands
 
