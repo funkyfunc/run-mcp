@@ -16,7 +16,7 @@ program
       "            and truncates large payloads to protect an AI agent's context window\n" +
       "  server  - MCP server that lets AI agents dynamically test local MCP servers",
   )
-  .version("1.3.0")
+  .version("1.3.1")
   .addHelpText(
     "after",
     `
@@ -114,7 +114,7 @@ program
   .command("server")
   .description("Start as an MCP server that lets AI agents dynamically test local MCP servers")
   .option("-o, --out-dir <path>", "Directory to save intercepted images and audio")
-  .option("-t, --timeout <ms>", "Default tool call timeout in milliseconds (default: 60000)")
+  .option("-t, --timeout <ms>", "Default tool call timeout in milliseconds (default: 300000)")
   .option("--max-text <chars>", "Max text response length before truncation (default: 50000)")
   .addHelpText(
     "after",

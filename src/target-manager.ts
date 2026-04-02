@@ -98,7 +98,7 @@ export class TargetManager extends EventEmitter {
       }
     });
 
-    this.client = new Client({ name: "run-mcp", version: "1.3.0" }, { capabilities: {} });
+    this.client = new Client({ name: "run-mcp", version: "1.3.1" }, { capabilities: {} });
 
     this.client.onclose = () => {
       this._connected = false;
@@ -173,10 +173,15 @@ export class TargetManager extends EventEmitter {
 
   /**
    * Call a tool on the target MCP server.
+   * We apply a massive SDK-level timeout (e.g. 10 hours) because we want to handle
+   * timeouts in the interceptor via Promise.race, and we DO NOT want to send
+   * protocol-level cancellation requests to the target server if the agent gives up.
+   * This allows long-running builds (like mobile app compiling) to finish in the background.
    */
-  async callTool(name: string, args: Record<string, unknown> = {}) {
+  async callTool(name: string, args: Record<string, unknown> = {}, _timeoutMs?: number) {
     this._assertConnected();
-    const result = await this.client!.callTool({ name, arguments: args });
+    const requestOptions = { timeout: 3600_000 * 10 }; // 10 hours
+    const result = await this.client!.callTool({ name, arguments: args }, undefined, requestOptions);
     this.recordResponse();
     return result;
   }

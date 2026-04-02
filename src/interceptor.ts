@@ -6,8 +6,8 @@ import type { TargetManager } from "./target-manager.js";
 /** Matches a large base64 blob in text content (1000+ chars of base64 alphabet). */
 const BASE64_PATTERN = /^[A-Za-z0-9+/]{1000,}={0,2}$/;
 
-/** Default timeout for tool calls in milliseconds. */
-const DEFAULT_TIMEOUT_MS = 60_000;
+/** Default timeout for tool calls in milliseconds (5 minutes). */
+const DEFAULT_TIMEOUT_MS = 300_000;
 
 /** Default maximum text length before truncation. */
 const DEFAULT_MAX_TEXT_LENGTH = 50_000;
@@ -61,8 +61,14 @@ export class ResponseInterceptor {
   ): Promise<Record<string, unknown>> {
     const timeout = timeoutMs ?? this.defaultTimeoutMs;
 
+    // Start the target call. We attach a dummy .catch to prevent unhandled
+    // promise rejections if the real call fails AFTER our Promise.race times out.
+    // By the time it resolves/rejects later, the outer Promise.race is already done.
+    const targetCall = target.callTool(name, args);
+    targetCall.catch(() => {});
+
     // Race the actual call against a timeout
-    const result = await Promise.race([target.callTool(name, args), this._timeout(timeout, name)]);
+    const result = await Promise.race([targetCall, this._timeout(timeout, name)]);
 
     // Process content array if present — modifies items in-place
     const content = (result as any).content;
