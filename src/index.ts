@@ -16,7 +16,7 @@ program
       "            and truncates large payloads to protect an AI agent's context window\n" +
       "  server  - MCP server that lets AI agents dynamically test local MCP servers",
   )
-  .version("1.2.0")
+  .version("1.3.0")
   .addHelpText(
     "after",
     `

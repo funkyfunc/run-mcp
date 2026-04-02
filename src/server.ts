@@ -32,7 +32,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
   });
 
   const mcpServer = new McpServer(
-    { name: "run-mcp", version: "1.2.0" },
+    { name: "run-mcp", version: "1.3.0" },
     {
       capabilities: {
         tools: {},

@@ -98,7 +98,7 @@ export class TargetManager extends EventEmitter {
       }
     });
 
-    this.client = new Client({ name: "run-mcp", version: "1.2.0" }, { capabilities: {} });
+    this.client = new Client({ name: "run-mcp", version: "1.3.0" }, { capabilities: {} });
 
     this.client.onclose = () => {
       this._connected = false;
