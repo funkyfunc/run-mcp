@@ -67,6 +67,7 @@ The system has a simple layered architecture where every tool call flows through
                                 │  │  Interceptor   │  │
                                 │  │  • Timeouts    │  │
                                 │  │  • Image Save  │  │
+                                │  │  • Audio Save  │  │
                                 │  │  • Truncation  │  │
                                 │  └───────┬───────┘  │
                                 │          │          │
@@ -87,10 +88,10 @@ The system has a simple layered architecture where every tool call flows through
 | Module | File | Responsibility |
 |--------|------|----------------|
 | **CLI Entry** | `src/index.ts` | Commander-based CLI with `repl` and `proxy` subcommands. Bare invocation shows help with examples. Uses `passThroughOptions()` so target server flags aren't consumed. |
-| **TargetManager** | `src/target-manager.ts` | Spawns the target MCP server as a child process, wraps it in an MCP `Client`, captures stderr, tracks process lifecycle. Handles auto-reconnect with loop protection (5s min-uptime guard, 3-retry cap, 60s stability reset). |
-| **ResponseInterceptor** | `src/interceptor.ts` | Middleware layer that wraps `callTool` with `Promise.race` timeouts, extracts base64 images to disk, detects raw base64 text blobs via regex heuristic, and truncates oversized text responses. |
+| **TargetManager** | `src/target-manager.ts` | Spawns the target MCP server as a child process, wraps it in an MCP `Client`, exposes the full MCP protocol surface (tools, resources, prompts, logging, completion), captures stderr, tracks process lifecycle. Handles auto-reconnect with loop protection (5s min-uptime guard, 3-retry cap, 60s stability reset). |
+| **ResponseInterceptor** | `src/interceptor.ts` | Middleware layer that wraps `callTool` with `Promise.race` timeouts, extracts base64 images and audio to disk, detects raw base64 text blobs via regex heuristic, and truncates oversized text responses. Configurable via `InterceptorOptions` (timeout, max text length, output directory). |
 | **REPL** | `src/repl.ts` | Interactive readline interface. Parses shorthand commands (`tools/list`, `tools/call <name> <json>`), supports script mode (`--script`), streams server stderr in dim text, and suggests corrections for typos. |
-| **Proxy** | `src/proxy.ts` | MCP Server that bridges the parent agent to the target server. Uses `McpServer` from the SDK but registers handlers on the underlying `.server` property for transparent passthrough (see [Proxy Architecture](#proxy-architecture) below). |
+| **Proxy** | `src/proxy.ts` | MCP Server that transparently forwards ALL MCP primitives (tools, resources, prompts, logging, completion) from the parent agent to the target server. Dynamically mirrors target capabilities so agents see the full feature surface. Tool responses run through the interceptor; everything else passes through as-is. |
 | **Parsing** | `src/parsing.ts` | Pure functions extracted for testability: command line splitting, `tools/call` argument parsing, JSON formatting, Levenshtein distance, and typo suggestion. |
 
 ### Proxy Architecture
@@ -98,14 +99,32 @@ The system has a simple layered architecture where every tool call flows through
 The proxy uses `McpServer` (non-deprecated) but bypasses its `registerTool()` method for tool forwarding. This is intentional:
 
 ```typescript
-const mcpServer = new McpServer({ name: "run-mcp-proxy", version: "1.0.0" }, { capabilities: { tools: {} } });
+// Mirror target's capabilities so the agent sees the same feature surface
+const targetCaps = target.getServerCapabilities() ?? {};
+const mcpServer = new McpServer(
+  { name: "run-mcp-proxy", version: "1.2.0" },
+  { capabilities: targetCaps },
+);
 const server = mcpServer.server; // Access the low-level Server
 
-server.setRequestHandler(ListToolsRequestSchema, async () => { /* forward */ });
+// Tools — forwarded through the interceptor
+server.setRequestHandler(ListToolsRequestSchema, async (req) => { /* forward with pagination */ });
 server.setRequestHandler(CallToolRequestSchema, async (req) => { /* forward via interceptor */ });
+
+// Resources — forwarded as-is (conditional on target capabilities)
+server.setRequestHandler(ListResourcesRequestSchema, async (req) => { /* forward */ });
+server.setRequestHandler(ReadResourceRequestSchema, async (req) => { /* forward */ });
+
+// Prompts — forwarded as-is (conditional on target capabilities)
+server.setRequestHandler(ListPromptsRequestSchema, async (req) => { /* forward */ });
+server.setRequestHandler(GetPromptRequestSchema, async (req) => { /* forward */ });
 ```
 
 **Why not `registerTool()`?** Because `McpServer.registerTool()` validates incoming arguments against a Zod schema before calling your handler. A transparent proxy doesn't know the schemas at compile time — they come from the target server at runtime as JSON Schema objects. Using `setRequestHandler` on the underlying server lets us forward arguments as-is without re-validation.
+
+**Dynamic capability mirroring**: The proxy queries `target.getServerCapabilities()` after connecting and passes the result to the `McpServer` constructor. This means the proxy only advertises capabilities the target actually supports — resources handlers are only registered if the target has resources, etc.
+
+**Notification forwarding**: The proxy subscribes to list-changed notifications (`tools`, `resources`, `prompts`) and logging messages from the target MCP client and re-emits them to the parent agent.
 
 ### Auto-Reconnect Logic (TargetManager)
 
@@ -224,11 +243,11 @@ This prevents `MaxListenersExceeded` warnings when tests create many instances �
 | File | Tests | What it covers |
 |------|-------|----------------|
 | `tests/parsing.test.ts` | 30 | Pure parsing functions, JSON formatting, Levenshtein distance, typo suggestions |
-| `tests/interceptor.test.ts` | 18 | Image extraction, base64 detection, truncation, timeout behavior (mocked, no child processes) |
+| `tests/interceptor.test.ts` | 18 | Image extraction, audio extraction, base64 detection, truncation, timeout behavior (mocked, no child processes) |
 | `tests/target-manager.test.ts` | 19 | Full integration: spawns the mock server, tests connect/disconnect/listTools/callTool/auto-reconnect |
 | `tests/e2e.test.ts` | 6 | End-to-end: TargetManager + ResponseInterceptor against the mock server |
-| `tests/proxy.test.ts` | 5 | Proxy mode: spawns `run-mcp proxy` pointing at the mock server, connects an MCP Client to it |
-| **Total** | **78** | |
+| `tests/proxy.test.ts` | 17 | Full protocol proxy: capabilities, tools (annotations, isError), resources (list/read/templates), prompts (list/get), audio, CLI options |
+| **Total** | **90** | |
 
 ### Running Tests
 
@@ -252,17 +271,35 @@ Tests run **sequentially** (`fileParallelism: false` in vitest.config.ts) becaus
 
 ### Mock Server
 
-`tests/fixtures/mock-server.ts` is a real MCP server that exposes predictable tools for testing:
+`tests/fixtures/mock-server.ts` is a real MCP server that exposes predictable primitives for testing:
+
+**Tools:**
 
 | Tool | Behavior |
 |------|----------|
 | `echo` | Returns the input text unchanged |
-| `greet` | Returns `"Hello, {name}!"` |
+| `greet` | Returns `"Hello, {name}!"` (has tool annotations: readOnlyHint, idempotentHint) |
 | `slow` | Waits N ms before responding (timeout testing) |
 | `screenshot` | Returns a fake base64 PNG (image interception testing) |
 | `big_base64` | Returns a large base64 text blob (heuristic detection testing) |
 | `big_response` | Returns N characters of text (truncation testing) |
 | `multi_content` | Returns multiple content items |
+| `audio_tool` | Returns a fake base64 WAV clip (audio interception testing) |
+| `error_tool` | Returns `isError: true` (error passthrough testing) |
+
+**Resources:**
+
+| Resource | Description |
+|----------|-------------|
+| `docs://readme` | Markdown text resource |
+| `docs://config` | JSON text resource |
+| `docs://pages/{page}` | Resource template with path parameter |
+
+**Prompts:**
+
+| Prompt | Description |
+|--------|-------------|
+| `greeting` | Takes a `name` argument, returns a user message |
 
 The mock server uses the **non-deprecated** `McpServer.registerTool()` API. Tests run it via `tsx` (no compilation step) — see `tests/helpers.ts` for the shared spawn configuration.
 
@@ -271,7 +308,8 @@ The mock server uses the **non-deprecated** `McpServer.registerTool()` API. Test
 - **Pure logic** → add to `tests/parsing.test.ts` (fast, no I/O)
 - **Interception** → add to `tests/interceptor.test.ts` (mocked, no child processes)
 - **Integration** → add to `tests/target-manager.test.ts` or `tests/e2e.test.ts` (spawns mock server)
-- **If you add a new tool to the mock server**, add test coverage in at least `target-manager.test.ts`
+- **Proxy protocol coverage** → add to `tests/proxy.test.ts` (spawns full proxy pipeline)
+- **If you add a new tool/resource/prompt to the mock server**, add test coverage in the appropriate test file
 
 ---
 
@@ -292,7 +330,7 @@ npm test             # pretest (build) + vitest run
 ### Before Committing
 
 1. `npm run lint:fix` — fix formatting and lint issues
-2. `npm test` — ensure all 78 tests pass
+2. `npm test` — ensure all 90 tests pass
 3. `npm run typecheck` — catch type errors not covered by tsup
 
 ### npx Compatibility

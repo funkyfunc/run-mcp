@@ -1,20 +1,43 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import {
+  CallToolRequestSchema,
+  CompleteRequestSchema,
+  GetPromptRequestSchema,
+  ListPromptsRequestSchema,
+  ListResourcesRequestSchema,
+  ListResourceTemplatesRequestSchema,
+  ListToolsRequestSchema,
+  LoggingMessageNotificationSchema,
+  PromptListChangedNotificationSchema,
+  ReadResourceRequestSchema,
+  ResourceListChangedNotificationSchema,
+  SetLevelRequestSchema,
+  SubscribeRequestSchema,
+  ToolListChangedNotificationSchema,
+  UnsubscribeRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
 import { ResponseInterceptor } from "./interceptor.js";
 import { TargetManager } from "./target-manager.js";
 
-interface ProxyOptions {
+export interface ProxyOptions {
   outDir?: string;
+  timeoutMs?: number;
+  maxTextLength?: number;
 }
 
 /**
  * Starts the MCP Proxy mode.
  *
  * Exposes an MCP Server on stdio (for the parent AI agent) that transparently
- * proxies tools/list and tools/call to the target MCP server, running all
- * responses through the ResponseInterceptor for image extraction, timeouts,
- * and truncation.
+ * proxies ALL MCP primitives (tools, resources, prompts, logging, completion)
+ * to the target MCP server.
+ *
+ * Tool responses run through the ResponseInterceptor for image/audio extraction,
+ * timeouts, and truncation. All other primitives are forwarded as-is.
+ *
+ * Capabilities are dynamically mirrored from the target server, so the agent
+ * sees exactly the same feature surface as if it were connected directly.
  *
  * Uses McpServer but registers handlers on the underlying `.server` property
  * to bypass McpServer's schema re-validation — a transparent proxy must
@@ -23,7 +46,11 @@ interface ProxyOptions {
 export async function startProxy(targetCommand: string[], opts: ProxyOptions): Promise<void> {
   const [command, ...args] = targetCommand;
   const target = new TargetManager(command, args);
-  const interceptor = new ResponseInterceptor({ outDir: opts.outDir });
+  const interceptor = new ResponseInterceptor({
+    outDir: opts.outDir,
+    defaultTimeoutMs: opts.timeoutMs,
+    maxTextLength: opts.maxTextLength,
+  });
 
   // Redirect server stderr to our stderr (can't use stdout — that's the MCP channel)
   target.on("stderr", (text: string) => {
@@ -42,26 +69,47 @@ export async function startProxy(targetCommand: string[], opts: ProxyOptions): P
   const status = target.getStatus();
   process.stderr.write(`[proxy] Connected to target (PID: ${status.pid})\n`);
 
-  // Create McpServer, then use the underlying low-level server for transparent
-  // request handling (McpServer.registerTool re-validates schemas, which breaks
-  // passthrough of arbitrary tool arguments).
+  // ─── Mirror target capabilities ─────────────────────────────────────────
+
+  const targetCaps = target.getServerCapabilities() ?? {};
+  const proxyCaps: Record<string, unknown> = {};
+
+  // Always forward tools (core use case)
+  proxyCaps.tools = targetCaps.tools ?? {};
+
+  // Conditionally mirror resources, prompts, logging, completion
+  if (targetCaps.resources) proxyCaps.resources = targetCaps.resources;
+  if (targetCaps.prompts) proxyCaps.prompts = targetCaps.prompts;
+  if (targetCaps.logging) proxyCaps.logging = targetCaps.logging;
+  if (targetCaps.completions) proxyCaps.completions = targetCaps.completions;
+
+  process.stderr.write(`[proxy] Mirroring capabilities: ${Object.keys(proxyCaps).join(", ")}\n`);
+
+  // Log target instructions if available (helpful diagnostic for agent developers)
+  const instructions = target.getInstructions();
+  if (instructions) {
+    process.stderr.write(
+      `[proxy] Target instructions: ${instructions.slice(0, 200)}${instructions.length > 200 ? "..." : ""}\n`,
+    );
+  }
+
+  // Create McpServer with mirrored capabilities, then use the underlying
+  // low-level server for transparent request handling.
   const mcpServer = new McpServer(
     {
       name: "run-mcp-proxy",
-      version: "1.1.0",
+      version: "1.2.0",
     },
-    { capabilities: { tools: {} } },
+    { capabilities: proxyCaps },
   );
   const server = mcpServer.server;
 
-  // ─── ListTools: pass through from target ──────────────────────────────────
+  // ─── Tools ──────────────────────────────────────────────────────────────
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => {
-    const result = await target.listTools();
-    return { tools: result.tools };
+  server.setRequestHandler(ListToolsRequestSchema, async (request) => {
+    const result = await target.listTools(request.params);
+    return result;
   });
-
-  // ─── CallTool: pass through interceptor → target ──────────────────────────
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: toolArgs } = request.params;
@@ -73,15 +121,10 @@ export async function startProxy(targetCommand: string[], opts: ProxyOptions): P
         (toolArgs as Record<string, unknown>) ?? {},
       );
 
-      // Map intercepted content to proper MCP content types
-      const content = ((result as any).content ?? []).map((item: any) => {
-        if (item.type === "image") {
-          return { type: "image" as const, data: item.data, mimeType: item.mimeType };
-        }
-        return { type: "text" as const, text: String(item.text ?? "") };
-      });
-
-      return { content };
+      // Return the full result — interceptor has already handled
+      // images/audio/truncation in-place, preserving all properties:
+      // content, structuredContent, isError, _meta, etc.
+      return result;
     } catch (err: any) {
       return {
         content: [{ type: "text" as const, text: `Error: ${err.message}` }],
@@ -90,7 +133,97 @@ export async function startProxy(targetCommand: string[], opts: ProxyOptions): P
     }
   });
 
-  // ─── Connect proxy server to parent stdio ─────────────────────────────────
+  // ─── Resources (conditional) ────────────────────────────────────────────
+
+  if (targetCaps.resources) {
+    server.setRequestHandler(ListResourcesRequestSchema, async (request) => {
+      return await target.listResources(request.params);
+    });
+
+    server.setRequestHandler(ListResourceTemplatesRequestSchema, async (request) => {
+      return await target.listResourceTemplates(request.params);
+    });
+
+    server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+      return await target.readResource(request.params);
+    });
+
+    if (targetCaps.resources.subscribe) {
+      server.setRequestHandler(SubscribeRequestSchema, async (request) => {
+        return await target.subscribeResource(request.params);
+      });
+
+      server.setRequestHandler(UnsubscribeRequestSchema, async (request) => {
+        return await target.unsubscribeResource(request.params);
+      });
+    }
+  }
+
+  // ─── Prompts (conditional) ──────────────────────────────────────────────
+
+  if (targetCaps.prompts) {
+    server.setRequestHandler(ListPromptsRequestSchema, async (request) => {
+      return await target.listPrompts(request.params);
+    });
+
+    server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+      return await target.getPrompt(request.params);
+    });
+  }
+
+  // ─── Logging (conditional) ──────────────────────────────────────────────
+
+  if (targetCaps.logging) {
+    server.setRequestHandler(SetLevelRequestSchema, async (request) => {
+      return await target.setLoggingLevel(request.params.level);
+    });
+  }
+
+  // ─── Completion (conditional) ───────────────────────────────────────────
+
+  if (targetCaps.completions) {
+    server.setRequestHandler(CompleteRequestSchema, async (request) => {
+      return await target.complete(request.params);
+    });
+  }
+
+  // ─── Notification forwarding (target → agent) ──────────────────────────
+
+  const rawClient = target.getRawClient();
+  if (rawClient) {
+    // Forward tool list changes
+    if (targetCaps.tools && (targetCaps.tools as any).listChanged) {
+      rawClient.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+        server.notification({ method: "notifications/tools/list_changed" } as any);
+      });
+    }
+
+    // Forward resource list changes
+    if (targetCaps.resources && (targetCaps.resources as any).listChanged) {
+      rawClient.setNotificationHandler(ResourceListChangedNotificationSchema, () => {
+        server.notification({ method: "notifications/resources/list_changed" } as any);
+      });
+    }
+
+    // Forward prompt list changes
+    if (targetCaps.prompts && (targetCaps.prompts as any).listChanged) {
+      rawClient.setNotificationHandler(PromptListChangedNotificationSchema, () => {
+        server.notification({ method: "notifications/prompts/list_changed" } as any);
+      });
+    }
+
+    // Forward logging messages from target to agent
+    if (targetCaps.logging) {
+      rawClient.setNotificationHandler(LoggingMessageNotificationSchema, (notification: any) => {
+        server.notification({
+          method: "notifications/message",
+          params: notification.params,
+        } as any);
+      });
+    }
+  }
+
+  // ─── Connect proxy server to parent stdio ─────────────────────────────
 
   const transport = new StdioServerTransport();
 

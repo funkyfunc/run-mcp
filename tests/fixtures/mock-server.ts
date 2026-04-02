@@ -3,15 +3,28 @@
 /**
  * Mock MCP server for testing.
  *
- * Exposes a small set of tools with predictable behavior:
+ * Exposes a full set of MCP primitives with predictable behavior:
+ *
+ * Tools:
  *  - echo: returns whatever text you send
- *  - greet: returns a greeting with the given name
+ *  - greet: returns a greeting with the given name (has annotations)
  *  - slow: waits for N ms before responding (for timeout testing)
  *  - screenshot: returns a fake base64 image (for interception testing)
+ *  - big_base64: returns a large base64 text blob (heuristic detection testing)
  *  - big_response: returns a massive text payload (for truncation testing)
+ *  - multi_content: returns multiple content items of different types
+ *  - audio_tool: returns a fake base64 audio clip (for audio interception testing)
+ *  - error_tool: returns isError: true (for error passthrough testing)
+ *
+ * Resources:
+ *  - docs://readme: a text resource
+ *  - docs://config: a text resource with annotations
+ *
+ * Prompts:
+ *  - greeting: a simple prompt with a 'name' argument
  */
 
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
@@ -33,13 +46,21 @@ server.registerTool(
   }),
 );
 
-// ─── Tool: greet ───────────────────────────────────────────────────────────
+// ─── Tool: greet (with annotations) ───────────────────────────────────────
 
 server.registerTool(
   "greet",
   {
+    title: "Greeting Tool",
     description: "Returns a greeting",
     inputSchema: { name: z.string().describe("Name to greet") },
+    annotations: {
+      title: "Greeting Tool",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
   },
   async ({ name }) => ({
     content: [{ type: "text", text: `Hello, ${name}!` }],
@@ -135,6 +156,92 @@ server.registerTool(
     ],
   }),
 );
+
+// ─── Tool: audio_tool ──────────────────────────────────────────────────────
+
+server.registerTool(
+  "audio_tool",
+  {
+    description: "Returns a fake base64 audio clip for interception testing",
+  },
+  async () => {
+    // Fake audio data — just enough to test the pipeline
+    const fakeAudio = Buffer.alloc(100, 0x41).toString("base64");
+    return {
+      content: [
+        {
+          type: "audio" as const,
+          data: fakeAudio,
+          mimeType: "audio/wav",
+        },
+      ],
+    };
+  },
+);
+
+// ─── Tool: error_tool ──────────────────────────────────────────────────────
+
+server.registerTool(
+  "error_tool",
+  {
+    description: "Returns a result with isError: true (for error passthrough testing)",
+  },
+  async () => ({
+    content: [{ type: "text", text: "Something went wrong in the tool" }],
+    isError: true,
+  }),
+);
+
+// ─── Resource: docs://readme ───────────────────────────────────────────────
+
+server.resource("readme", "docs://readme", async (uri) => ({
+  contents: [
+    {
+      uri: uri.href,
+      text: "# Mock Server\n\nThis is a test resource.",
+      mimeType: "text/markdown",
+    },
+  ],
+}));
+
+// ─── Resource: docs://config ───────────────────────────────────────────────
+
+server.resource("config", "docs://config", async (uri) => ({
+  contents: [
+    {
+      uri: uri.href,
+      text: '{"debug": true, "timeout": 5000}',
+      mimeType: "application/json",
+    },
+  ],
+}));
+
+// ─── Resource Template: docs://pages/{page} ────────────────────────────────
+
+server.resource(
+  "page",
+  new ResourceTemplate("docs://pages/{page}", { list: undefined }),
+  async (uri, { page }) => ({
+    contents: [
+      {
+        uri: uri.href,
+        text: `Page content for: ${page}`,
+        mimeType: "text/plain",
+      },
+    ],
+  }),
+);
+
+// ─── Prompt: greeting ──────────────────────────────────────────────────────
+
+server.prompt("greeting", { name: z.string() }, ({ name }) => ({
+  messages: [
+    {
+      role: "user" as const,
+      content: { type: "text" as const, text: `Please greet ${name} warmly.` },
+    },
+  ],
+}));
 
 // ─── Start ─────────────────────────────────────────────────────────────────
 

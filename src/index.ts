@@ -14,7 +14,7 @@ program
       "  proxy  - Transparent MCP proxy that intercepts images, enforces timeouts,\n" +
       "           and truncates large payloads to protect an AI agent's context window",
   )
-  .version("1.1.0")
+  .version("1.2.0")
   .addHelpText(
     "after",
     `
@@ -70,13 +70,17 @@ program
   .passThroughOptions()
   .allowUnknownOption()
   .argument("<target_command...>", "Command to spawn the target MCP server")
-  .option("-o, --out-dir <path>", "Directory to save intercepted images")
+  .option("-o, --out-dir <path>", "Directory to save intercepted images and audio")
+  .option("-t, --timeout <ms>", "Default tool call timeout in milliseconds (default: 60000)")
+  .option("--max-text <chars>", "Max text response length before truncation (default: 50000)")
   .addHelpText(
     "after",
     `
 Examples:
   $ run-mcp proxy node my-server.js
   $ run-mcp proxy node my-server.js --out-dir ./images
+  $ run-mcp proxy node my-server.js --timeout 120000
+  $ run-mcp proxy node my-server.js --max-text 100000
 
 Use this in your MCP client configuration to wrap any MCP server:
   {
@@ -88,8 +92,17 @@ Use this in your MCP client configuration to wrap any MCP server:
     }
   }`,
   )
-  .action(async (targetCommand: string[], opts: { outDir?: string }) => {
-    await startProxy(targetCommand, opts);
-  });
+  .action(
+    async (
+      targetCommand: string[],
+      opts: { outDir?: string; timeout?: string; maxText?: string },
+    ) => {
+      await startProxy(targetCommand, {
+        outDir: opts.outDir,
+        timeoutMs: opts.timeout ? Number.parseInt(opts.timeout, 10) : undefined,
+        maxTextLength: opts.maxText ? Number.parseInt(opts.maxText, 10) : undefined,
+      });
+    },
+  );
 
 program.parse();

@@ -93,7 +93,9 @@ Options:
 run-mcp proxy <target_command...> [options]
 
 Options:
-  -o, --out-dir <path>   Directory to save intercepted images (default: $TMPDIR/run-mcp)
+  -o, --out-dir <path>     Directory to save intercepted images and audio (default: $TMPDIR/run-mcp)
+  -t, --timeout <ms>       Default tool call timeout in milliseconds (default: 60000)
+      --max-text <chars>   Max text response length before truncation (default: 50000)
 ```
 
 ## REPL Commands
@@ -161,14 +163,32 @@ In proxy mode, `run-mcp` acts as an MCP server itself. Configure it as the comma
 }
 ```
 
+### What the proxy forwards
+
+The proxy dynamically mirrors the target server's capabilities. All MCP primitives that the target supports are forwarded transparently:
+
+| Primitive | Forwarded? |
+|-----------|------------|
+| **Tools** (`tools/list`, `tools/call`) | ✅ Always (with interception) |
+| **Resources** (`resources/list`, `resources/read`, `resources/templates/list`) | ✅ If target supports |
+| **Prompts** (`prompts/list`, `prompts/get`) | ✅ If target supports |
+| **Logging** (`logging/setLevel`) | ✅ If target supports |
+| **Completion** (`completion/complete`) | ✅ If target supports |
+| **Notifications** (list changes, logging) | ✅ Forwarded from target to agent |
+| **Tool annotations** (`readOnlyHint`, `destructiveHint`, etc.) | ✅ Preserved as-is |
+| **Pagination** (`nextCursor` / `cursor`) | ✅ Passed through |
+
 ### What the proxy intercepts
+
+Tool call responses are processed through the interceptor pipeline. All other primitives pass through untouched.
 
 | Feature | Behavior |
 |---------|----------|
-| **Image extraction** | `type: "image"` responses with base64 data are saved to disk. The response is replaced with `[Image saved to /path/to/img.png (24KB)]` |
+| **Image extraction** | `type: "image"` responses with base64 data are saved to disk. Replaced with `[Image saved to /path/to/img.png (24KB)]` |
+| **Audio extraction** | `type: "audio"` responses with base64 data are saved to disk. Replaced with `[Audio saved to /path/to/audio.wav (12KB)]` |
 | **Base64 detection** | Text responses that are entirely base64-encoded (1000+ chars) are also saved as images |
-| **Timeouts** | Tool calls are wrapped in a 60-second timeout (prevents hung calls from blocking the agent) |
-| **Truncation** | Text responses exceeding 50,000 characters are truncated with a `... (truncated, N chars total)` message |
+| **Timeouts** | Tool calls are wrapped in a configurable timeout (default 60s, use `--timeout` to change) |
+| **Truncation** | Text responses exceeding the limit (default 50K chars, use `--max-text` to change) are truncated |
 
 ## Architecture
 
@@ -200,10 +220,10 @@ In proxy mode, `run-mcp` acts as an MCP server itself. Configure it as the comma
 
 | Module | File | Responsibility |
 |--------|------|----------------|
-| **TargetManager** | `src/target-manager.ts` | Spawns the target MCP server, manages the MCP Client connection, captures stderr, tracks lifecycle |
-| **ResponseInterceptor** | `src/interceptor.ts` | Wraps tool calls with timeouts, extracts base64 images to disk, truncates oversized text |
+| **TargetManager** | `src/target-manager.ts` | Spawns the target MCP server, manages the MCP Client connection, forwards all MCP primitives (tools, resources, prompts, logging), captures stderr, tracks lifecycle |
+| **ResponseInterceptor** | `src/interceptor.ts` | Wraps tool calls with timeouts, extracts base64 images and audio to disk, truncates oversized text |
 | **REPLMode** | `src/repl.ts` | Interactive readline REPL with shorthand command parsing and script mode |
-| **ProxyMode** | `src/proxy.ts` | MCP Server that bridges `tools/list` and `tools/call` through the interceptor to the target |
+| **ProxyMode** | `src/proxy.ts` | MCP Server that transparently forwards all MCP primitives to the target, with tool responses running through the interceptor |
 
 ## Development
 

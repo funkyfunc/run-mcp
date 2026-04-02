@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import type { ServerCapabilities } from "@modelcontextprotocol/sdk/types.js";
 
 export interface TargetStatus {
   pid: number | null;
@@ -27,7 +28,7 @@ const STABLE_CONNECTION_RESET_MS = 60_000;
  * Manages the lifecycle of a target MCP server process.
  *
  * Spawns the target as a child process via StdioClientTransport,
- * exposes the MCP Client for listTools/callTool, captures stderr,
+ * exposes the MCP Client for tools/resources/prompts, captures stderr,
  * and ensures graceful cleanup on exit.
  *
  * Auto-reconnect:
@@ -89,7 +90,7 @@ export class TargetManager extends EventEmitter {
       }
     });
 
-    this.client = new Client({ name: "run-mcp", version: "1.1.0" }, { capabilities: {} });
+    this.client = new Client({ name: "run-mcp", version: "1.2.0" }, { capabilities: {} });
 
     this.client.onclose = () => {
       this._connected = false;
@@ -131,12 +132,33 @@ export class TargetManager extends EventEmitter {
     this._lastResponseTime = Date.now();
   }
 
+  // ─── Server introspection ───────────────────────────────────────────────────
+
+  /**
+   * Returns the target server's advertised capabilities.
+   * Available after connect() completes.
+   */
+  getServerCapabilities(): ServerCapabilities | undefined {
+    return this.client?.getServerCapabilities();
+  }
+
+  /**
+   * Returns the target server's instructions string (if any).
+   * Agents may use this for system prompts or behavioral hints.
+   */
+  getInstructions(): string | undefined {
+    return this.client?.getInstructions();
+  }
+
+  // ─── Tools ──────────────────────────────────────────────────────────────────
+
   /**
    * List all tools exposed by the target MCP server.
+   * Supports cursor-based pagination via params.
    */
-  async listTools() {
+  async listTools(params?: Record<string, unknown>) {
     this._assertConnected();
-    const result = await this.client!.listTools();
+    const result = await this.client!.listTools(params as any);
     this.recordResponse();
     return result;
   }
@@ -150,6 +172,120 @@ export class TargetManager extends EventEmitter {
     this.recordResponse();
     return result;
   }
+
+  // ─── Resources ──────────────────────────────────────────────────────────────
+
+  /**
+   * List resources exposed by the target MCP server.
+   * Supports cursor-based pagination.
+   */
+  async listResources(params?: Record<string, unknown>) {
+    this._assertConnected();
+    const result = await this.client!.listResources(params as any);
+    this.recordResponse();
+    return result;
+  }
+
+  /**
+   * List resource templates exposed by the target MCP server.
+   * Supports cursor-based pagination.
+   */
+  async listResourceTemplates(params?: Record<string, unknown>) {
+    this._assertConnected();
+    const result = await this.client!.listResourceTemplates(params as any);
+    this.recordResponse();
+    return result;
+  }
+
+  /**
+   * Read a specific resource by URI from the target MCP server.
+   */
+  async readResource(params: { uri: string; [key: string]: unknown }) {
+    this._assertConnected();
+    const result = await this.client!.readResource(params as any);
+    this.recordResponse();
+    return result;
+  }
+
+  /**
+   * Subscribe to resource updates on the target MCP server.
+   */
+  async subscribeResource(params: { uri: string }) {
+    this._assertConnected();
+    const result = await this.client!.subscribeResource(params);
+    this.recordResponse();
+    return result;
+  }
+
+  /**
+   * Unsubscribe from resource updates on the target MCP server.
+   */
+  async unsubscribeResource(params: { uri: string }) {
+    this._assertConnected();
+    const result = await this.client!.unsubscribeResource(params);
+    this.recordResponse();
+    return result;
+  }
+
+  // ─── Prompts ────────────────────────────────────────────────────────────────
+
+  /**
+   * List prompts exposed by the target MCP server.
+   * Supports cursor-based pagination.
+   */
+  async listPrompts(params?: Record<string, unknown>) {
+    this._assertConnected();
+    const result = await this.client!.listPrompts(params as any);
+    this.recordResponse();
+    return result;
+  }
+
+  /**
+   * Get a specific prompt by name from the target MCP server.
+   */
+  async getPrompt(params: { name: string; arguments?: Record<string, string> }) {
+    this._assertConnected();
+    const result = await this.client!.getPrompt(params);
+    this.recordResponse();
+    return result;
+  }
+
+  // ─── Logging ────────────────────────────────────────────────────────────────
+
+  /**
+   * Set the logging level on the target MCP server.
+   */
+  async setLoggingLevel(level: string) {
+    this._assertConnected();
+    const result = await this.client!.setLoggingLevel(level as any);
+    this.recordResponse();
+    return result;
+  }
+
+  // ─── Completion ─────────────────────────────────────────────────────────────
+
+  /**
+   * Request completion from the target MCP server (for autocomplete UX).
+   */
+  async complete(params: Record<string, unknown>) {
+    this._assertConnected();
+    const result = await this.client!.complete(params as any);
+    this.recordResponse();
+    return result;
+  }
+
+  // ─── Notification forwarding ────────────────────────────────────────────────
+
+  /**
+   * Access the underlying MCP client for advanced use cases like
+   * subscribing to notifications with proper SDK schemas.
+   * Prefer the typed methods above when possible.
+   */
+  getRawClient(): Client | null {
+    return this.client;
+  }
+
+  // ─── Status & lifecycle ─────────────────────────────────────────────────────
 
   /**
    * Returns current connection status, PID, uptime, and diagnostics.
