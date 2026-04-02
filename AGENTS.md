@@ -11,10 +11,9 @@ These principles define the soul of the project. Every feature, error message, a
 `run-mcp` serves **two distinct users** through the same interception pipeline:
 
 - **Humans** (REPL mode) — developers who want to quickly test and explore an MCP server without writing client code.
-- **AI agents** (Proxy mode) — LLMs that need a protective layer between them and a target server.
 - **AI agents** (Server mode) — LLMs building MCP servers that need to dynamically test them without config changes.
 
-All three modes share the same `TargetManager` → `ResponseInterceptor` pipeline. The differences are in the input interface (readline vs. MCP passthrough vs. MCP tools).
+Both modes share the same `TargetManager` → `ResponseInterceptor` pipeline. The differences are in the input interface (readline vs. MCP tools).
 
 ### 2. Transparent by Default, Protective When Needed
 
@@ -44,8 +43,6 @@ A user should be able to wrap any MCP server with `run-mcp proxy node my-server.
 
 Follow the Unix philosophy: `run-mcp` reads from stdin, writes to stdout, logs to stderr, and returns meaningful exit codes. This means:
 
-- **Proxy mode**: stdout is the MCP JSON-RPC channel. ALL diagnostic output goes to stderr.
-- **REPL mode**: stdout is for tool results. Server logs are dimmed on stderr.
 - **Script mode**: `run-mcp repl ... --script commands.txt` exits `0` on success, `1` on first error. Composable with CI pipelines.
 - **Process cleanup**: Always kill child processes on exit (SIGINT, SIGTERM, process.exit). Never leave orphaned server processes.
 
@@ -88,45 +85,13 @@ The system has a simple layered architecture where every tool call flows through
 
 | Module | File | Responsibility |
 |--------|------|----------------|
-| **CLI Entry** | `src/index.ts` | Commander-based CLI with `repl` and `proxy` subcommands. Bare invocation shows help with examples. Uses `passThroughOptions()` so target server flags aren't consumed. |
+| **CLI Entry** | `src/index.ts` | Commander-based CLI with `repl` and `server` subcommands. Bare invocation shows help with examples. |
 | **TargetManager** | `src/target-manager.ts` | Spawns the target MCP server as a child process, wraps it in an MCP `Client`, exposes the full MCP protocol surface (tools, resources, prompts, logging, completion), captures stderr, tracks process lifecycle. Handles auto-reconnect with loop protection (5s min-uptime guard, 3-retry cap, 60s stability reset). |
 | **ResponseInterceptor** | `src/interceptor.ts` | Middleware layer that wraps `callTool` with `Promise.race` timeouts, extracts base64 images and audio to disk, detects raw base64 text blobs via regex heuristic, and truncates oversized text responses. Configurable via `InterceptorOptions` (timeout, max text length, output directory). |
 | **REPL** | `src/repl.ts` | Interactive readline interface. Parses shorthand commands (`tools/list`, `tools/call <name> <json>`), supports script mode (`--script`), streams server stderr in dim text, and suggests corrections for typos. |
-| **Proxy** | `src/proxy.ts` | MCP Server that transparently forwards ALL MCP primitives (tools, resources, prompts, logging, completion) from the parent agent to the target server. Dynamically mirrors target capabilities so agents see the full feature surface. Tool responses run through the interceptor; everything else passes through as-is. |
 | **Server** | `src/server.ts` | MCP Server exposing run-mcp's own tools (`connect_to_mcp`, `call_mcp_tool`, etc.) so agents can dynamically connect to, inspect, and test local MCP servers without config changes. Uses `registerTool()` with Zod schemas. |
 | **Parsing** | `src/parsing.ts` | Pure functions extracted for testability: command line splitting, `tools/call` argument parsing, JSON formatting, Levenshtein distance, and typo suggestion. |
 
-### Proxy Architecture
-
-The proxy uses `McpServer` (non-deprecated) but bypasses its `registerTool()` method for tool forwarding. This is intentional:
-
-```typescript
-// Mirror target's capabilities so the agent sees the same feature surface
-const targetCaps = target.getServerCapabilities() ?? {};
-const mcpServer = new McpServer(
-  { name: "run-mcp-proxy", version: "1.2.0" },
-  { capabilities: targetCaps },
-);
-const server = mcpServer.server; // Access the low-level Server
-
-// Tools — forwarded through the interceptor
-server.setRequestHandler(ListToolsRequestSchema, async (req) => { /* forward with pagination */ });
-server.setRequestHandler(CallToolRequestSchema, async (req) => { /* forward via interceptor */ });
-
-// Resources — forwarded as-is (conditional on target capabilities)
-server.setRequestHandler(ListResourcesRequestSchema, async (req) => { /* forward */ });
-server.setRequestHandler(ReadResourceRequestSchema, async (req) => { /* forward */ });
-
-// Prompts — forwarded as-is (conditional on target capabilities)
-server.setRequestHandler(ListPromptsRequestSchema, async (req) => { /* forward */ });
-server.setRequestHandler(GetPromptRequestSchema, async (req) => { /* forward */ });
-```
-
-**Why not `registerTool()`?** Because `McpServer.registerTool()` validates incoming arguments against a Zod schema before calling your handler. A transparent proxy doesn't know the schemas at compile time — they come from the target server at runtime as JSON Schema objects. Using `setRequestHandler` on the underlying server lets us forward arguments as-is without re-validation.
-
-**Dynamic capability mirroring**: The proxy queries `target.getServerCapabilities()` after connecting and passes the result to the `McpServer` constructor. This means the proxy only advertises capabilities the target actually supports — resources handlers are only registered if the target has resources, etc.
-
-**Notification forwarding**: The proxy subscribes to list-changed notifications (`tools`, `resources`, `prompts`) and logging messages from the target MCP client and re-emits them to the parent agent.
 
 ### Auto-Reconnect Logic (TargetManager)
 
@@ -135,7 +100,7 @@ The REPL enables auto-reconnect for robustness during interactive sessions. The 
 1. **Min-uptime guard (5s)**: If the server crashes within 5 seconds of starting, it's treated as a startup bug — no retry. This prevents infinite loops when the server has a fatal error in its initialization.
 2. **Retry cap (3)**: Maximum 3 consecutive reconnect attempts before giving up.
 3. **Stability reset (60s)**: After 60 seconds of stable connection, the retry counter resets. A server that crashes once after 10 minutes of stability gets a fresh set of retries.
-4. **Proxy mode does not auto-reconnect** — it exits on disconnect so the parent agent can decide what to do.
+4. **Server mode** exits on disconnect so the parent agent can decide what to do.
 
 ---
 
@@ -248,9 +213,8 @@ This prevents `MaxListenersExceeded` warnings when tests create many instances �
 | `tests/interceptor.test.ts` | 18 | Image extraction, audio extraction, base64 detection, truncation, timeout behavior (mocked, no child processes) |
 | `tests/target-manager.test.ts` | 19 | Full integration: spawns the mock server, tests connect/disconnect/listTools/callTool/auto-reconnect |
 | `tests/e2e.test.ts` | 6 | End-to-end: TargetManager + ResponseInterceptor against the mock server |
-| `tests/proxy.test.ts` | 17 | Full protocol proxy: capabilities, tools (annotations, isError), resources (list/read/templates), prompts (list/get), audio, CLI options |
 | `tests/server.test.ts` | 19 | Server mode: tool discovery, connection lifecycle, tool/resource/prompt operations, interception, diagnostics |
-| **Total** | **109** | |
+| **Total** | **92** | |
 
 ### Running Tests
 
@@ -311,7 +275,7 @@ The mock server uses the **non-deprecated** `McpServer.registerTool()` API. Test
 - **Pure logic** → add to `tests/parsing.test.ts` (fast, no I/O)
 - **Interception** → add to `tests/interceptor.test.ts` (mocked, no child processes)
 - **Integration** → add to `tests/target-manager.test.ts` or `tests/e2e.test.ts` (spawns mock server)
-- **Proxy protocol coverage** → add to `tests/proxy.test.ts` (spawns full proxy pipeline)
+- **Server mode protocol coverage** → add to `tests/server.test.ts` (spawns full proxy pipeline)
 - **If you add a new tool/resource/prompt to the mock server**, add test coverage in the appropriate test file
 
 ---
@@ -333,7 +297,7 @@ npm test             # pretest (build) + vitest run
 ### Before Committing
 
 1. `npm run lint:fix` — fix formatting and lint issues
-2. `npm test` — ensure all 109 tests pass
+2. `npm test` — ensure all 92 tests pass
 3. `npm run typecheck` — catch type errors not covered by tsup
 
 ### npx Compatibility
@@ -348,7 +312,7 @@ The package is designed to work with `npx run-mcp`:
 ### MCP SDK Usage
 
 - **Client** (`@modelcontextprotocol/sdk/client/index.js`) — used by `TargetManager` to connect to the target server. Not deprecated.
-- **McpServer** (`@modelcontextprotocol/sdk/server/mcp.js`) — used by proxy mode. Non-deprecated. Use `registerTool()` for standard tool registration.
+- **McpServer** (`@modelcontextprotocol/sdk/server/mcp.js`) — used by server mode. Non-deprecated. Use `registerTool()` for standard tool registration.
 - **`server.tool()`** — **DEPRECATED**. Use `server.registerTool()` instead.
 - **`Server`** (`@modelcontextprotocol/sdk/server/index.js`) — **DEPRECATED**. Use `McpServer` instead. The proxy accesses `mcpServer.server` for low-level request handlers, but imports `McpServer`.
 
@@ -357,8 +321,6 @@ The package is designed to work with `npx run-mcp`:
 ## 🚫 Common Pitfalls
 
 1. **Don't import from deprecated SDK paths.** Biome's `noDeprecatedImports` rule will catch some, but not all. Check the SDK's `@deprecated` JSDoc annotations when using new APIs.
-
-2. **Don't use `registerTool()` in the proxy.** It re-validates tool schemas against Zod, which breaks transparent forwarding. Use `mcpServer.server.setRequestHandler()` for passthrough.
 
 3. **Don't add per-instance process listeners.** Use the static `TargetManager._instances` pattern to avoid `MaxListenersExceeded` warnings during testing.
 

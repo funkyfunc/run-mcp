@@ -2,17 +2,14 @@
 
 A smart proxy, interactive REPL, and live test harness for [Model Context Protocol](https://modelcontextprotocol.io) (MCP) servers.
 
-`run-mcp` wraps any MCP server and operates in three modes:
+`run-mcp` operates in two modes:
 
-| Mode | Audience | Purpose |
-|------|----------|---------|
-| **`repl`** | Humans / developers | Interactive CLI for testing and exploring MCP servers with shorthand commands |
-| **`proxy`** | AI agents (transparent) | Transparent MCP proxy that intercepts responses to save images to disk, enforce timeouts, and truncate massive payloads |
-| **`server`** | AI agents (explicit) | MCP server that lets agents dynamically connect to, inspect, and test local MCP servers |
+1. **Interactive REPL** (`run-mcp repl`) — A headless CLI for human developers to manually test and explore MCP servers using short, memorable commands (`tools/call`, `status`, etc.).
+2. **Server Mode** (`run-mcp server`) — An MCP server that exposes tools (`connect_to_mcp`, `call_mcp_tool`) so AI agents can dynamically connect to and test local MCP projects without hardcoding them in configuration files.
 
-## Why?
+### Interception Rules (Server Mode & REPL)
 
-MCP servers often return large base64-encoded images (screenshots, charts) or massive JSON payloads that can blow up an AI agent's context window. `run-mcp` sits between the agent and the server, transparently:
+To protect the CLI and parent agents from large payloads, `run-mcp` automatically applies the following rules:
 
 - **Saving images to disk** instead of passing multi-MB base64 strings through
 - **Enforcing timeouts** so a hung tool call doesn't block forever
@@ -56,14 +53,6 @@ You'll see an interactive prompt:
 >
 ```
 
-### Proxy Mode — Protect your agent's context
-
-```bash
-run-mcp proxy node path/to/my-mcp-server.js --out-dir ./captured-images
-```
-
-Then point your AI agent at `run-mcp` as the MCP server command. It transparently forwards all tools while sanitizing responses.
-
 ## Usage
 
 ```
@@ -71,7 +60,7 @@ run-mcp <command> [options]
 
 Commands:
   repl <target_command...>    Start an interactive REPL session
-  proxy <target_command...>   Start as a transparent MCP proxy
+  server                      Start as an MCP server for agents
 
 Options:
   -V, --version               Show version number
@@ -86,17 +75,6 @@ run-mcp repl <target_command...> [options]
 Options:
   -s, --script <file>    Read commands from a file instead of stdin
   -o, --out-dir <path>   Directory to save intercepted images (default: $TMPDIR/run-mcp)
-```
-
-### Proxy Command
-
-```
-run-mcp proxy <target_command...> [options]
-
-Options:
-  -o, --out-dir <path>     Directory to save intercepted images and audio (default: $TMPDIR/run-mcp)
-  -t, --timeout <ms>       Default tool call timeout in milliseconds (default: 60000)
-      --max-text <chars>   Max text response length before truncation (default: 50000)
 ```
 
 ### Server Command
