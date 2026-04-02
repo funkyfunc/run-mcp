@@ -4,10 +4,10 @@ A smart proxy, interactive REPL, and live test harness for [Model Context Protoc
 
 `run-mcp` operates in two modes:
 
-1. **Interactive REPL** (`run-mcp repl`) — A headless CLI for human developers to manually test and explore MCP servers using short, memorable commands (`tools/call`, `status`, etc.).
-2. **Server Mode** (`run-mcp server`) — An MCP server that exposes tools (`connect_to_mcp`, `call_mcp_tool`) so AI agents can dynamically connect to and test local MCP projects without hardcoding them in configuration files.
+1. **Agent MCP Server** (`run-mcp`) — An MCP server that exposes tools (`connect_to_mcp`, `call_mcp_tool`) so AI agents can dynamically connect to and test local MCP projects without hardcoding them in configuration files. This is the **default mode** when you run `npx -y run-mcp`.
+2. **Interactive REPL** (`run-mcp repl`) — A headless CLI for human developers to manually test and explore MCP servers using short, memorable commands (`tools/call`, `status`, etc.).
 
-### Interception Rules (Server Mode & REPL)
+### Interception Rules (Agent Server & REPL)
 
 To protect the CLI and parent agents from large payloads, `run-mcp` automatically applies the following rules:
 
@@ -59,8 +59,8 @@ You'll see an interactive prompt:
 run-mcp <command> [options]
 
 Commands:
+  mcp [options]               Start as an MCP server for agents (default)
   repl <target_command...>    Start an interactive REPL session
-  server                      Start as an MCP server for agents
 
 Options:
   -V, --version               Show version number
@@ -77,25 +77,33 @@ Options:
   -o, --out-dir <path>   Directory to save intercepted images (default: $TMPDIR/run-mcp)
 ```
 
-### Server Command
+### Agent MCP Server (Default)
 
 ```
-run-mcp server [options]
+run-mcp [options]
 
 Options:
-  -o, --out-dir <path>     Directory to save intercepted images and audio (default: $TMPDIR/run-mcp)
-  -t, --timeout <ms>       Default tool call timeout in milliseconds (default: 60000)
+  -o, --out-dir <path>     Directory to save intercepted images and audio
+  -t, --timeout <ms>       Default tool call timeout in milliseconds (default: 300000)
       --max-text <chars>   Max text response length before truncation (default: 50000)
 ```
 
-Add to your MCP client configuration:
+## Agent Use Cases
 
+### Dynamic Testing
+
+When an AI agent is actively *developing* an MCP server, it needs to test it. Standard MCP clients require updating a configuration file (`mcp.json`) and restarting the agent session entirely.
+
+`run-mcp` solves this by giving the agent a suite of tools to dynamically spawn, inspect, and test local MCP servers on the fly.
+
+**How to use:**
+Add `run-mcp` to your agent's MCP configuration using `npx`:
 ```json
 {
   "mcpServers": {
     "run-mcp": {
       "command": "npx",
-      "args": ["-y", "run-mcp", "server"]
+      "args": ["-y", "run-mcp"]
     }
   }
 }

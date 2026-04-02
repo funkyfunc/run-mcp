@@ -11,26 +11,20 @@ program
     "A smart interactive REPL and live test harness for MCP servers.\n\n" +
       "Operates in two modes:\n" +
       "  repl    - Human-friendly CLI for testing MCP servers interactively\n" +
-      "  server  - MCP server that lets AI agents dynamically test local MCP servers",
+      "  mcp     - (Default) MCP server that lets AI agents dynamically test local MCP servers",
   )
-  .version("1.3.1")
+  .version("1.3.3")
   .addHelpText(
     "after",
     `
 Examples:
-  $ run-mcp repl node my-server.js               # Interactive testing (human)
+  $ run-mcp                                       # Test harness (agent, default mode)
+  $ run-mcp repl node my-server.js                # Interactive testing (human)
   $ run-mcp repl node my-server.js -s test.txt    # Run a script
-  $ run-mcp server                                # Test harness (agent)
   $ run-mcp repl npx -y some-mcp-server           # Test an npx server
 
 Run 'run-mcp <command> --help' for detailed options.`,
   );
-
-// Show help with examples when run with no arguments
-if (process.argv.length <= 2) {
-  program.outputHelp();
-  process.exit(0);
-}
 
 // ─── REPL Mode ──────────────────────────────────────────────────────────────
 
@@ -61,10 +55,10 @@ REPL Commands (once connected):
     await startRepl(targetCommand, opts);
   });
 
-// ─── Server Mode ────────────────────────────────────────────────────────────
+// ─── MCP Server Mode (Default) ──────────────────────────────────────────────
 
 program
-  .command("server")
+  .command("mcp", { isDefault: true })
   .description("Start as an MCP server that lets AI agents dynamically test local MCP servers")
   .option("-o, --out-dir <path>", "Directory to save intercepted images and audio")
   .option("-t, --timeout <ms>", "Default tool call timeout in milliseconds (default: 300000)")
@@ -73,16 +67,16 @@ program
     "after",
     `
 Examples:
-  $ run-mcp server
-  $ run-mcp server --out-dir ./test-output
-  $ run-mcp server --timeout 120000
+  $ run-mcp
+  $ run-mcp --out-dir ./test-output
+  $ run-mcp --timeout 120000
 
 Add to your MCP client configuration:
   {
     "mcpServers": {
       "run-mcp": {
         "command": "npx",
-        "args": ["-y", "run-mcp", "server"]
+        "args": ["-y", "run-mcp"]
       }
     }
   }
