@@ -7,10 +7,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { MOCK_SERVER_ARGS, MOCK_SERVER_CMD } from "./helpers.js";
 
 /**
- * Tests for the server mode.
+ * Tests for the server mode (consolidated tool surface).
  *
  * Spawns `run-mcp server`, connects an MCP Client to it, then uses
- * the server's tools (connect_to_mcp, list_mcp_tools, etc.) to
+ * the server's tools (connect_to_mcp, call_mcp_primitive, etc.) to
  * dynamically test the mock MCP server.
  */
 
@@ -60,12 +60,13 @@ async function startRunMcpServer(extraArgs: string[] = []): Promise<Client> {
   return client;
 }
 
-async function connectToMockServer(c: Client): Promise<any> {
+async function connectToMockServer(c: Client, extra: Record<string, unknown> = {}): Promise<any> {
   return await c.callTool({
     name: "connect_to_mcp",
     arguments: {
       command: MOCK_SERVER_CMD,
       args: MOCK_SERVER_ARGS,
+      ...extra,
     },
   });
 }
@@ -79,7 +80,7 @@ function getText(result: any): string {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("server: tool discovery", () => {
-  it("exposes all run-mcp tools", async () => {
+  it("exposes exactly 6 consolidated tools", async () => {
     const c = await startRunMcpServer();
     const result = await c.listTools();
     const names = result.tools.map((t) => t.name);
@@ -87,13 +88,10 @@ describe("server: tool discovery", () => {
     expect(names).toContain("connect_to_mcp");
     expect(names).toContain("disconnect_from_mcp");
     expect(names).toContain("mcp_server_status");
-    expect(names).toContain("list_mcp_tools");
-    expect(names).toContain("call_mcp_tool");
-    expect(names).toContain("list_mcp_resources");
-    expect(names).toContain("read_mcp_resource");
-    expect(names).toContain("list_mcp_prompts");
-    expect(names).toContain("get_mcp_prompt");
+    expect(names).toContain("call_mcp_primitive");
+    expect(names).toContain("list_mcp_primitives");
     expect(names).toContain("get_mcp_server_stderr");
+    expect(names).toHaveLength(6);
   }, 15_000);
 
   it("tools have descriptions", async () => {
@@ -180,115 +178,314 @@ describe("server: status", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Tool operations
+// call_mcp_primitive: tool calls
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe("server: tool operations", () => {
-  it("lists tools on the connected server", async () => {
-    const c = await startRunMcpServer();
-    await connectToMockServer(c);
-
-    const result = await c.callTool({ name: "list_mcp_tools", arguments: {} });
-    const text = getText(result);
-    expect(text).toContain("echo");
-    expect(text).toContain("greet");
-    expect(text).toContain("screenshot");
-  }, 15_000);
-
+describe("server: call_mcp_primitive — tools", () => {
   it("calls a tool on the connected server", async () => {
     const c = await startRunMcpServer();
     await connectToMockServer(c);
 
     const result = await c.callTool({
-      name: "call_mcp_tool",
-      arguments: { name: "echo", arguments: { text: "hello from server mode" } },
+      name: "call_mcp_primitive",
+      arguments: { type: "tool", name: "echo", arguments: { text: "hello from primitive" } },
     });
-    expect(getText(result)).toBe("hello from server mode");
+    expect(getText(result)).toBe("hello from primitive");
   }, 15_000);
 
-  it("intercepts screenshots through server mode", async () => {
+  it("intercepts screenshots", async () => {
     const c = await startRunMcpServer();
     await connectToMockServer(c);
 
     const result = await c.callTool({
-      name: "call_mcp_tool",
-      arguments: { name: "screenshot" },
+      name: "call_mcp_primitive",
+      arguments: { type: "tool", name: "screenshot" },
     });
     expect(getText(result)).toMatch(/\[Image saved to .+\.png/);
   }, 15_000);
 
-  it("intercepts audio through server mode", async () => {
+  it("intercepts audio", async () => {
     const c = await startRunMcpServer();
     await connectToMockServer(c);
 
     const result = await c.callTool({
-      name: "call_mcp_tool",
-      arguments: { name: "audio_tool" },
+      name: "call_mcp_primitive",
+      arguments: { type: "tool", name: "audio_tool" },
     });
     expect(getText(result)).toMatch(/\[Audio saved to .+\.wav/);
   }, 15_000);
 
-  it("returns error when calling tool while disconnected", async () => {
+  it("returns error when not connected and no command provided", async () => {
     const c = await startRunMcpServer();
     const result = await c.callTool({
-      name: "call_mcp_tool",
-      arguments: { name: "echo", arguments: { text: "test" } },
+      name: "call_mcp_primitive",
+      arguments: { type: "tool", name: "echo", arguments: { text: "test" } },
     });
     expect(result.isError).toBe(true);
-    expect(getText(result)).toContain("No target server connected");
+    expect(getText(result)).toContain("Not connected");
   }, 15_000);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Resource operations
+// call_mcp_primitive: auto-connect
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe("server: resource operations", () => {
-  it("lists resources on the connected server", async () => {
+describe("server: call_mcp_primitive — auto-connect", () => {
+  it("auto-connects when command is provided", async () => {
+    const c = await startRunMcpServer();
+
+    // No explicit connect — just call with command/args
+    const result = await c.callTool({
+      name: "call_mcp_primitive",
+      arguments: {
+        type: "tool",
+        name: "echo",
+        arguments: { text: "auto-connected" },
+        command: MOCK_SERVER_CMD,
+        args: MOCK_SERVER_ARGS,
+      },
+    });
+    expect(getText(result)).toBe("auto-connected");
+  }, 15_000);
+
+  it("disconnect_after tears down after call", async () => {
+    const c = await startRunMcpServer();
+
+    // Call with disconnect_after
+    const result = await c.callTool({
+      name: "call_mcp_primitive",
+      arguments: {
+        type: "tool",
+        name: "echo",
+        arguments: { text: "one-shot" },
+        command: MOCK_SERVER_CMD,
+        args: MOCK_SERVER_ARGS,
+        disconnect_after: true,
+      },
+    });
+    expect(getText(result)).toBe("one-shot");
+
+    // Verify disconnected — status should show not connected
+    const status = await c.callTool({ name: "mcp_server_status", arguments: {} });
+    expect(getText(status)).toContain("No target server connected");
+  }, 15_000);
+
+  it("uses existing connection when already connected", async () => {
     const c = await startRunMcpServer();
     await connectToMockServer(c);
 
-    const result = await c.callTool({ name: "list_mcp_resources", arguments: {} });
-    const text = getText(result);
-    expect(text).toContain("docs://readme");
-    expect(text).toContain("docs://config");
+    // Call without command/args — should use existing connection
+    const result = await c.callTool({
+      name: "call_mcp_primitive",
+      arguments: { type: "tool", name: "echo", arguments: { text: "reuse" } },
+    });
+    expect(getText(result)).toBe("reuse");
   }, 15_000);
+});
 
+// ═══════════════════════════════════════════════════════════════════════════
+// call_mcp_primitive: resources
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("server: call_mcp_primitive — resources", () => {
   it("reads a resource by URI", async () => {
     const c = await startRunMcpServer();
     await connectToMockServer(c);
 
     const result = await c.callTool({
-      name: "read_mcp_resource",
-      arguments: { uri: "docs://readme" },
+      name: "call_mcp_primitive",
+      arguments: { type: "resource", name: "docs://readme" },
     });
     expect(getText(result)).toContain("Mock Server");
   }, 15_000);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Prompt operations
+// call_mcp_primitive: prompts
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe("server: prompt operations", () => {
-  it("lists prompts on the connected server", async () => {
-    const c = await startRunMcpServer();
-    await connectToMockServer(c);
-
-    const result = await c.callTool({ name: "list_mcp_prompts", arguments: {} });
-    expect(getText(result)).toContain("greeting");
-  }, 15_000);
-
+describe("server: call_mcp_primitive — prompts", () => {
   it("gets a prompt with arguments", async () => {
     const c = await startRunMcpServer();
     await connectToMockServer(c);
 
     const result = await c.callTool({
-      name: "get_mcp_prompt",
-      arguments: { name: "greeting", arguments: { name: "TestAgent" } },
+      name: "call_mcp_primitive",
+      arguments: {
+        type: "prompt",
+        name: "greeting",
+        arguments: { name: "TestAgent" },
+      },
     });
     expect(getText(result)).toContain("TestAgent");
   }, 15_000);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// list_mcp_primitives
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("server: list_mcp_primitives", () => {
+  it("lists tools by default", async () => {
+    const c = await startRunMcpServer();
+    await connectToMockServer(c);
+
+    const result = await c.callTool({
+      name: "list_mcp_primitives",
+      arguments: {},
+    });
+    const text = getText(result);
+    expect(text).toContain("echo");
+    expect(text).toContain("greet");
+    expect(text).toContain("--- Tools ---");
+  }, 15_000);
+
+  it("lists only tools when requested", async () => {
+    const c = await startRunMcpServer();
+    await connectToMockServer(c);
+
+    const result = await c.callTool({
+      name: "list_mcp_primitives",
+      arguments: { type: ["tools"] },
+    });
+    const text = getText(result);
+    expect(text).toContain("--- Tools ---");
+    expect(text).not.toContain("--- Resources ---");
+    expect(text).not.toContain("--- Prompts ---");
+  }, 15_000);
+
+  it("lists resources and prompts", async () => {
+    const c = await startRunMcpServer();
+    await connectToMockServer(c);
+
+    const result = await c.callTool({
+      name: "list_mcp_primitives",
+      arguments: { type: ["resources", "prompts"] },
+    });
+    const text = getText(result);
+    expect(text).toContain("docs://readme");
+    expect(text).toContain("greeting");
+    expect(text).not.toContain("--- Tools ---");
+  }, 15_000);
+
+  it("returns error when not connected", async () => {
+    const c = await startRunMcpServer();
+    const result = await c.callTool({
+      name: "list_mcp_primitives",
+      arguments: {},
+    });
+    expect(result.isError).toBe(true);
+    expect(getText(result)).toContain("No target server connected");
+  }, 15_000);
+
+  it("filters to a single tool by name", async () => {
+    const c = await startRunMcpServer();
+    await connectToMockServer(c);
+
+    const result = await c.callTool({
+      name: "list_mcp_primitives",
+      arguments: { type: ["tools"], name: "echo" },
+    });
+    const text = getText(result);
+    expect(text).toContain("echo");
+    expect(text).toContain("inputSchema");
+    // Should NOT contain other tools
+    expect(text).not.toContain("greet");
+    expect(text).not.toContain("screenshot");
+  }, 15_000);
+
+  it("shows available tools when name not found", async () => {
+    const c = await startRunMcpServer();
+    await connectToMockServer(c);
+
+    const result = await c.callTool({
+      name: "list_mcp_primitives",
+      arguments: { type: ["tools"], name: "nonexistent" },
+    });
+    const text = getText(result);
+    expect(text).toContain('Tool "nonexistent" not found');
+    expect(text).toContain("Available:");
+    expect(text).toContain("echo");
+  }, 15_000);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// connect_to_mcp: include flags
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("server: connect_to_mcp — include flags", () => {
+  it("includes tools in connect response", async () => {
+    const c = await startRunMcpServer();
+    const result = await connectToMockServer(c, { include: ["tools"] });
+    const text = getText(result);
+
+    expect(text).toContain("Connected to MCP server");
+    expect(text).toContain("--- Tools ---");
+    expect(text).toContain("echo");
+  }, 15_000);
+
+  it("includes all primitives when requested", async () => {
+    const c = await startRunMcpServer();
+    const result = await connectToMockServer(c, {
+      include: ["tools", "resources", "prompts"],
+    });
+    const text = getText(result);
+
+    expect(text).toContain("--- Tools ---");
+    expect(text).toContain("--- Resources ---");
+    expect(text).toContain("--- Prompts ---");
+  }, 15_000);
+
+  it("connect without include returns only summary", async () => {
+    const c = await startRunMcpServer();
+    const result = await connectToMockServer(c);
+    const text = getText(result);
+
+    expect(text).toContain("Connected to MCP server");
+    expect(text).not.toContain("--- Tools ---");
+  }, 15_000);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// connect_to_mcp: reconnect diff
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("server: connect_to_mcp — reconnect diff", () => {
+  it("shows unchanged on reconnect to same server", async () => {
+    const c = await startRunMcpServer();
+
+    // First connect (no diff)
+    await connectToMockServer(c, { include: ["tools"] });
+    await c.callTool({ name: "disconnect_from_mcp", arguments: {} });
+
+    // Second connect — should show diff
+    const result = await connectToMockServer(c, { include: ["tools"] });
+    const text = getText(result);
+    expect(text).toContain("Changes since last connection");
+    // Same server — nothing changed
+    expect(text).toMatch(/unchanged|none/i);
+  }, 25_000);
+
+  it("does not show diff on first connect", async () => {
+    const c = await startRunMcpServer();
+    const result = await connectToMockServer(c, { include: ["tools"] });
+    const text = getText(result);
+
+    expect(text).not.toContain("Changes since last connection");
+  }, 15_000);
+
+  it("does not show diff when include is not specified", async () => {
+    const c = await startRunMcpServer();
+
+    // First connect with include
+    await connectToMockServer(c, { include: ["tools"] });
+    await c.callTool({ name: "disconnect_from_mcp", arguments: {} });
+
+    // Second connect WITHOUT include — should not show diff
+    const result = await connectToMockServer(c);
+    const text = getText(result);
+    expect(text).not.toContain("Changes since last connection");
+  }, 25_000);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

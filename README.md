@@ -100,15 +100,11 @@ Then use these tools from your agent:
 
 | Tool | Description |
 |------|-------------|
-| `connect_to_mcp` | Spawn and connect to a local MCP server |
+| `connect_to_mcp` | Spawn and connect to a local MCP server. Use `include` to get tools/resources/prompts inline. Shows a diff on reconnect. |
 | `disconnect_from_mcp` | Tear down the connection |
 | `mcp_server_status` | Check connection status |
-| `list_mcp_tools` | List tools on the connected server |
-| `call_mcp_tool` | Call a tool (with interception) |
-| `list_mcp_resources` | List resources |
-| `read_mcp_resource` | Read a resource by URI |
-| `list_mcp_prompts` | List prompts |
-| `get_mcp_prompt` | Get a prompt by name |
+| `call_mcp_primitive` | Call a tool, read a resource, or get a prompt. Auto-connects if not already connected. Use `disconnect_after` for one-shot tests. |
+| `list_mcp_primitives` | List tools, resources, and/or prompts on the connected server |
 | `get_mcp_server_stderr` | View target server stderr output |
 
 ## REPL Mode Commands
@@ -256,4 +252,4 @@ node dist/index.js repl <target_command...>
 
 ## License
 
-ISC
+MIT

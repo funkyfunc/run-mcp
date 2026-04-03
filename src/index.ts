@@ -46,11 +46,12 @@ Agent Mode Configuration (mcp.json):
   }
 
 Agent Mode Tools:
-  connect_to_mcp      → Spawn and connect to a local MCP server
-  list_mcp_tools      → List tools on the connected server
-  describe_mcp_tool   → Show a tool's input schema
-  call_mcp_tool       → Call a tool (with interception)
-  disconnect_from_mcp → Tear down and reconnect after changes
+  connect_to_mcp       → Spawn and connect (use include to get tools/resources/prompts)
+  call_mcp_primitive   → Call a tool, read a resource, or get a prompt (auto-connects)
+  list_mcp_primitives  → List tools, resources, and/or prompts
+  disconnect_from_mcp  → Tear down and reconnect after changes
+  mcp_server_status    → Check connection status
+  get_mcp_server_stderr → View target server stderr output
 
 REPL Mode Commands (once connected):
   tools/list                          List all available tools
