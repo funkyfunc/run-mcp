@@ -119,3 +119,44 @@ export function suggestCommand(
   }
   return null;
 }
+
+// ─── Argument Scaffolding ───────────────────────────────────────────────────
+
+/**
+ * Generate a JSON template from a tool's input schema.
+ * Produces placeholder values for each property so the user
+ * can fill in the blanks.
+ */
+export function scaffoldArgs(schema: Record<string, unknown>): string {
+  return JSON.stringify(scaffoldObject(schema), null, 2);
+}
+
+function scaffoldValue(prop: Record<string, unknown>): unknown {
+  switch (prop.type as string) {
+    case "string":
+      return "<string>";
+    case "number":
+    case "integer":
+      return "<number>";
+    case "boolean":
+      return "<boolean>";
+    case "array": {
+      const items = prop.items as Record<string, unknown> | undefined;
+      return items ? [scaffoldValue(items)] : ["<item>"];
+    }
+    case "object":
+      return scaffoldObject(prop);
+    default:
+      return `<${prop.type ?? "unknown"}>`;
+  }
+}
+
+function scaffoldObject(schema: Record<string, unknown>): Record<string, unknown> {
+  const properties = schema.properties as Record<string, Record<string, unknown>> | undefined;
+  if (!properties) return {};
+  const result: Record<string, unknown> = {};
+  for (const [key, prop] of Object.entries(properties)) {
+    result[key] = scaffoldValue(prop);
+  }
+  return result;
+}

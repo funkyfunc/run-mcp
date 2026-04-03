@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { ResponseInterceptor } from "./interceptor.js";
+import { suggestCommand } from "./parsing.js";
 import { TargetManager } from "./target-manager.js";
 
 export interface ServerOptions {
@@ -704,12 +705,69 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       try {
         switch (primitiveType) {
           case "tool": {
+            // Best-effort pre-call validation
+            try {
+              const { tools } = await target!.listTools();
+              const toolNames = tools.map((t: any) => t.name);
+              const matchedTool = tools.find((t: any) => t.name === name);
+
+              if (!matchedTool) {
+                const suggestion = suggestCommand(name, toolNames);
+                const hint = suggestion ? ` Did you mean "${suggestion}"?` : "";
+                return {
+                  content: [
+                    {
+                      type: "text" as const,
+                      text:
+                        `Tool "${name}" not found.${hint}\n` +
+                        `Available tools: ${toolNames.join(", ")}`,
+                    },
+                  ],
+                  isError: true,
+                };
+              }
+
+              // Check required properties
+              const schema = matchedTool.inputSchema as any;
+              const requiredProps: string[] = schema?.required ?? [];
+              const providedKeys = Object.keys((callArgs as Record<string, unknown>) ?? {});
+              const missingProps = requiredProps.filter((p: string) => !providedKeys.includes(p));
+
+              if (missingProps.length > 0) {
+                return {
+                  content: [
+                    {
+                      type: "text" as const,
+                      text:
+                        `Tool "${name}" requires: ${missingProps.join(", ")}. ` +
+                        `Received: ${JSON.stringify(callArgs ?? {})}`,
+                    },
+                  ],
+                  isError: true,
+                };
+              }
+            } catch {
+              // Validation is best-effort — skip if listTools fails
+            }
+
+            const startMs = Date.now();
             result = await interceptor.callTool(
               target!,
               name,
               (callArgs as Record<string, unknown>) ?? {},
               timeout_ms,
             );
+            const elapsedMs = Date.now() - startMs;
+
+            // Append timing to text responses
+            const resultContent = (result as any).content;
+            if (Array.isArray(resultContent) && resultContent.length > 0) {
+              const lastItem = resultContent[resultContent.length - 1];
+              if (lastItem.type === "text") {
+                lastItem.text += ` (${elapsedMs}ms)`;
+              }
+            }
+
             break;
           }
 

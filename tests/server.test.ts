@@ -190,7 +190,7 @@ describe("server: call_mcp_primitive — tools", () => {
       name: "call_mcp_primitive",
       arguments: { type: "tool", name: "echo", arguments: { text: "hello from primitive" } },
     });
-    expect(getText(result)).toBe("hello from primitive");
+    expect(getText(result)).toMatch(/^hello from primitive \(\d+ms\)$/);
   }, 15_000);
 
   it("intercepts screenshots", async () => {
@@ -245,7 +245,7 @@ describe("server: call_mcp_primitive — auto-connect", () => {
         args: MOCK_SERVER_ARGS,
       },
     });
-    expect(getText(result)).toBe("auto-connected");
+    expect(getText(result)).toMatch(/^auto-connected \(\d+ms\)$/);
   }, 15_000);
 
   it("disconnect_after tears down after call", async () => {
@@ -263,7 +263,7 @@ describe("server: call_mcp_primitive — auto-connect", () => {
         disconnect_after: true,
       },
     });
-    expect(getText(result)).toBe("one-shot");
+    expect(getText(result)).toMatch(/^one-shot \(\d+ms\)$/);
 
     // Verify disconnected — status should show not connected
     const status = await c.callTool({ name: "mcp_server_status", arguments: {} });
@@ -279,7 +279,7 @@ describe("server: call_mcp_primitive — auto-connect", () => {
       name: "call_mcp_primitive",
       arguments: { type: "tool", name: "echo", arguments: { text: "reuse" } },
     });
-    expect(getText(result)).toBe("reuse");
+    expect(getText(result)).toMatch(/^reuse \(\d+ms\)$/);
   }, 15_000);
 });
 
@@ -503,5 +503,66 @@ describe("server: diagnostics", () => {
       arguments: {},
     });
     expect(getText(result)).toContain("Mock MCP server running on stdio");
+  }, 15_000);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Pre-call schema validation
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("server: call_mcp_primitive — schema validation", () => {
+  it("returns error with suggestion for typo tool name", async () => {
+    const c = await startRunMcpServer();
+    await connectToMockServer(c);
+
+    const result = await c.callTool({
+      name: "call_mcp_primitive",
+      arguments: { type: "tool", name: "ech", arguments: { text: "hi" } },
+    });
+    expect(result.isError).toBe(true);
+    const text = getText(result);
+    expect(text).toContain('Tool "ech" not found');
+    expect(text).toContain('Did you mean "echo"');
+  }, 15_000);
+
+  it("returns error without suggestion for unrelated tool name", async () => {
+    const c = await startRunMcpServer();
+    await connectToMockServer(c);
+
+    const result = await c.callTool({
+      name: "call_mcp_primitive",
+      arguments: { type: "tool", name: "xyzzy_nonexistent_tool", arguments: {} },
+    });
+    expect(result.isError).toBe(true);
+    const text = getText(result);
+    expect(text).toContain('Tool "xyzzy_nonexistent_tool" not found');
+    expect(text).not.toContain("Did you mean");
+    expect(text).toContain("Available tools:");
+  }, 15_000);
+
+  it("returns error for missing required arguments", async () => {
+    const c = await startRunMcpServer();
+    await connectToMockServer(c);
+
+    const result = await c.callTool({
+      name: "call_mcp_primitive",
+      arguments: { type: "tool", name: "greet", arguments: {} },
+    });
+    expect(result.isError).toBe(true);
+    const text = getText(result);
+    expect(text).toContain('Tool "greet" requires:');
+    expect(text).toContain("name");
+  }, 15_000);
+
+  it("appends timing to successful tool call responses", async () => {
+    const c = await startRunMcpServer();
+    await connectToMockServer(c);
+
+    const result = await c.callTool({
+      name: "call_mcp_primitive",
+      arguments: { type: "tool", name: "echo", arguments: { text: "timing test" } },
+    });
+    const text = getText(result);
+    expect(text).toMatch(/timing test \(\d+ms\)/);
   }, 15_000);
 });

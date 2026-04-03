@@ -77,6 +77,8 @@ export class TargetManager extends EventEmitter {
    * Stderr from the child process is emitted as 'stderr' events.
    */
   async connect(): Promise<void> {
+    this._intentionalClose = false;
+
     this.transport = new StdioClientTransport({
       command: this.command,
       args: this.args,

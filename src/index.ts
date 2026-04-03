@@ -57,6 +57,15 @@ REPL Mode Commands (once connected):
   tools/list                          List all available tools
   tools/describe <name>               Show a tool's input schema
   tools/call <name> <json> [opts]     Call a tool with JSON arguments
+  tools/scaffold <name>               Generate argument template for a tool
+  resources/list                      List all available resources
+  resources/read <uri>                Read a resource by URI
+  resources/templates                 List resource templates
+  prompts/list                        List all available prompts
+  prompts/get <name> [json_args]      Get a prompt with arguments
+  !! / last                           Re-run the last command
+  reconnect                           Disconnect and reconnect
+  timing                              Show tool call performance stats
   status                              Show target server status
   help                                Show all commands`,
   )

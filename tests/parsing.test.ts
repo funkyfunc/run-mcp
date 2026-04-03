@@ -4,6 +4,7 @@ import {
   levenshtein,
   parseCallArgs,
   parseCommandLine,
+  scaffoldArgs,
   suggestCommand,
 } from "../src/parsing.js";
 
@@ -221,5 +222,68 @@ describe("suggestCommand", () => {
   it("returns exact match if it exists", () => {
     expect(suggestCommand("help", COMMANDS)).toBe("help");
     expect(suggestCommand("tools/list", COMMANDS)).toBe("tools/list");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// scaffoldArgs
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("scaffoldArgs", () => {
+  it("scaffolds flat string/number/boolean properties", () => {
+    const schema = {
+      properties: {
+        name: { type: "string" },
+        age: { type: "number" },
+        active: { type: "boolean" },
+      },
+    };
+    const result = JSON.parse(scaffoldArgs(schema));
+    expect(result).toEqual({
+      name: "<string>",
+      age: "<number>",
+      active: "<boolean>",
+    });
+  });
+
+  it("scaffolds nested objects", () => {
+    const schema = {
+      properties: {
+        config: {
+          type: "object",
+          properties: {
+            host: { type: "string" },
+            port: { type: "integer" },
+          },
+        },
+      },
+    };
+    const result = JSON.parse(scaffoldArgs(schema));
+    expect(result.config).toEqual({ host: "<string>", port: "<number>" });
+  });
+
+  it("scaffolds arrays with typed items", () => {
+    const schema = {
+      properties: {
+        tags: { type: "array", items: { type: "string" } },
+      },
+    };
+    const result = JSON.parse(scaffoldArgs(schema));
+    expect(result.tags).toEqual(["<string>"]);
+  });
+
+  it("scaffolds arrays without items", () => {
+    const schema = {
+      properties: {
+        data: { type: "array" },
+      },
+    };
+    const result = JSON.parse(scaffoldArgs(schema));
+    expect(result.data).toEqual(["<item>"]);
+  });
+
+  it("returns empty object for schema with no properties", () => {
+    const result = JSON.parse(scaffoldArgs({}));
+    expect(result).toEqual({});
   });
 });
