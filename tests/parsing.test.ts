@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   formatJson,
+  formatToolDescription,
+  groupToolsByPrefix,
   levenshtein,
   parseCallArgs,
   parseCommandLine,
+  resolveAlias,
   scaffoldArgs,
   suggestCommand,
 } from "../src/parsing.js";
@@ -285,5 +288,185 @@ describe("scaffoldArgs", () => {
   it("returns empty object for schema with no properties", () => {
     const result = JSON.parse(scaffoldArgs({}));
     expect(result).toEqual({});
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// formatToolDescription
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("formatToolDescription", () => {
+  it("formats a tool with string and number args", () => {
+    const result = formatToolDescription({
+      name: "greet",
+      description: "Returns a greeting",
+      inputSchema: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Name to greet" },
+        },
+        required: ["name"],
+      },
+    });
+    expect(result).toContain("greet");
+    expect(result).toContain("Returns a greeting");
+    expect(result).toContain("name");
+    expect(result).toContain("string");
+    expect(result).toContain("(required)");
+    expect(result).toContain("Name to greet");
+    expect(result).toContain("Example:");
+    expect(result).toContain("tools/call greet");
+  });
+
+  it("shows 'No arguments required' for no-arg tools", () => {
+    const result = formatToolDescription({
+      name: "screenshot",
+      description: "Takes a screenshot",
+    });
+    expect(result).toContain("No arguments required");
+    expect(result).toContain("tools/call screenshot");
+  });
+
+  it("marks optional args correctly", () => {
+    const result = formatToolDescription({
+      name: "search",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: { type: "string" },
+          limit: { type: "number" },
+        },
+        required: ["query"],
+      },
+    });
+    expect(result).toContain("(required)");
+    expect(result).toContain("(optional)");
+  });
+
+  it("shows annotations when present", () => {
+    const result = formatToolDescription({
+      name: "greet",
+      annotations: { readOnlyHint: true, destructiveHint: false },
+    });
+    expect(result).toContain("Annotations:");
+    expect(result).toContain("readOnlyHint: true");
+    expect(result).toContain("destructiveHint: false");
+  });
+
+  it("handles tool with no description", () => {
+    const result = formatToolDescription({ name: "mystery" });
+    expect(result).toContain("mystery");
+    expect(result).not.toContain("undefined");
+  });
+
+  it("handles array type in arguments", () => {
+    const result = formatToolDescription({
+      name: "tag",
+      inputSchema: {
+        type: "object",
+        properties: {
+          tags: { type: "array", items: { type: "string" } },
+        },
+      },
+    });
+    expect(result).toContain("string[]");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// groupToolsByPrefix
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("groupToolsByPrefix", () => {
+  it("groups tools by underscore prefix", () => {
+    const groups = groupToolsByPrefix(["get_users", "get_posts", "set_config", "set_theme"]);
+    expect(groups.get("Get")).toEqual(["get_users", "get_posts"]);
+    expect(groups.get("Set")).toEqual(["set_config", "set_theme"]);
+  });
+
+  it("merges singleton prefixes into Other", () => {
+    const groups = groupToolsByPrefix([
+      "get_users",
+      "get_posts",
+      "set_config",
+      "set_theme",
+      "ping",
+    ]);
+    expect(groups.get("Other")).toEqual(["ping"]);
+  });
+
+  it("falls back to single All group when no meaningful groupings", () => {
+    const groups = groupToolsByPrefix(["alpha", "beta", "gamma", "delta"]);
+    expect(groups.has("All")).toBe(true);
+    expect(groups.size).toBe(1);
+    expect(groups.get("All")).toEqual(["alpha", "beta", "gamma", "delta"]);
+  });
+
+  it("handles empty input", () => {
+    const groups = groupToolsByPrefix([]);
+    expect(groups.get("All")).toEqual([]);
+  });
+
+  it("groups real-world Flutter Driver tool names", () => {
+    const tools = [
+      "start_app",
+      "stop_app",
+      "start_recording",
+      "stop_recording",
+      "get_text",
+      "get_widget_tree",
+      "get_accessibility_tree",
+      "scroll_until_visible",
+    ];
+    const groups = groupToolsByPrefix(tools);
+    expect(groups.get("Start")).toEqual(["start_app", "start_recording"]);
+    expect(groups.get("Stop")).toEqual(["stop_app", "stop_recording"]);
+    expect(groups.get("Get")).toEqual(["get_text", "get_widget_tree", "get_accessibility_tree"]);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// resolveAlias
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("resolveAlias", () => {
+  it("expands tl to tools/list", () => {
+    expect(resolveAlias("tl")).toBe("tools/list");
+  });
+
+  it("expands td with arguments", () => {
+    expect(resolveAlias("td greet")).toBe("tools/describe greet");
+  });
+
+  it("expands tc with tool name and JSON args", () => {
+    expect(resolveAlias('tc echo {"text":"hi"}')).toBe('tools/call echo {"text":"hi"}');
+  });
+
+  it("expands all defined aliases", () => {
+    expect(resolveAlias("ts")).toBe("tools/scaffold");
+    expect(resolveAlias("rl")).toBe("resources/list");
+    expect(resolveAlias("rr docs://readme")).toBe("resources/read docs://readme");
+    expect(resolveAlias("rt")).toBe("resources/templates");
+    expect(resolveAlias("pl")).toBe("prompts/list");
+    expect(resolveAlias("pg greeting")).toBe("prompts/get greeting");
+  });
+
+  it("is case-insensitive", () => {
+    expect(resolveAlias("TL")).toBe("tools/list");
+    expect(resolveAlias("Td greet")).toBe("tools/describe greet");
+  });
+
+  it("returns null for non-aliases", () => {
+    expect(resolveAlias("help")).toBeNull();
+    expect(resolveAlias("tools/list")).toBeNull();
+    expect(resolveAlias("exit")).toBeNull();
+  });
+
+  it("returns null for empty input", () => {
+    expect(resolveAlias("")).toBeNull();
+  });
+
+  it("preserves extra whitespace in the rest portion", () => {
+    expect(resolveAlias("td  greet")).toBe("tools/describe  greet");
   });
 });

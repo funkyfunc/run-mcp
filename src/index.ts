@@ -56,7 +56,7 @@ Agent Mode Tools:
 REPL Mode Commands (once connected):
   tools/list                          List all available tools
   tools/describe <name>               Show a tool's input schema
-  tools/call <name> <json> [opts]     Call a tool with JSON arguments
+  tools/call <name> [json] [opts]     Call a tool (interactive if no json)
   tools/scaffold <name>               Generate argument template for a tool
   resources/list                      List all available resources
   resources/read <uri>                Read a resource by URI
@@ -67,7 +67,8 @@ REPL Mode Commands (once connected):
   reconnect                           Disconnect and reconnect
   timing                              Show tool call performance stats
   status                              Show target server status
-  help                                Show all commands`,
+
+Shortcuts: tl td tc ts rl rr rt pl pg (see help for details)`,
   )
   .action(
     async (

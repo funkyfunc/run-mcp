@@ -160,3 +160,174 @@ function scaffoldObject(schema: Record<string, unknown>): Record<string, unknown
   }
   return result;
 }
+
+// ─── Tool Description Formatting ────────────────────────────────────────────
+
+interface ToolInfo {
+  name: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+  annotations?: Record<string, unknown>;
+}
+
+/**
+ * Format a tool's schema as a human-readable description with:
+ * - Tool name + description header
+ * - Argument table (name, type, required/optional, description)
+ * - Auto-generated example command
+ * - Annotations section if present
+ */
+export function formatToolDescription(tool: ToolInfo): string {
+  const lines: string[] = [];
+
+  // Header
+  lines.push(`  ${tool.name}`);
+  if (tool.description) {
+    lines.push(`  ${tool.description}`);
+  }
+
+  // Arguments table
+  const schema = tool.inputSchema ?? {};
+  const properties = schema.properties as Record<string, Record<string, unknown>> | undefined;
+  const required = (schema.required as string[]) ?? [];
+
+  if (properties && Object.keys(properties).length > 0) {
+    lines.push("");
+    lines.push("  Arguments:");
+
+    const nameWidth = Math.max(6, ...Object.keys(properties).map((n) => n.length));
+    const typeWidth = Math.max(4, ...Object.values(properties).map((p) => typeLabel(p).length));
+
+    for (const [name, prop] of Object.entries(properties)) {
+      const type = typeLabel(prop);
+      const req = required.includes(name) ? "(required)" : "(optional)";
+      const desc = (prop.description as string) ?? "";
+      lines.push(
+        `    ${name.padEnd(nameWidth)}  ${type.padEnd(typeWidth)}  ${req.padEnd(10)}  ${desc}`,
+      );
+    }
+  } else {
+    lines.push("");
+    lines.push("  No arguments required.");
+  }
+
+  // Example command
+  lines.push("");
+  lines.push("  Example:");
+
+  if (properties && Object.keys(properties).length > 0) {
+    const example = scaffoldObject(schema);
+    lines.push(`    tools/call ${tool.name} ${JSON.stringify(example)}`);
+  } else {
+    lines.push(`    tools/call ${tool.name}`);
+  }
+
+  // Annotations
+  if (tool.annotations && Object.keys(tool.annotations).length > 0) {
+    lines.push("");
+    lines.push("  Annotations:");
+    const annotationParts: string[] = [];
+    for (const [key, value] of Object.entries(tool.annotations)) {
+      annotationParts.push(`${key}: ${value}`);
+    }
+    lines.push(`    ${annotationParts.join(", ")}`);
+  }
+
+  return lines.join("\n");
+}
+
+function typeLabel(prop: Record<string, unknown>): string {
+  const type = prop.type as string | undefined;
+  if (!type) return "any";
+  if (type === "array") {
+    const items = prop.items as Record<string, unknown> | undefined;
+    return items ? `${typeLabel(items)}[]` : "array";
+  }
+  return type;
+}
+
+// ─── Tool Grouping ──────────────────────────────────────────────────────────
+
+/**
+ * Group tool names by common word prefix (splitting on `_`).
+ *
+ * Returns a Map of group label → tool names. Falls back to a
+ * single "All" group if no meaningful groupings emerge
+ * (fewer than 2 groups with ≥2 members each).
+ */
+export function groupToolsByPrefix(toolNames: string[]): Map<string, string[]> {
+  const groups = new Map<string, string[]>();
+
+  for (const name of toolNames) {
+    const underscoreIdx = name.indexOf("_");
+    const prefix = underscoreIdx > 0 ? name.slice(0, underscoreIdx) : name;
+    const list = groups.get(prefix) ?? [];
+    list.push(name);
+    groups.set(prefix, list);
+  }
+
+  // Check if groupings are meaningful (≥2 groups with ≥2 members)
+  const meaningfulGroups = [...groups.entries()].filter(([, members]) => members.length >= 2);
+
+  if (meaningfulGroups.length < 2) {
+    // No meaningful grouping — return single flat group
+    const all = new Map<string, string[]>();
+    all.set("All", [...toolNames]);
+    return all;
+  }
+
+  // Merge singleton groups into "Other"
+  const result = new Map<string, string[]>();
+  const other: string[] = [];
+
+  for (const [prefix, members] of groups) {
+    if (members.length >= 2) {
+      // Capitalize the group label
+      const label = prefix.charAt(0).toUpperCase() + prefix.slice(1);
+      result.set(label, members);
+    } else {
+      other.push(...members);
+    }
+  }
+
+  if (other.length > 0) {
+    result.set("Other", other);
+  }
+
+  return result;
+}
+
+// ─── Command Aliases ────────────────────────────────────────────────────────
+
+const ALIASES: Record<string, string> = {
+  tl: "tools/list",
+  td: "tools/describe",
+  tc: "tools/call",
+  ts: "tools/scaffold",
+  rl: "resources/list",
+  rr: "resources/read",
+  rt: "resources/templates",
+  pl: "prompts/list",
+  pg: "prompts/get",
+};
+
+/**
+ * Expand a short alias to its full command.
+ * Returns the expanded command string, or null if the input is not an alias.
+ *
+ * Examples:
+ *   "tl"        → "tools/list"
+ *   "td greet"  → "tools/describe greet"
+ *   "tc echo {}" → "tools/call echo {}"
+ *   "help"      → null (not an alias)
+ */
+export function resolveAlias(input: string): string | null {
+  const spaceIdx = input.indexOf(" ");
+  const token = spaceIdx === -1 ? input : input.slice(0, spaceIdx);
+  const rest = spaceIdx === -1 ? "" : input.slice(spaceIdx);
+
+  const expanded = ALIASES[token.toLowerCase()];
+  if (!expanded) return null;
+
+  return expanded + rest;
+}

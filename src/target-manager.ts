@@ -160,6 +160,14 @@ export class TargetManager extends EventEmitter {
     return this.client?.getInstructions();
   }
 
+  /**
+   * Returns the target server's name and version from the MCP handshake.
+   * Available after connect() completes.
+   */
+  getServerVersion(): { name: string; version: string } | undefined {
+    return this.client?.getServerVersion() as { name: string; version: string } | undefined;
+  }
+
   // ─── Tools ──────────────────────────────────────────────────────────────────
 
   /**
