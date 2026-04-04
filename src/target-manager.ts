@@ -1,7 +1,17 @@
 import { EventEmitter } from "node:events";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import type { ServerCapabilities } from "@modelcontextprotocol/sdk/types.js";
+import {
+  CreateMessageRequestSchema,
+  ElicitRequestSchema,
+  ListRootsRequestSchema,
+  LoggingMessageNotificationSchema,
+  PromptListChangedNotificationSchema,
+  ResourceListChangedNotificationSchema,
+  ResourceUpdatedNotificationSchema,
+  type ServerCapabilities,
+  ToolListChangedNotificationSchema,
+} from "@modelcontextprotocol/sdk/types.js";
 
 export interface TargetStatus {
   pid: number | null;
@@ -23,6 +33,35 @@ const MAX_RECONNECT_ATTEMPTS = 3;
 
 /** After this many ms of stable connection, reset the retry counter. */
 const STABLE_CONNECTION_RESET_MS = 60_000;
+
+// ─── Request History ────────────────────────────────────────────────────────
+
+export interface HistoryRecord {
+  id: number;
+  method: string;
+  params?: Record<string, unknown>;
+  result?: unknown;
+  error?: string;
+  durationMs: number;
+  timestamp: number;
+}
+
+const MAX_HISTORY = 100;
+
+// ─── Notification types ─────────────────────────────────────────────────────
+
+export interface ServerNotification {
+  method: string;
+  params?: Record<string, unknown>;
+  timestamp: number;
+}
+
+// ─── Root types ─────────────────────────────────────────────────────────────
+
+export interface Root {
+  uri: string;
+  name?: string;
+}
 
 /**
  * Manages the lifecycle of a target MCP server process.
@@ -56,6 +95,17 @@ export class TargetManager extends EventEmitter {
   private _autoReconnect: boolean = false;
   private _reconnecting: boolean = false;
   private _intentionalClose: boolean = false;
+
+  // Request history
+  private _history: HistoryRecord[] = [];
+  private _historyIdCounter = 0;
+
+  // Notifications
+  private _notifications: ServerNotification[] = [];
+  private static readonly MAX_NOTIFICATIONS = 200;
+
+  // Roots
+  private _roots: Root[] = [];
 
   constructor(
     private readonly command: string,
@@ -100,7 +150,125 @@ export class TargetManager extends EventEmitter {
       }
     });
 
-    this.client = new Client({ name: "run-mcp", version: "1.3.1" }, { capabilities: {} });
+    this.client = new Client(
+      { name: "run-mcp", version: "1.4.0" },
+      {
+        capabilities: {
+          roots: { listChanged: true },
+          sampling: {},
+          elicitation: {},
+        },
+      },
+    );
+
+    // ─── Notification handlers ──────────────────────────────────────────────
+
+    // Logging messages from server
+    this.client.setNotificationHandler(
+      LoggingMessageNotificationSchema,
+      async (notification: any) => {
+        const record: ServerNotification = {
+          method: "notifications/message",
+          params: notification.params,
+          timestamp: Date.now(),
+        };
+        this._pushNotification(record);
+        this.emit("notification", record);
+      },
+    );
+
+    // Tool list changed
+    this.client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
+      const record: ServerNotification = {
+        method: "notifications/tools/list_changed",
+        timestamp: Date.now(),
+      };
+      this._pushNotification(record);
+      this.emit("notification", record);
+    });
+
+    // Resource list changed
+    this.client.setNotificationHandler(ResourceListChangedNotificationSchema, async () => {
+      const record: ServerNotification = {
+        method: "notifications/resources/list_changed",
+        timestamp: Date.now(),
+      };
+      this._pushNotification(record);
+      this.emit("notification", record);
+    });
+
+    // Resource updated (subscription)
+    this.client.setNotificationHandler(
+      ResourceUpdatedNotificationSchema,
+      async (notification: any) => {
+        const record: ServerNotification = {
+          method: "notifications/resources/updated",
+          params: notification.params,
+          timestamp: Date.now(),
+        };
+        this._pushNotification(record);
+        this.emit("notification", record);
+      },
+    );
+
+    // Prompt list changed
+    this.client.setNotificationHandler(PromptListChangedNotificationSchema, async () => {
+      const record: ServerNotification = {
+        method: "notifications/prompts/list_changed",
+        timestamp: Date.now(),
+      };
+      this._pushNotification(record);
+      this.emit("notification", record);
+    });
+
+    // ─── Request handlers (sampling, roots) ──────────────────────────────────
+
+    // Sampling: createMessage
+    this.client.setRequestHandler(CreateMessageRequestSchema, async (request: any) => {
+      return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error("Sampling request timed out (no response from user in 5 minutes)"));
+        }, 300_000);
+
+        this.emit("sampling_request", {
+          request: request.params,
+          respond: (result: any) => {
+            clearTimeout(timeout);
+            resolve(result);
+          },
+          reject: (err: Error) => {
+            clearTimeout(timeout);
+            reject(err);
+          },
+        });
+      });
+    });
+
+    // Elicitation: create
+    this.client.setRequestHandler(ElicitRequestSchema, async (request: any) => {
+      return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error("Elicitation request timed out (no response from user in 5 minutes)"));
+        }, 300_000);
+
+        this.emit("elicitation_request", {
+          request: request.params,
+          respond: (result: any) => {
+            clearTimeout(timeout);
+            resolve(result);
+          },
+          reject: (err: Error) => {
+            clearTimeout(timeout);
+            reject(err);
+          },
+        });
+      });
+    });
+
+    // Roots: list
+    this.client.setRequestHandler(ListRootsRequestSchema, async () => {
+      return { roots: this._roots };
+    });
 
     this.client.onclose = () => {
       this._connected = false;
@@ -168,6 +336,21 @@ export class TargetManager extends EventEmitter {
     return this.client?.getServerVersion() as { name: string; version: string } | undefined;
   }
 
+  // ─── Ping ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Send a ping to the target MCP server and return the round-trip time.
+   */
+  async ping(): Promise<number> {
+    this._assertConnected();
+    const start = Date.now();
+    await this.client!.ping();
+    const elapsed = Date.now() - start;
+    this.recordResponse();
+    this._addHistory("ping", undefined, { ok: true }, elapsed);
+    return elapsed;
+  }
+
   // ─── Tools ──────────────────────────────────────────────────────────────────
 
   /**
@@ -176,8 +359,10 @@ export class TargetManager extends EventEmitter {
    */
   async listTools(params?: Record<string, unknown>) {
     this._assertConnected();
+    const start = Date.now();
     const result = await this.client!.listTools(params as any);
     this.recordResponse();
+    this._addHistory("tools/list", params, result, Date.now() - start);
     return result;
   }
 
@@ -191,12 +376,14 @@ export class TargetManager extends EventEmitter {
   async callTool(name: string, args: Record<string, unknown> = {}, _timeoutMs?: number) {
     this._assertConnected();
     const requestOptions = { timeout: 3600_000 * 10 }; // 10 hours
+    const start = Date.now();
     const result = await this.client!.callTool(
       { name, arguments: args },
       undefined,
       requestOptions,
     );
     this.recordResponse();
+    this._addHistory(`tools/call ${name}`, args, result, Date.now() - start);
     return result;
   }
 
@@ -208,8 +395,10 @@ export class TargetManager extends EventEmitter {
    */
   async listResources(params?: Record<string, unknown>) {
     this._assertConnected();
+    const start = Date.now();
     const result = await this.client!.listResources(params as any);
     this.recordResponse();
+    this._addHistory("resources/list", params, result, Date.now() - start);
     return result;
   }
 
@@ -219,8 +408,10 @@ export class TargetManager extends EventEmitter {
    */
   async listResourceTemplates(params?: Record<string, unknown>) {
     this._assertConnected();
+    const start = Date.now();
     const result = await this.client!.listResourceTemplates(params as any);
     this.recordResponse();
+    this._addHistory("resources/templates/list", params, result, Date.now() - start);
     return result;
   }
 
@@ -229,8 +420,10 @@ export class TargetManager extends EventEmitter {
    */
   async readResource(params: { uri: string; [key: string]: unknown }) {
     this._assertConnected();
+    const start = Date.now();
     const result = await this.client!.readResource(params as any);
     this.recordResponse();
+    this._addHistory(`resources/read ${params.uri}`, params, result, Date.now() - start);
     return result;
   }
 
@@ -239,8 +432,10 @@ export class TargetManager extends EventEmitter {
    */
   async subscribeResource(params: { uri: string }) {
     this._assertConnected();
+    const start = Date.now();
     const result = await this.client!.subscribeResource(params);
     this.recordResponse();
+    this._addHistory(`resources/subscribe ${params.uri}`, params, result, Date.now() - start);
     return result;
   }
 
@@ -249,8 +444,10 @@ export class TargetManager extends EventEmitter {
    */
   async unsubscribeResource(params: { uri: string }) {
     this._assertConnected();
+    const start = Date.now();
     const result = await this.client!.unsubscribeResource(params);
     this.recordResponse();
+    this._addHistory(`resources/unsubscribe ${params.uri}`, params, result, Date.now() - start);
     return result;
   }
 
@@ -262,8 +459,10 @@ export class TargetManager extends EventEmitter {
    */
   async listPrompts(params?: Record<string, unknown>) {
     this._assertConnected();
+    const start = Date.now();
     const result = await this.client!.listPrompts(params as any);
     this.recordResponse();
+    this._addHistory("prompts/list", params, result, Date.now() - start);
     return result;
   }
 
@@ -272,8 +471,10 @@ export class TargetManager extends EventEmitter {
    */
   async getPrompt(params: { name: string; arguments?: Record<string, string> }) {
     this._assertConnected();
+    const start = Date.now();
     const result = await this.client!.getPrompt(params);
     this.recordResponse();
+    this._addHistory(`prompts/get ${params.name}`, params, result, Date.now() - start);
     return result;
   }
 
@@ -284,8 +485,10 @@ export class TargetManager extends EventEmitter {
    */
   async setLoggingLevel(level: string) {
     this._assertConnected();
+    const start = Date.now();
     const result = await this.client!.setLoggingLevel(level as any);
     this.recordResponse();
+    this._addHistory(`logging/setLevel ${level}`, { level }, result, Date.now() - start);
     return result;
   }
 
@@ -296,9 +499,110 @@ export class TargetManager extends EventEmitter {
    */
   async complete(params: Record<string, unknown>) {
     this._assertConnected();
+    const start = Date.now();
     const result = await this.client!.complete(params as any);
     this.recordResponse();
+    this._addHistory("completion/complete", params, result, Date.now() - start);
     return result;
+  }
+
+  // ─── Request History ────────────────────────────────────────────────────────
+
+  /**
+   * Get the request/response history.
+   * @param count - Number of recent records to return (default: all)
+   */
+  getHistory(count?: number): HistoryRecord[] {
+    if (!count || count >= this._history.length) return [...this._history];
+    return this._history.slice(-count);
+  }
+
+  /**
+   * Clear the history buffer.
+   */
+  clearHistory(): void {
+    this._history = [];
+  }
+
+  private _addHistory(method: string, params: unknown, result: unknown, durationMs: number): void {
+    const record: HistoryRecord = {
+      id: ++this._historyIdCounter,
+      method,
+      params: params as Record<string, unknown>,
+      result,
+      durationMs,
+      timestamp: Date.now(),
+    };
+    this._history.push(record);
+    if (this._history.length > MAX_HISTORY) {
+      this._history = this._history.slice(-MAX_HISTORY);
+    }
+  }
+
+  // ─── Notification History ───────────────────────────────────────────────────
+
+  /**
+   * Get recent server notifications.
+   * @param count - Number of recent notifications to return (default: all)
+   */
+  getNotifications(count?: number): ServerNotification[] {
+    if (!count || count >= this._notifications.length) return [...this._notifications];
+    return this._notifications.slice(-count);
+  }
+
+  /**
+   * Clear the notification buffer.
+   */
+  clearNotifications(): void {
+    this._notifications = [];
+  }
+
+  private _pushNotification(record: ServerNotification): void {
+    this._notifications.push(record);
+    if (this._notifications.length > TargetManager.MAX_NOTIFICATIONS) {
+      this._notifications = this._notifications.slice(-TargetManager.MAX_NOTIFICATIONS);
+    }
+  }
+
+  // ─── Roots Management ─────────────────────────────────────────────────────
+
+  /**
+   * Get the current roots list that this client advertises.
+   */
+  getRoots(): Root[] {
+    return [...this._roots];
+  }
+
+  /**
+   * Add a root and send notification to the server.
+   */
+  async addRoot(root: Root): Promise<void> {
+    // Prevent duplicates
+    if (this._roots.some((r) => r.uri === root.uri)) return;
+    this._roots.push(root);
+    await this._sendRootsChanged();
+  }
+
+  /**
+   * Remove a root by URI and send notification to the server.
+   */
+  async removeRoot(uri: string): Promise<boolean> {
+    const before = this._roots.length;
+    this._roots = this._roots.filter((r) => r.uri !== uri);
+    if (this._roots.length < before) {
+      await this._sendRootsChanged();
+      return true;
+    }
+    return false;
+  }
+
+  private async _sendRootsChanged(): Promise<void> {
+    if (!this._connected || !this.client) return;
+    try {
+      await this.client.sendRootsListChanged();
+    } catch {
+      // Server may not support roots notifications — ignore
+    }
   }
 
   // ─── Notification forwarding ────────────────────────────────────────────────

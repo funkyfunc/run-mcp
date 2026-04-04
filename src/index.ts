@@ -7,7 +7,7 @@ import { startServer } from "./server.js";
 program
   .name("run-mcp")
   .description("A smart interactive REPL and live test harness for MCP servers")
-  .version("1.3.4")
+  .version("1.4.0")
   .passThroughOptions()
   .allowUnknownOption()
   .argument(
@@ -61,14 +61,23 @@ REPL Mode Commands (once connected):
   resources/list                      List all available resources
   resources/read <uri>                Read a resource by URI
   resources/templates                 List resource templates
+  resources/subscribe <uri>           Subscribe to resource changes
+  resources/unsubscribe <uri>         Unsubscribe from resource changes
   prompts/list                        List all available prompts
   prompts/get <name> [json_args]      Get a prompt with arguments
+  ping                                Verify connection, show round-trip time
+  log-level <level>                   Set server logging verbosity
+  history [count|clear]               Show request/response history
+  notifications [count|clear]         Show server notifications
+  roots/list                          Show configured client roots
+  roots/add <uri> [name]              Add a root directory
+  roots/remove <uri>                  Remove a root directory
   !! / last                           Re-run the last command
   reconnect                           Disconnect and reconnect
   timing                              Show tool call performance stats
   status                              Show target server status
 
-Shortcuts: tl td tc ts rl rr rt pl pg (see help for details)`,
+Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
   )
   .action(
     async (

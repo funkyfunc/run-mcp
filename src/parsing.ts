@@ -297,6 +297,22 @@ export function groupToolsByPrefix(toolNames: string[]): Map<string, string[]> {
   return result;
 }
 
+// ─── Logging Levels ─────────────────────────────────────────────────────────
+
+/** Valid MCP logging levels (ordered by severity). */
+export const LOG_LEVELS = [
+  "debug",
+  "info",
+  "notice",
+  "warning",
+  "error",
+  "critical",
+  "alert",
+  "emergency",
+] as const;
+
+export type LogLevel = (typeof LOG_LEVELS)[number];
+
 // ─── Command Aliases ────────────────────────────────────────────────────────
 
 const ALIASES: Record<string, string> = {
@@ -307,6 +323,8 @@ const ALIASES: Record<string, string> = {
   rl: "resources/list",
   rr: "resources/read",
   rt: "resources/templates",
+  rs: "resources/subscribe",
+  ru: "resources/unsubscribe",
   pl: "prompts/list",
   pg: "prompts/get",
 };

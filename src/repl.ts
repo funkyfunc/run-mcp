@@ -7,12 +7,14 @@ import {
   formatJson,
   formatToolDescription,
   groupToolsByPrefix,
+  LOG_LEVELS,
   parseCallArgs,
   parseCommandLine,
   resolveAlias,
   scaffoldArgs,
   suggestCommand,
 } from "./parsing.js";
+import type { ServerNotification } from "./target-manager.js";
 import { TargetManager } from "./target-manager.js";
 
 /** All known REPL commands for typo suggestion and tab completion. */
@@ -24,8 +26,17 @@ const KNOWN_COMMANDS = [
   "resources/list",
   "resources/read",
   "resources/templates",
+  "resources/subscribe",
+  "resources/unsubscribe",
   "prompts/list",
   "prompts/get",
+  "ping",
+  "log-level",
+  "history",
+  "notifications",
+  "roots/list",
+  "roots/add",
+  "roots/remove",
   "timing",
   "status",
   "reconnect",
@@ -42,6 +53,8 @@ const KNOWN_COMMANDS = [
   "rl",
   "rr",
   "rt",
+  "rs",
+  "ru",
   "pl",
   "pg",
 ];
@@ -321,6 +334,90 @@ export async function startRepl(targetCommand: string[], opts: ReplOptions): Pro
         );
       }
     });
+
+    // ─── Live notification display ──────────────────────────────────────────
+
+    target.on("notification", (notification: ServerNotification) => {
+      const method = notification.method;
+      if (method === "notifications/message") {
+        const lvl = (notification.params as any)?.level ?? "info";
+        const data = (notification.params as any)?.data ?? "";
+        const text = typeof data === "string" ? data : JSON.stringify(data);
+        console.log(pc.dim(`\n  [${lvl}] ${text}`));
+      } else if (method === "notifications/tools/list_changed") {
+        console.log(pc.yellow("\n  ⟳ Server tools changed. Run tools/list to see updates."));
+        refreshCaches(target).catch(() => {});
+      } else if (method === "notifications/resources/list_changed") {
+        console.log(pc.yellow("\n  ⟳ Server resources changed. Run resources/list to see."));
+        refreshCaches(target).catch(() => {});
+      } else if (method === "notifications/resources/updated") {
+        const uri = (notification.params as any)?.uri ?? "unknown";
+        console.log(pc.yellow(`\n  ⟳ Resource updated: ${uri}`));
+      } else if (method === "notifications/prompts/list_changed") {
+        console.log(pc.yellow("\n  ⟳ Server prompts changed. Run prompts/list to see."));
+        refreshCaches(target).catch(() => {});
+      }
+    });
+
+    // ─── Sampling requests ──────────────────────────────────────────────────
+
+    target.on("sampling_request", async ({ request, respond, reject: rejectFn }: any) => {
+      console.log(pc.magenta("\n  ╔══ Sampling Request ══════════════════════════════════"));
+      const messages = request?.messages ?? [];
+      for (const msg of messages) {
+        const role = msg.role === "user" ? pc.blue("user") : pc.magenta("assistant");
+        const text = msg.content?.text ?? JSON.stringify(msg.content);
+        console.log(pc.magenta(`  ║ ${role}: ${text}`));
+      }
+      console.log(pc.magenta("  ╚═════════════════════════════════════════════════════"));
+      if (activeRl) {
+        const answer = await question(activeRl, `  ${pc.bold("Approve? [y/N/text]:")} `);
+        const trimmed = answer.trim().toLowerCase();
+        if (trimmed === "y" || trimmed === "yes") {
+          respond({
+            model: "user-approved",
+            role: "assistant",
+            content: { type: "text", text: "Approved by user." },
+          });
+        } else if (trimmed === "n" || trimmed === "no" || trimmed === "") {
+          rejectFn(new Error("Sampling request rejected by user"));
+        } else {
+          respond({
+            model: "user-provided",
+            role: "assistant",
+            content: { type: "text", text: answer.trim() },
+          });
+        }
+      } else {
+        rejectFn(new Error("No interactive terminal available for sampling approval"));
+      }
+    });
+
+    // ─── Elicitation requests ───────────────────────────────────────────────
+
+    target.on("elicitation_request", async ({ request, respond, reject: rejectFn }: any) => {
+      console.log(pc.cyan("\n  ╔══ Elicitation Request ════════════════════════════════"));
+      console.log(pc.cyan(`  ║ ${request?.message ?? "Server requests input"}`));
+      console.log(pc.cyan("  ╚═════════════════════════════════════════════════════"));
+      if (activeRl) {
+        const answer = await question(
+          activeRl,
+          `  ${pc.bold("Your response (empty to decline):")} `,
+        );
+        if (answer.trim() === "") {
+          respond({ action: "decline" });
+        } else {
+          try {
+            const parsed = JSON.parse(answer.trim());
+            respond({ action: "accept", content: parsed });
+          } catch {
+            respond({ action: "accept", content: { value: answer.trim() } });
+          }
+        }
+      } else {
+        rejectFn(new Error("No interactive terminal available for elicitation"));
+      }
+    });
   }
 
   // ─── Startup: gather counts + show banner ─────────────────────────────────
@@ -531,6 +628,42 @@ async function handleCommand(
 
     case "timing":
       cmdTiming();
+      return;
+
+    case "ping":
+      await cmdPing(target);
+      return;
+
+    case "log-level":
+      await cmdLogLevel(target, rest);
+      return;
+
+    case "history":
+      cmdHistory(target, rest);
+      return;
+
+    case "notifications":
+      cmdNotifications(target, rest);
+      return;
+
+    case "resources/subscribe":
+      await cmdResourcesSubscribe(target, rest);
+      return;
+
+    case "resources/unsubscribe":
+      await cmdResourcesUnsubscribe(target, rest);
+      return;
+
+    case "roots/list":
+      cmdRootsList(target);
+      return;
+
+    case "roots/add":
+      await cmdRootsAdd(target, rest);
+      return;
+
+    case "roots/remove":
+      await cmdRootsRemove(target, rest);
       return;
 
     case "reconnect":
@@ -1181,6 +1314,211 @@ async function cmdPromptsGet(target: TargetManager, rest: string): Promise<void>
   }
 }
 
+// ─── Ping ───────────────────────────────────────────────────────────────────
+
+async function cmdPing(target: TargetManager): Promise<void> {
+  try {
+    const elapsed = await target.ping();
+    console.log(pc.green(`  ✓ Pong! Round-trip: ${elapsed}ms`));
+  } catch (err: any) {
+    console.error(pc.red(`  ✗ Ping failed: ${err.message}`));
+  }
+}
+
+// ─── Log Level ──────────────────────────────────────────────────────────────
+
+async function cmdLogLevel(target: TargetManager, rest: string): Promise<void> {
+  const level = rest.trim().toLowerCase();
+
+  if (!level) {
+    console.log(pc.yellow("  Usage: log-level <level>"));
+    console.log(pc.dim(`  Valid levels: ${LOG_LEVELS.join(", ")}`));
+    return;
+  }
+
+  if (!LOG_LEVELS.includes(level as any)) {
+    const suggestion = suggestCommand(level, [...LOG_LEVELS]);
+    const hint = suggestion ? ` Did you mean "${suggestion}"?` : "";
+    console.log(pc.red(`  Unknown log level: "${level}".${hint}`));
+    console.log(pc.dim(`  Valid levels: ${LOG_LEVELS.join(", ")}`));
+    return;
+  }
+
+  try {
+    await target.setLoggingLevel(level);
+    console.log(pc.green(`  ✓ Logging level set to: ${level}`));
+  } catch (err: any) {
+    console.error(pc.red(`  ✗ Failed to set log level: ${err.message}`));
+    const caps = target.getServerCapabilities();
+    if (!caps?.logging) {
+      console.log(pc.dim("  The server does not advertise logging support."));
+    }
+  }
+}
+
+// ─── History ────────────────────────────────────────────────────────────────
+
+function cmdHistory(target: TargetManager, rest: string): void {
+  const arg = rest.trim();
+
+  if (arg === "clear") {
+    target.clearHistory();
+    console.log(pc.dim("  History cleared."));
+    return;
+  }
+
+  const count = arg ? Number.parseInt(arg, 10) : 20;
+  const records = target.getHistory(Number.isNaN(count) ? 20 : count);
+
+  if (records.length === 0) {
+    console.log(pc.dim("  No request history yet."));
+    return;
+  }
+
+  console.log(pc.bold("\n  Request History"));
+  console.log(pc.dim(`  ${"─".repeat(70)}`));
+
+  for (const rec of records) {
+    const time = new Date(rec.timestamp).toLocaleTimeString();
+    const dur = `${rec.durationMs}ms`;
+    const hasError = rec.error ? pc.red(" ✗") : "";
+    console.log(
+      `  ${pc.dim(`#${rec.id}`)} ${pc.dim(time)} ${pc.green(rec.method.padEnd(30))} ${pc.cyan(dur.padStart(8))}${hasError}`,
+    );
+  }
+
+  const total = target.getHistory().length;
+  console.log(
+    pc.dim(`\n  Showing ${records.length} of ${total} total. Use "history clear" to reset.`),
+  );
+  console.log();
+}
+
+// ─── Notifications ──────────────────────────────────────────────────────────
+
+function cmdNotifications(target: TargetManager, rest: string): void {
+  const arg = rest.trim();
+
+  if (arg === "clear") {
+    target.clearNotifications();
+    console.log(pc.dim("  Notifications cleared."));
+    return;
+  }
+
+  const count = arg ? Number.parseInt(arg, 10) : 20;
+  const records = target.getNotifications(Number.isNaN(count) ? 20 : count);
+
+  if (records.length === 0) {
+    console.log(pc.dim("  No notifications received yet."));
+    console.log(pc.dim("  Notifications appear inline as they arrive from the server."));
+    return;
+  }
+
+  console.log(pc.bold("\n  Server Notifications"));
+  console.log(pc.dim(`  ${"─".repeat(70)}`));
+
+  for (const n of records) {
+    const time = new Date(n.timestamp).toLocaleTimeString();
+    const params = n.params ? ` ${pc.dim(JSON.stringify(n.params))}` : "";
+    console.log(`  ${pc.dim(time)} ${pc.yellow(n.method)}${params}`);
+  }
+
+  const total = target.getNotifications().length;
+  console.log(
+    pc.dim(`\n  Showing ${records.length} of ${total} total. Use "notifications clear" to reset.`),
+  );
+  console.log();
+}
+
+// ─── Resource Subscriptions ─────────────────────────────────────────────────
+
+async function cmdResourcesSubscribe(target: TargetManager, rest: string): Promise<void> {
+  const uri = rest.trim();
+  if (!uri) {
+    console.log(pc.yellow("  Usage: resources/subscribe <uri>"));
+    if (cachedResourceUris.length > 0) {
+      console.log(pc.dim(`  Available: ${cachedResourceUris.join(", ")}`));
+    }
+    return;
+  }
+
+  try {
+    await target.subscribeResource({ uri });
+    console.log(pc.green(`  ✓ Subscribed to: ${uri}`));
+    console.log(pc.dim("  You'll see notifications when this resource changes."));
+  } catch (err: any) {
+    console.error(pc.red(`  ✗ Subscribe failed: ${err.message}`));
+  }
+}
+
+async function cmdResourcesUnsubscribe(target: TargetManager, rest: string): Promise<void> {
+  const uri = rest.trim();
+  if (!uri) {
+    console.log(pc.yellow("  Usage: resources/unsubscribe <uri>"));
+    return;
+  }
+
+  try {
+    await target.unsubscribeResource({ uri });
+    console.log(pc.green(`  ✓ Unsubscribed from: ${uri}`));
+  } catch (err: any) {
+    console.error(pc.red(`  ✗ Unsubscribe failed: ${err.message}`));
+  }
+}
+
+// ─── Roots Management ───────────────────────────────────────────────────────
+
+function cmdRootsList(target: TargetManager): void {
+  const roots = target.getRoots();
+  if (roots.length === 0) {
+    console.log(pc.dim("  No roots configured."));
+    console.log(pc.dim("  Use roots/add <uri> [name] to add one."));
+    return;
+  }
+
+  console.log(pc.bold("\n  Client Roots"));
+  for (const r of roots) {
+    const name = r.name ? ` (${r.name})` : "";
+    console.log(`  ${pc.green(r.uri)}${pc.dim(name)}`);
+  }
+  console.log();
+}
+
+async function cmdRootsAdd(target: TargetManager, rest: string): Promise<void> {
+  const parts = rest.trim().split(/\s+/);
+  const uri = parts[0];
+  const name = parts.slice(1).join(" ") || undefined;
+
+  if (!uri) {
+    console.log(pc.yellow("  Usage: roots/add <uri> [name]"));
+    console.log(pc.dim('  Example: roots/add file:///Users/me/project "My Project"'));
+    return;
+  }
+
+  await target.addRoot({ uri, name });
+  console.log(pc.green(`  ✓ Root added: ${uri}`));
+  console.log(pc.dim("  Server has been notified of the change."));
+}
+
+async function cmdRootsRemove(target: TargetManager, rest: string): Promise<void> {
+  const uri = rest.trim();
+  if (!uri) {
+    console.log(pc.yellow("  Usage: roots/remove <uri>"));
+    const roots = target.getRoots();
+    if (roots.length > 0) {
+      console.log(pc.dim(`  Current roots: ${roots.map((r) => r.uri).join(", ")}`));
+    }
+    return;
+  }
+
+  const removed = await target.removeRoot(uri);
+  if (removed) {
+    console.log(pc.green(`  ✓ Root removed: ${uri}`));
+  } else {
+    console.log(pc.yellow(`  Root not found: ${uri}`));
+  }
+}
+
 // ─── Reconnect ──────────────────────────────────────────────────────────────
 
 async function cmdReconnect(target: TargetManager): Promise<void> {
@@ -1303,11 +1641,26 @@ ${pc.bold("Resource Commands:")}
   ${pc.green("resources/list")}                     List all available resources
   ${pc.green("resources/read")} <uri>               Read a resource by URI
   ${pc.green("resources/templates")}                List resource templates
+  ${pc.green("resources/subscribe")} <uri>          Subscribe to resource changes
+  ${pc.green("resources/unsubscribe")} <uri>        Unsubscribe from resource changes
 
 ${pc.bold("Prompt Commands:")}
 
   ${pc.green("prompts/list")}                       List all available prompts
   ${pc.green("prompts/get")} <name> [json_args]    Get a prompt with arguments
+
+${pc.bold("Protocol Commands:")}
+
+  ${pc.green("ping")}                               Verify connection, show round-trip time
+  ${pc.green("log-level")} <level>                  Set server logging verbosity
+  ${pc.green("history")} [count|clear]              Show request/response history
+  ${pc.green("notifications")} [count|clear]        Show server notifications
+
+${pc.bold("Roots Management:")}
+
+  ${pc.green("roots/list")}                         Show configured client roots
+  ${pc.green("roots/add")} <uri> [name]             Add a root directory
+  ${pc.green("roots/remove")} <uri>                 Remove a root directory
 
 ${pc.bold("Session Commands:")}
 
@@ -1323,7 +1676,8 @@ ${pc.bold("Shortcuts:")}
   ${pc.green("tl")}  tools/list          ${pc.green("rl")}  resources/list     ${pc.green("pl")}  prompts/list
   ${pc.green("td")}  tools/describe      ${pc.green("rr")}  resources/read     ${pc.green("pg")}  prompts/get
   ${pc.green("tc")}  tools/call          ${pc.green("rt")}  resources/templates
-  ${pc.green("ts")}  tools/scaffold
+  ${pc.green("ts")}  tools/scaffold      ${pc.green("rs")}  resources/subscribe
+                          ${pc.green("ru")}  resources/unsubscribe
 
 ${pc.dim("Lines starting with # are treated as comments.")}
 ${pc.dim('JSON arguments can contain spaces: tools/call say {"message": "hello world"}')}
