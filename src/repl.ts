@@ -207,6 +207,13 @@ const callHistory: CallRecord[] = [];
 
 let lastCommand: string | null = null;
 
+class AbortFlowError extends Error {
+  constructor() {
+    super("Aborted by user.");
+    this.name = "AbortFlowError";
+  }
+}
+
 // ─── Module-level readline reference for interactive prompting ────────────────
 
 let activeRl: ReadlineInterface | null = null;
@@ -371,22 +378,30 @@ export async function startRepl(targetCommand: string[], opts: ReplOptions): Pro
       }
       console.log(pc.magenta("  ╚═════════════════════════════════════════════════════"));
       if (activeRl) {
-        const answer = await question(activeRl, `  ${pc.bold("Approve? [y/N/text]:")} `);
-        const trimmed = answer.trim().toLowerCase();
-        if (trimmed === "y" || trimmed === "yes") {
-          respond({
-            model: "user-approved",
-            role: "assistant",
-            content: { type: "text", text: "Approved by user." },
-          });
-        } else if (trimmed === "n" || trimmed === "no" || trimmed === "") {
-          rejectFn(new Error("Sampling request rejected by user"));
-        } else {
-          respond({
-            model: "user-provided",
-            role: "assistant",
-            content: { type: "text", text: answer.trim() },
-          });
+        try {
+          const answer = await question(activeRl, `  ${pc.bold("Approve? [y/N/text]:")} `);
+          const trimmed = answer.trim().toLowerCase();
+          if (trimmed === "y" || trimmed === "yes") {
+            respond({
+              model: "user-approved",
+              role: "assistant",
+              content: { type: "text", text: "Approved by user." },
+            });
+          } else if (trimmed === "n" || trimmed === "no" || trimmed === "") {
+            rejectFn(new Error("Sampling request rejected by user"));
+          } else {
+            respond({
+              model: "user-provided",
+              role: "assistant",
+              content: { type: "text", text: answer.trim() },
+            });
+          }
+        } catch (err) {
+          if (err instanceof AbortFlowError) {
+            rejectFn(new Error("Sampling request rejected by user"));
+          } else {
+            throw err;
+          }
         }
       } else {
         rejectFn(new Error("No interactive terminal available for sampling approval"));
@@ -400,18 +415,26 @@ export async function startRepl(targetCommand: string[], opts: ReplOptions): Pro
       console.log(pc.cyan(`  ║ ${request?.message ?? "Server requests input"}`));
       console.log(pc.cyan("  ╚═════════════════════════════════════════════════════"));
       if (activeRl) {
-        const answer = await question(
-          activeRl,
-          `  ${pc.bold("Your response (empty to decline):")} `,
-        );
-        if (answer.trim() === "") {
-          respond({ action: "decline" });
-        } else {
-          try {
-            const parsed = JSON.parse(answer.trim());
-            respond({ action: "accept", content: parsed });
-          } catch {
-            respond({ action: "accept", content: { value: answer.trim() } });
+        try {
+          const answer = await question(
+            activeRl,
+            `  ${pc.bold("Your response (empty to decline):")} `,
+          );
+          if (answer.trim() === "") {
+            respond({ action: "decline" });
+          } else {
+            try {
+              const parsed = JSON.parse(answer.trim());
+              respond({ action: "accept", content: parsed });
+            } catch {
+              respond({ action: "accept", content: { value: answer.trim() } });
+            }
+          }
+        } catch (err) {
+          if (err instanceof AbortFlowError) {
+            respond({ action: "decline" });
+          } else {
+            throw err;
           }
         }
       } else {
@@ -534,7 +557,11 @@ export async function startRepl(targetCommand: string[], opts: ReplOptions): Pro
         try {
           await handleCommand(trimmed, target, interceptor);
         } catch (err: any) {
-          console.error(pc.red(`✗ Error: ${err.message}`));
+          if (err instanceof AbortFlowError) {
+            console.log(pc.yellow("  Aborted."));
+          } else {
+            console.error(pc.red(`✗ Error: ${err.message}`));
+          }
         }
         if (!closed) {
           rl.setPrompt(getPrompt(target));
@@ -1016,9 +1043,38 @@ function coerceValue(input: string, type: string): unknown {
  * Promise wrapper around readline.question().
  */
 function question(rl: ReadlineInterface, prompt: string): Promise<string> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    let aborted = false;
+
+    const onKeypress = (_str: string, key: any) => {
+      if (key && key.name === "escape") {
+        aborted = true;
+        cleanup();
+        process.stdout.write("\x1b[2K\r");
+        
+        // Clear rl buffer and simulate Enter to release .question callback
+        rl.write("", { ctrl: true, name: "u" });
+        rl.write("\n");
+      }
+    };
+
+    const cleanup = () => {
+      if (process.stdin.isTTY) {
+        process.stdin.removeListener("keypress", onKeypress);
+      }
+    };
+
+    if (process.stdin.isTTY) {
+      process.stdin.on("keypress", onKeypress);
+    }
+
     rl.question(prompt, (answer) => {
-      resolve(answer);
+      cleanup();
+      if (aborted) {
+        reject(new AbortFlowError());
+      } else {
+        resolve(answer);
+      }
     });
   });
 }
@@ -1074,7 +1130,7 @@ async function checkboxSelect(
     }
   };
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     // Pause the readline so we get raw keystrokes
     activeRl?.pause();
 
@@ -1113,7 +1169,8 @@ async function checkboxSelect(
       // Ctrl+C / Escape — cancel
       else if (key === "\x03" || key === "\x1b") {
         cleanup();
-        resolve([]);
+        console.log();
+        reject(new AbortFlowError());
         return;
       }
 
