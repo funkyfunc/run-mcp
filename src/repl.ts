@@ -1057,12 +1057,24 @@ async function checkboxSelect(
           `  Optional arguments (${pc.bold("↑↓")} move, ${pc.bold("Space")} toggle, ${pc.bold("Enter")} confirm):`,
         ),
     );
+    
+    const cols = process.stdout.columns || 80;
+    const reservedWidth = 20 + nameWidth; // Marker + Checkbox + Name + Type + spaces
+    const maxDescLen = Math.max(0, cols - reservedWidth - 2); // -2 for safety margin
+
     for (let i = 0; i < options.length; i++) {
       const [name, prop] = options[i];
       const check = selected.has(i) ? pc.green("✓") : " ";
       const marker = i === cursor ? pc.cyan("›") : " ";
       const typeStr = (prop.type as string) ?? "any";
-      const desc = (prop.description as string) ?? "";
+      
+      let desc = (prop.description as string) ?? "";
+      if (desc.length > maxDescLen && maxDescLen > 3) {
+        desc = desc.slice(0, maxDescLen - 3) + "...";
+      } else if (desc.length > maxDescLen) {
+        desc = desc.slice(0, maxDescLen);
+      }
+
       console.log(
         `\x1b[2K  ${marker} [${check}] ${pc.bold(name.padEnd(nameWidth))}  ${pc.dim(typeStr.padEnd(8))}  ${pc.dim(desc)}`,
       );
