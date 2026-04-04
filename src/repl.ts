@@ -1042,12 +1042,20 @@ async function checkboxSelect(
 
   const nameWidth = Math.max(6, ...options.map(([n]) => n.length));
 
+  let firstRender = true;
+
   const render = () => {
     // Move cursor up to overwrite previous render (except first time)
+    if (!firstRender) {
+      process.stdout.write(`\x1b[${options.length + 1}A`);
+    }
+    firstRender = false;
+
     console.log(
-      pc.dim(
-        `  Optional arguments (${pc.bold("↑↓")} move, ${pc.bold("Space")} toggle, ${pc.bold("Enter")} confirm):`,
-      ),
+      `\x1b[2K` +
+        pc.dim(
+          `  Optional arguments (${pc.bold("↑↓")} move, ${pc.bold("Space")} toggle, ${pc.bold("Enter")} confirm):`,
+        ),
     );
     for (let i = 0; i < options.length; i++) {
       const [name, prop] = options[i];
@@ -1056,7 +1064,7 @@ async function checkboxSelect(
       const typeStr = (prop.type as string) ?? "any";
       const desc = (prop.description as string) ?? "";
       console.log(
-        `  ${marker} [${check}] ${pc.bold(name.padEnd(nameWidth))}  ${pc.dim(typeStr.padEnd(8))}  ${pc.dim(desc)}`,
+        `\x1b[2K  ${marker} [${check}] ${pc.bold(name.padEnd(nameWidth))}  ${pc.dim(typeStr.padEnd(8))}  ${pc.dim(desc)}`,
       );
     }
   };
