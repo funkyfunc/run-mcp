@@ -1042,14 +1042,7 @@ async function checkboxSelect(
 
   const nameWidth = Math.max(6, ...options.map(([n]) => n.length));
 
-  let firstRender = true;
-
   const render = () => {
-    // Move cursor up to overwrite previous render (except first time)
-    if (!firstRender) {
-      process.stdout.write(`\x1b[${options.length + 1}A`);
-    }
-    firstRender = false;
 
     console.log(
       `\x1b[2K` +
