@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import type { Interface as ReadlineInterface } from "node:readline";
 import { createInterface } from "node:readline";
-import { search, input, confirm, select } from "@inquirer/prompts";
+import { search, input, confirm, select, checkbox } from "@inquirer/prompts";
 import pc from "picocolors";
 import { ResponseInterceptor } from "./interceptor.js";
 import {
@@ -221,6 +221,29 @@ class AbortFlowError extends Error {
 let activeRl: ReadlineInterface | null = null;
 let isScriptMode = false;
 let globalPauseReadlineClose = false;
+
+async function withSuspendedReadline<T>(
+  target: TargetManager,
+  interceptor: ResponseInterceptor,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const wasActive = !!activeRl;
+  if (wasActive) {
+    globalPauseReadlineClose = true;
+    activeRl!.close();
+    activeRl = null;
+  }
+  try {
+    return await fn();
+  } finally {
+    if (wasActive) {
+      globalPauseReadlineClose = false;
+      if (!isScriptMode) {
+        startReadlineLoop(target, interceptor);
+      }
+    }
+  }
+}
 
 // ─── Prompt helpers ───────────────────────────────────────────────────────────
 
@@ -635,20 +658,9 @@ async function handleCommand(
 
     case "explore":
     case "interactive":
-      // Close readline temporarily to allow inquirer to take over stdin/stdout
-      if (activeRl) {
-        globalPauseReadlineClose = true;
-        activeRl.close();
-        activeRl = null;
-      }
-      try {
+      await withSuspendedReadline(target, interceptor, async () => {
         await cmdExplore(target, interceptor);
-      } finally {
-        globalPauseReadlineClose = false;
-        if (!isScriptMode) {
-          startReadlineLoop(target, interceptor);
-        }
-      }
+      });
       return;
 
     case "tools/list":
@@ -903,7 +915,7 @@ async function cmdToolsCall(
     }
   } else {
     // Change 2: Interactive tool calling — no JSON provided
-    const collectedArgs = await interactiveArgPrompt(target, toolName);
+    const collectedArgs = await interactiveArgPrompt(target, interceptor, toolName);
     if (collectedArgs === null) return; // User cancelled or error
     args = collectedArgs;
   }
@@ -947,6 +959,7 @@ async function cmdToolsCall(
  */
 async function interactiveArgPrompt(
   target: TargetManager,
+  interceptor: ResponseInterceptor,
   toolName: string,
 ): Promise<Record<string, unknown> | null> {
   const { tools } = await target.listTools();
@@ -975,7 +988,7 @@ async function interactiveArgPrompt(
   }
 
   // In script mode, can't prompt interactively
-  if (isScriptMode || !activeRl) {
+  if (isScriptMode) {
     console.log(pc.yellow(`  Tool "${toolName}" requires arguments.`));
     const scaffolded = scaffoldArgs(schema);
     console.log(pc.dim(`  Usage: tools/call ${toolName} ${scaffolded}`));
@@ -994,44 +1007,63 @@ async function interactiveArgPrompt(
 
   const collectedArgs: Record<string, unknown> = {};
 
-  // Phase 2a: Prompt for required args with live JSON template
-  for (const [name, prop] of requiredProps) {
-    // Show current JSON template state
-    printJsonTemplate(collectedArgs, allProps, name);
+  return await withSuspendedReadline(target, interceptor, async () => {
+    try {
+      // Phase 2a: Prompt for required args with live JSON template
+      for (const [name, prop] of requiredProps) {
+        printJsonTemplate(collectedArgs, allProps, name);
 
-    const typeStr = (prop.type as string) ?? "any";
-    const desc = (prop.description as string) ?? "";
-    const label = desc
-      ? `${name} ${pc.dim(`(${typeStr})`)} ${pc.dim(desc)}`
-      : `${name} ${pc.dim(`(${typeStr})`)}`;
+        const typeStr = (prop.type as string) ?? "any";
+        const desc = (prop.description as string) ?? "";
+        const label = desc
+          ? `${name} ${pc.dim(`(${typeStr})`)} ${pc.dim(desc)}`
+          : `${name} ${pc.dim(`(${typeStr})`)}`;
 
-    const answer = await question(activeRl, `  ${label}: `);
-    collectedArgs[name] = coerceValue(answer, typeStr);
-  }
+        const answerStr = await input({ message: label });
+        collectedArgs[name] = coerceValue(answerStr, typeStr);
+      }
 
-  // Phase 2b: Checkbox toggle for optional args
-  if (optionalProps.length > 0) {
-    const selectedOptionals = await checkboxSelect(optionalProps);
+      // Phase 2b: Checkbox toggle for optional args
+      if (optionalProps.length > 0) {
+        const selectedNames = await checkbox({
+          message: "Select optional arguments to provide:",
+          choices: optionalProps.map(([name, prop]) => {
+            const typeStr = (prop.type as string) ?? "any";
+            const desc = (prop.description as string) ?? "";
+            return {
+              name: desc ? `${name} (${typeStr}) - ${desc}` : `${name} (${typeStr})`,
+              value: name,
+            };
+          }),
+        });
 
-    for (const [name, prop] of selectedOptionals) {
-      printJsonTemplate(collectedArgs, allProps, name);
+        const selectedOptionals = optionalProps.filter(([name]) => selectedNames.includes(name));
 
-      const typeStr = (prop.type as string) ?? "any";
-      const desc = (prop.description as string) ?? "";
-      const label = desc
-        ? `${name} ${pc.dim(`(${typeStr})`)} ${pc.dim(desc)}`
-        : `${name} ${pc.dim(`(${typeStr})`)}`;
+        for (const [name, prop] of selectedOptionals) {
+          printJsonTemplate(collectedArgs, allProps, name);
 
-      const answer = await question(activeRl, `  ${label}: `);
-      collectedArgs[name] = coerceValue(answer, typeStr);
+          const typeStr = (prop.type as string) ?? "any";
+          const desc = (prop.description as string) ?? "";
+          const label = desc
+            ? `${name} ${pc.dim(`(${typeStr})`)} ${pc.dim(desc)}`
+            : `${name} ${pc.dim(`(${typeStr})`)}`;
+
+          const answerStr = await input({ message: label });
+          collectedArgs[name] = coerceValue(answerStr, typeStr);
+        }
+      }
+
+      // Show final JSON
+      console.log();
+      console.log(pc.dim(`  ${JSON.stringify(collectedArgs)}`));
+      return collectedArgs;
+    } catch (err: any) {
+      if (err.name !== "ExitPromptError") {
+        throw err;
+      }
+      return null;
     }
-  }
-
-  // Show final JSON
-  console.log();
-  console.log(pc.dim(`  ${JSON.stringify(collectedArgs)}`));
-
-  return collectedArgs;
+  });
 }
 
 /**
@@ -1799,7 +1831,7 @@ async function readScriptLines(filepath: string): Promise<string[]> {
 // ─── Explorer ─────────────────────────────────────────────────────────────────
 
 async function cmdExplore(target: TargetManager, interceptor: ResponseInterceptor) {
-  const choices = [];
+  const choices: { name: string; value: any; description: string }[] = [];
 
   const caps = target.getServerCapabilities() ?? {};
 
@@ -1857,7 +1889,7 @@ async function cmdExplore(target: TargetManager, interceptor: ResponseIntercepto
             c.description.toLowerCase().includes(lower),
         );
       },
-    });
+    }) as any;
 
     if (answer.type === "tool") {
       await cmdToolsCall(target, interceptor, answer.name);
