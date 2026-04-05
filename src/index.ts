@@ -23,7 +23,7 @@ program
     "--max-text <chars>",
     "Max text response length before truncation (default: 50000) (Agent Mode only)",
   )
-  .option("--agent", "Force start Agent Server mode even if run interactively without arguments")
+  .option("--mcp", "Force start Agent Server mode even if run interactively without arguments")
   .option("-s, --script <file>", "Read commands from a file instead of stdin (REPL Mode only)")
   .addHelpText(
     "after",
@@ -83,14 +83,14 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
   .action(
     async (
       targetCommand: string[],
-      opts: { script?: string; outDir?: string; timeout?: string; maxText?: string; agent?: boolean },
+      opts: { script?: string; outDir?: string; timeout?: string; maxText?: string; mcp?: boolean },
     ) => {
       // If we have a target command, start the REPL mode
       if (targetCommand && targetCommand.length > 0) {
         await startRepl(targetCommand, { script: opts.script, outDir: opts.outDir });
       } else {
         // No target command provided
-        if (opts.agent || !process.stdin.isTTY) {
+        if (opts.mcp || !process.stdin.isTTY) {
           // Agent server mode
           await startServer({
             outDir: opts.outDir,
