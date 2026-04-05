@@ -26,6 +26,7 @@ const KNOWN_COMMANDS = [
   "tools/describe",
   "tools/call",
   "tools/scaffold",
+  "tools/forget",
   "resources/list",
   "resources/read",
   "resources/templates",
@@ -206,6 +207,14 @@ interface CallRecord {
 
 const callHistory: CallRecord[] = [];
 
+// ─── Tool argument memory (for replay with defaults) ─────────────────────────
+
+const lastToolArgsMap = new Map<string, Record<string, unknown>>();
+
+// ─── Readline command history (persisted across readline recreations) ─────────
+
+const replHistory: string[] = [];
+
 // ─── Last command tracking ────────────────────────────────────────────────────
 
 let lastCommand: string | null = null;
@@ -231,6 +240,7 @@ function isAbortError(err: any): boolean {
 let activeRl: ReadlineInterface | null = null;
 let isScriptMode = false;
 let globalPauseReadlineClose = false;
+let deferNextPrompt = false;
 
 async function withSuspendedReadline<T>(
   target: TargetManager,
@@ -249,6 +259,9 @@ async function withSuspendedReadline<T>(
     if (wasActive) {
       globalPauseReadlineClose = false;
       if (!isScriptMode) {
+        // Defer the initial prompt so the caller can finish printing output
+        // before the ✓> prompt reclaims the line.
+        deferNextPrompt = true;
         startReadlineLoop(target, interceptor);
       }
     }
@@ -576,6 +589,7 @@ function startReadlineLoop(target: TargetManager, interceptor: ResponseIntercept
     prompt: getPrompt(target),
     terminal: true,
     completer,
+    history: [...replHistory].reverse(), // Node's readline history expects newest first
   });
   activeRl = rl;
 
@@ -588,7 +602,12 @@ function startReadlineLoop(target: TargetManager, interceptor: ResponseIntercept
     });
   }
 
-  rl.prompt();
+  // When resuming after withSuspendedReadline, defer the prompt
+  // so the calling command handler can finish its output first.
+  if (!deferNextPrompt) {
+    rl.prompt();
+  }
+  deferNextPrompt = false;
 
   // Queue commands to prevent interleaving
   let processing = false;
@@ -610,10 +629,14 @@ function startReadlineLoop(target: TargetManager, interceptor: ResponseIntercept
           console.error(pc.red(`✗ Error: ${err.message}`));
         }
       }
-      if (!closed && activeRl) {
-        console.log();
-        activeRl.setPrompt(getPrompt(target));
-        activeRl.prompt();
+      if (activeRl) {
+        setImmediate(() => {
+          if (activeRl) {
+            console.log();
+            activeRl.setPrompt(getPrompt(target));
+            activeRl.prompt();
+          }
+        });
       }
     }
 
@@ -626,6 +649,7 @@ function startReadlineLoop(target: TargetManager, interceptor: ResponseIntercept
       if (!closed && activeRl) activeRl.prompt();
       return;
     }
+    replHistory.push(trimmed);
     queue.push(trimmed);
     processQueue();
   });
@@ -688,6 +712,10 @@ async function handleCommand(
 
     case "tools/scaffold":
       await cmdToolsScaffold(target, rest);
+      return;
+
+    case "tools/forget":
+      cmdToolsForget(rest);
       return;
 
     case "resources/list":
@@ -890,8 +918,12 @@ async function cmdToolsCall(
   interceptor: ResponseInterceptor,
   rest: string,
 ): Promise<void> {
+  // Check for --clear flag (ignore remembered interactive defaults)
+  const clearPrevious = /\s--clear(\s|$)/.test(rest) || rest === "--clear";
+  const cleanedRest = clearPrevious ? rest.replace(/\s*--clear/, "").trim() : rest;
+
   // Parse: <name> <json_args> [--timeout <ms>]
-  const { toolName, jsonArgs, timeoutMs } = parseCallArgs(rest);
+  const { toolName, jsonArgs, timeoutMs } = parseCallArgs(cleanedRest);
 
   if (!toolName) {
     console.log(pc.yellow("  Usage: tools/call <name> [json_args] [--timeout <ms>]"));
@@ -940,10 +972,20 @@ async function cmdToolsCall(
       }
     }
   } else {
-    // Change 2: Interactive tool calling — no JSON provided
-    const collectedArgs = await interactiveArgPrompt(target, interceptor, toolName);
+    // Interactive tool calling — no JSON provided
+    const collectedArgs = await interactiveArgPrompt(target, interceptor, toolName, clearPrevious);
     if (collectedArgs === null) return; // User cancelled or error
     args = collectedArgs;
+
+    // Push fully composed command to history so up-arrow gives the reproducible command
+    if (!isScriptMode) {
+      const fullCmd = `tools/call ${toolName} ${JSON.stringify(args)}`;
+      replHistory.push(fullCmd);
+      if (activeRl) {
+        // Update the active Readline instance's internal history array directly
+        (activeRl as any).history.unshift(fullCmd);
+      }
+    }
   }
 
   console.log(pc.dim(`  Calling ${toolName}...`));
@@ -956,13 +998,22 @@ async function cmdToolsCall(
   // Track for timing command
   callHistory.push({ toolName, durationMs: elapsed, timestamp: startTime });
 
-  // Print result content — colorize errors
+  // Store args for replay on next interactive call
+  lastToolArgsMap.set(toolName, { ...args });
+
+  // Print result with visual separator
+  const width = 60;
   const isError = (result as any).isError === true;
+  const topText = isError ? "Error" : "Result";
+  const resultLabel = isError ? pc.red("Error") : pc.green("Result");
+  const topPads = Math.max(0, width - 4 - topText.length);
+  console.log(`\n  ${pc.dim("──")} ${resultLabel} ${pc.dim("─".repeat(topPads))}`);
+
   const content = (result as any).content;
   if (Array.isArray(content)) {
     for (const item of content) {
       if (item.type === "text") {
-        console.log(isError ? pc.red(`✗ ${item.text}`) : item.text);
+        console.log(isError ? pc.red(`  ✗ ${item.text}`) : `  ${item.text}`);
       } else {
         console.log(formatJson(item, 2));
       }
@@ -979,7 +1030,9 @@ async function cmdToolsCall(
     );
   }
 
-  console.log(pc.dim(`  (${elapsed}ms)`));
+  const elapsedStr = `${elapsed}ms`;
+  const bottomPads = Math.max(0, width - 4 - elapsedStr.length);
+  console.log(`  ${pc.dim("─".repeat(bottomPads))} ${pc.dim(elapsedStr)} ${pc.dim("──")}`);
 }
 
 // ─── Interactive Argument Prompting ─────────────────────────────────────────
@@ -995,6 +1048,7 @@ async function interactiveArgPrompt(
   target: TargetManager,
   interceptor: ResponseInterceptor,
   toolName: string,
+  clearPrevious: boolean = false,
 ): Promise<Record<string, unknown> | null> {
   const { tools } = await target.listTools();
   const tool = tools.find((t) => t.name === toolName);
@@ -1034,9 +1088,16 @@ async function interactiveArgPrompt(
   const requiredProps = allProps.filter(([name]) => required.includes(name));
   const optionalProps = allProps.filter(([name]) => !required.includes(name));
 
+  // Check for remembered args from a previous call
+  const previousArgs = clearPrevious ? undefined : lastToolArgsMap.get(toolName);
+
   // Show tool info
   console.log();
   console.log(`  ${pc.bold(tool.name)}${tool.description ? pc.dim(` — ${tool.description}`) : ""}`);
+  if (previousArgs) {
+    console.log(pc.dim(`  Previous: ${JSON.stringify(previousArgs)}`));
+    console.log(pc.dim("  Press Enter to reuse values, or type to override."));
+  }
   console.log();
 
   const collectedArgs: Record<string, unknown> = {};
@@ -1057,16 +1118,25 @@ async function interactiveArgPrompt(
 
         const typeStr = (prop.type as string) ?? "any";
         const desc = (prop.description as string) ?? "";
+        const prevVal = previousArgs?.[name];
         const label = desc
           ? `${name} ${pc.dim(`(${typeStr})`)} ${pc.dim(desc)}`
           : `${name} ${pc.dim(`(${typeStr})`)}`;
 
-        const answerStr = await input({ message: label }, { signal: abortController.signal });
+        const answerStr = await input(
+          { message: label, default: prevVal !== undefined ? String(prevVal) : undefined },
+          { signal: abortController.signal },
+        );
         collectedArgs[name] = coerceValue(answerStr, typeStr);
       }
 
       // Phase 2b: Checkbox toggle for optional args
       if (optionalProps.length > 0) {
+        // Pre-select optional args that were used in the previous call
+        const previouslyUsedOptionals = previousArgs
+          ? optionalProps.filter(([name]) => name in previousArgs).map(([name]) => name)
+          : [];
+
         const selectedNames = await checkbox(
           {
             message: "Select optional arguments to provide:",
@@ -1076,6 +1146,7 @@ async function interactiveArgPrompt(
               return {
                 name: desc ? `${name} (${typeStr}) - ${desc}` : `${name} (${typeStr})`,
                 value: name,
+                checked: previouslyUsedOptionals.includes(name),
               };
             }),
           },
@@ -1089,18 +1160,27 @@ async function interactiveArgPrompt(
 
           const typeStr = (prop.type as string) ?? "any";
           const desc = (prop.description as string) ?? "";
+          const prevVal = previousArgs?.[name];
           const label = desc
             ? `${name} ${pc.dim(`(${typeStr})`)} ${pc.dim(desc)}`
             : `${name} ${pc.dim(`(${typeStr})`)}`;
 
-          const answerStr = await input({ message: label }, { signal: abortController.signal });
+          const answerStr = await input(
+            { message: label, default: prevVal !== undefined ? String(prevVal) : undefined },
+            { signal: abortController.signal },
+          );
           collectedArgs[name] = coerceValue(answerStr, typeStr);
         }
       }
 
-      // Show final JSON
+      // Show final JSON and confirm execution
       console.log();
       console.log(pc.dim(`  ${JSON.stringify(collectedArgs)}`));
+      const shouldExecute = await confirm(
+        { message: "Execute?", default: true },
+        { signal: abortController.signal },
+      );
+      if (!shouldExecute) return null;
       return collectedArgs;
     } catch (err: any) {
       if (!isAbortError(err)) {
@@ -1816,7 +1896,9 @@ ${pc.bold("Tool Commands:")}
   ${pc.green("tools/describe")} <name>              Show a tool's input schema
   ${pc.green("tools/call")} <name> [json] [opts]    Call a tool (interactive if no json)
     Options: ${pc.dim("--timeout <ms>")}            Override default timeout (60s)
+             ${pc.dim("--clear")}                  Ignore remembered argument defaults
   ${pc.green("tools/scaffold")} <name>              Generate a template for a tool's arguments
+  ${pc.green("tools/forget")} [name]                Clear remembered interactive defaults
 
 ${pc.bold("Resource Commands:")}
 
@@ -1864,6 +1946,7 @@ ${pc.bold("Shortcuts:")}
 ${pc.dim("Lines starting with # are treated as comments.")}
 ${pc.dim('JSON arguments can contain spaces: tools/call say {"message": "hello world"}')}
 ${pc.dim("Run tools/call <name> without JSON for interactive argument prompting.")}
+${pc.dim("Use tools/call <name> --clear to ignore remembered defaults.")}
 `);
 }
 
@@ -1874,6 +1957,24 @@ async function readScriptLines(filepath: string): Promise<string[]> {
   const content = await readFile(filepath, "utf-8");
   return content.split("\n");
 }
+// ─── Tools Forget ───────────────────────────────────────────────────────────────
+
+function cmdToolsForget(rest: string): void {
+  const toolName = rest.trim();
+  if (toolName) {
+    if (lastToolArgsMap.has(toolName)) {
+      lastToolArgsMap.delete(toolName);
+      console.log(pc.green(`  Cleared remembered args for ${pc.bold(toolName)}.`));
+    } else {
+      console.log(pc.yellow(`  No remembered args for "${toolName}".`));
+    }
+  } else {
+    const count = lastToolArgsMap.size;
+    lastToolArgsMap.clear();
+    console.log(pc.green(`  Cleared remembered args for ${count} tool${count === 1 ? "" : "s"}.`));
+  }
+}
+
 // ─── Explorer ─────────────────────────────────────────────────────────────────
 
 async function cmdExplore(target: TargetManager, interceptor: ResponseInterceptor) {
@@ -1920,6 +2021,21 @@ async function cmdExplore(target: TargetManager, interceptor: ResponseIntercepto
 
   if (choices.length === 0) {
     console.log(pc.yellow("No tools, resources, or prompts found."));
+    return;
+  }
+
+  // Non-TTY fallback: print a static numbered menu
+  if (!process.stdin.isTTY) {
+    console.log(pc.bold("\n  Server Capabilities\n"));
+    for (let i = 0; i < choices.length; i++) {
+      console.log(
+        `  ${pc.cyan(String(i + 1).padStart(2))}. ${choices[i].name}  ${pc.dim(choices[i].description)}`,
+      );
+    }
+    console.log();
+    console.log(
+      pc.dim("  Non-interactive mode — use specific commands instead (e.g., tools/call <name>)."),
+    );
     return;
   }
 
