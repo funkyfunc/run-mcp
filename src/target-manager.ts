@@ -1,6 +1,8 @@
 import { EventEmitter } from "node:events";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   CreateMessageRequestSchema,
   ElicitRequestSchema,
@@ -78,7 +80,7 @@ export interface Root {
  */
 export class TargetManager extends EventEmitter {
   private client: Client | null = null;
-  private transport: StdioClientTransport | null = null;
+  private transport: Transport | null = null;
   private startTime: number = 0;
   private childPid: number | null = null;
   private _connected = false;
@@ -129,26 +131,33 @@ export class TargetManager extends EventEmitter {
   async connect(): Promise<void> {
     this._intentionalClose = false;
 
-    this.transport = new StdioClientTransport({
-      command: this.command,
-      args: this.args,
-      stderr: "pipe",
-    });
+    // Detect if we should use SSE or Stdio based on the command
+    if (this.command.startsWith("http://") || this.command.startsWith("https://")) {
+      this.transport = new SSEClientTransport(new URL(this.command));
+    } else {
+      const stdioTransport = new StdioClientTransport({
+        command: this.command,
+        args: this.args,
+        stderr: "pipe",
+      });
 
-    // Capture stderr from child process
-    this.transport.stderr?.on("data", (chunk: Buffer) => {
-      const text = chunk.toString().trimEnd();
-      if (text) {
-        const lines = text.split("\n");
-        this._stderrLineCount += lines.length;
-        // Store in ring buffer for later retrieval
-        this._stderrLines.push(...lines);
-        if (this._stderrLines.length > TargetManager.MAX_STDERR_LINES) {
-          this._stderrLines = this._stderrLines.slice(-TargetManager.MAX_STDERR_LINES);
+      // Capture stderr from child process
+      stdioTransport.stderr?.on("data", (chunk: Buffer) => {
+        const text = chunk.toString().trimEnd();
+        if (text) {
+          const lines = text.split("\n");
+          this._stderrLineCount += lines.length;
+          // Store in ring buffer for later retrieval
+          this._stderrLines.push(...lines);
+          if (this._stderrLines.length > TargetManager.MAX_STDERR_LINES) {
+            this._stderrLines = this._stderrLines.slice(-TargetManager.MAX_STDERR_LINES);
+          }
+          this.emit("stderr", text);
         }
-        this.emit("stderr", text);
-      }
-    });
+      });
+      
+      this.transport = stdioTransport;
+    }
 
     this.client = new Client(
       { name: "run-mcp", version: "1.4.0" },
@@ -288,10 +297,12 @@ export class TargetManager extends EventEmitter {
     this._connected = true;
     this.startTime = Date.now();
 
-    // Try to capture child PID from transport internals
+    // Try to capture child PID from transport internals (only valid for stdio)
     const proc = (this.transport as any)._process;
     if (proc?.pid) {
       this.childPid = proc.pid;
+    } else {
+      this.childPid = null;
     }
 
     this.emit("connected");

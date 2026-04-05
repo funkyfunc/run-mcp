@@ -23,6 +23,7 @@ program
     "--max-text <chars>",
     "Max text response length before truncation (default: 50000) (Agent Mode only)",
   )
+  .option("--agent", "Force start Agent Server mode even if run interactively without arguments")
   .option("-s, --script <file>", "Read commands from a file instead of stdin (REPL Mode only)")
   .addHelpText(
     "after",
@@ -82,18 +83,41 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
   .action(
     async (
       targetCommand: string[],
-      opts: { script?: string; outDir?: string; timeout?: string; maxText?: string },
+      opts: { script?: string; outDir?: string; timeout?: string; maxText?: string; agent?: boolean },
     ) => {
       // If we have a target command, start the REPL mode
       if (targetCommand && targetCommand.length > 0) {
         await startRepl(targetCommand, { script: opts.script, outDir: opts.outDir });
       } else {
-        // Agent server mode
-        await startServer({
-          outDir: opts.outDir,
-          timeoutMs: opts.timeout ? Number.parseInt(opts.timeout, 10) : undefined,
-          maxTextLength: opts.maxText ? Number.parseInt(opts.maxText, 10) : undefined,
-        });
+        // No target command provided
+        if (opts.agent || !process.stdin.isTTY) {
+          // Agent server mode
+          await startServer({
+            outDir: opts.outDir,
+            timeoutMs: opts.timeout ? Number.parseInt(opts.timeout, 10) : undefined,
+            maxTextLength: opts.maxText ? Number.parseInt(opts.maxText, 10) : undefined,
+          });
+        } else {
+          // Human is running it in a terminal without arguments -> pick a config
+          const { pickDiscoveredServer } = await import("./config-scanner.js");
+          const selected = await pickDiscoveredServer();
+          
+          if (!selected) {
+            // User aborted or no configs found
+            program.help();
+            return;
+          }
+          
+          // Environment variables from config
+          if (selected.config.env) {
+            Object.assign(process.env, selected.config.env);
+          }
+
+          await startRepl([selected.config.command, ...(selected.config.args || [])], {
+            script: opts.script,
+            outDir: opts.outDir,
+          });
+        }
       }
     },
   );

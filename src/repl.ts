@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import type { Interface as ReadlineInterface } from "node:readline";
 import { createInterface } from "node:readline";
+import { search, input, confirm, select } from "@inquirer/prompts";
 import pc from "picocolors";
 import { ResponseInterceptor } from "./interceptor.js";
 import {
@@ -19,6 +20,8 @@ import { TargetManager } from "./target-manager.js";
 
 /** All known REPL commands for typo suggestion and tab completion. */
 const KNOWN_COMMANDS = [
+  "explore",
+  "interactive",
   "tools/list",
   "tools/describe",
   "tools/call",
@@ -215,9 +218,9 @@ class AbortFlowError extends Error {
 }
 
 // ─── Module-level readline reference for interactive prompting ────────────────
-
 let activeRl: ReadlineInterface | null = null;
 let isScriptMode = false;
+let globalPauseReadlineClose = false;
 
 // ─── Prompt helpers ───────────────────────────────────────────────────────────
 
@@ -522,74 +525,87 @@ export async function startRepl(targetCommand: string[], opts: ReplOptions): Pro
     await target.close();
     process.exit(0);
   } else {
-    // Interactive mode: readline prompt with tab completion
-    const rl = createInterface({
-      input: process.stdin,
-      output: process.stdout,
-      prompt: getPrompt(target),
-      terminal: true,
-      completer,
-    });
-    activeRl = rl;
+    // Interactive mode: start the readline event loop
+    startReadlineLoop(target, interceptor);
+  }
+}
 
-    // Reset tab cycling on any non-tab keypress
-    if (process.stdin.isTTY) {
-      process.stdin.on("keypress", (_str: string, key: any) => {
-        if (!key || key.name !== "tab") {
-          resetTabCycle();
+/**
+ * Starts the readline loop. Extracted so it can be temporarily closed and 
+ * restarted when we need to hand over stdin/stdout to Inquirer.
+ */
+function startReadlineLoop(target: TargetManager, interceptor: ResponseInterceptor) {
+  if (isScriptMode || activeRl) return;
+
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    prompt: getPrompt(target),
+    terminal: true,
+    completer,
+  });
+  activeRl = rl;
+
+  // Reset tab cycling on any non-tab keypress
+  if (process.stdin.isTTY) {
+    process.stdin.on("keypress", (_str: string, key: any) => {
+      if (!key || key.name !== "tab") {
+        resetTabCycle();
+      }
+    });
+  }
+
+  rl.prompt();
+
+  // Queue commands to prevent interleaving
+  let processing = false;
+  let closed = false;
+  const queue: string[] = [];
+
+  const processQueue = async () => {
+    if (processing) return;
+    processing = true;
+
+    while (queue.length > 0) {
+      const trimmed = queue.shift()!;
+      try {
+        await handleCommand(trimmed, target, interceptor);
+      } catch (err: any) {
+        if (err instanceof AbortFlowError) {
+          console.log(pc.yellow("  Aborted."));
+        } else {
+          console.error(pc.red(`✗ Error: ${err.message}`));
         }
-      });
+      }
+      if (!closed && activeRl) {
+        activeRl.setPrompt(getPrompt(target));
+        activeRl.prompt();
+      }
     }
 
-    rl.prompt();
+    processing = false;
+  };
 
-    // Queue commands to prevent interleaving
-    let processing = false;
-    let closed = false;
-    const queue: string[] = [];
+  rl.on("line", (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) {
+      if (!closed && activeRl) activeRl.prompt();
+      return;
+    }
+    queue.push(trimmed);
+    processQueue();
+  });
 
-    const processQueue = async () => {
-      if (processing) return;
-      processing = true;
-
-      while (queue.length > 0) {
-        const trimmed = queue.shift()!;
-        try {
-          await handleCommand(trimmed, target, interceptor);
-        } catch (err: any) {
-          if (err instanceof AbortFlowError) {
-            console.log(pc.yellow("  Aborted."));
-          } else {
-            console.error(pc.red(`✗ Error: ${err.message}`));
-          }
-        }
-        if (!closed) {
-          rl.setPrompt(getPrompt(target));
-          rl.prompt();
-        }
-      }
-
-      processing = false;
-    };
-
-    rl.on("line", (line: string) => {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) {
-        if (!closed) rl.prompt();
-        return;
-      }
-      queue.push(trimmed);
-      processQueue();
-    });
-
-    rl.on("close", async () => {
-      closed = true;
-      activeRl = null;
+  rl.on("close", async () => {
+    closed = true;
+    activeRl = null;
+    
+    if (!globalPauseReadlineClose) {
       console.log(pc.dim("\nShutting down..."));
       await target.close();
       process.exit(0);
-    });
-  }
+    }
+  });
 }
 
 /**
@@ -615,6 +631,24 @@ async function handleCommand(
   switch (cmd) {
     case "help":
       printHelp();
+      return;
+
+    case "explore":
+    case "interactive":
+      // Close readline temporarily to allow inquirer to take over stdin/stdout
+      if (activeRl) {
+        globalPauseReadlineClose = true;
+        activeRl.close();
+        activeRl = null;
+      }
+      try {
+        await cmdExplore(target, interceptor);
+      } finally {
+        globalPauseReadlineClose = false;
+        if (!isScriptMode) {
+          startReadlineLoop(target, interceptor);
+        }
+      }
       return;
 
     case "tools/list":
@@ -1761,4 +1795,80 @@ ${pc.dim("Run tools/call <name> without JSON for interactive argument prompting.
 async function readScriptLines(filepath: string): Promise<string[]> {
   const content = await readFile(filepath, "utf-8");
   return content.split("\n");
+}
+// ─── Explorer ─────────────────────────────────────────────────────────────────
+
+async function cmdExplore(target: TargetManager, interceptor: ResponseInterceptor) {
+  const choices = [];
+
+  const caps = target.getServerCapabilities() ?? {};
+
+  try {
+    const { tools } = await target.listTools();
+    for (const t of tools) {
+      choices.push({
+        name: `🛠️  Tool: ${t.name}`,
+        value: { type: "tool", name: t.name },
+        description: t.description || `Call the ${t.name} tool`,
+      });
+    }
+  } catch {}
+
+  if (caps.resources) {
+    try {
+      const { resources } = await target.listResources();
+      for (const r of (resources as any[])) {
+        choices.push({
+          name: `📄 Resource: ${r.name || r.uri}`,
+          value: { type: "resource", uri: r.uri },
+          description: r.description || `Read resource ${r.uri}`,
+        });
+      }
+    } catch {}
+  }
+
+  if (caps.prompts) {
+    try {
+      const { prompts } = await target.listPrompts();
+      for (const p of prompts) {
+        choices.push({
+          name: `💬 Prompt: ${p.name}`,
+          value: { type: "prompt", name: p.name },
+          description: p.description || `Get the ${p.name} prompt`,
+        });
+      }
+    } catch {}
+  }
+
+  if (choices.length === 0) {
+    console.log(pc.yellow("No tools, resources, or prompts found."));
+    return;
+  }
+
+  try {
+    const answer = await search({
+      message: "Explore server capabilities:",
+      source: async (term: string | undefined) => {
+        if (!term) return choices;
+        const lower = term.toLowerCase();
+        return choices.filter(
+          (c) =>
+            c.name.toLowerCase().includes(lower) ||
+            c.description.toLowerCase().includes(lower),
+        );
+      },
+    });
+
+    if (answer.type === "tool") {
+      await cmdToolsCall(target, interceptor, answer.name);
+    } else if (answer.type === "resource") {
+      await cmdResourcesRead(target, answer.uri);
+    } else if (answer.type === "prompt") {
+      await cmdPromptsGet(target, answer.name);
+    }
+  } catch (err: any) {
+    if (err.name !== "ExitPromptError") {
+      // ignore
+    }
+  }
 }
