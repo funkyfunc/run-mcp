@@ -40,6 +40,9 @@ run-mcp repl node path/to/my-mcp-server.js
 
 # Or use npx without installing globally
 npx . repl node path/to/my-mcp-server.js
+
+# Or start it without arguments to open the interactive server discovery menu!
+run-mcp
 ```
 
 You'll see an interactive prompt:
@@ -107,6 +110,7 @@ Then use these tools from your agent:
 | `call_mcp_primitive` | Call a tool, read a resource, or get a prompt. Auto-connects if not already connected. Use `disconnect_after` for one-shot tests. |
 | `list_mcp_primitives` | List tools, resources, and/or prompts on the connected server |
 | `get_mcp_server_stderr` | View target server stderr output |
+| `list_available_mcp_servers`| Discover other local MCP servers configured on the host machine |
 
 ## REPL Mode Commands
 
@@ -117,7 +121,8 @@ Once connected via `run-mcp <command>`, the following shorthand commands are ava
 | `explore` | Open interactive fuzzy-search selector for tools, resources, and prompts |
 | `tools/list` | List all tools exposed by the target server |
 | `tools/describe <name>` | Show a tool's full input schema |
-| `tools/call <name> <json> [--timeout <ms>]` | Call a tool with JSON arguments |
+| `tools/call <name> [json] [--clear]` | Call a tool. Launch interactive wizard if no JSON provided. Use `--clear` to ignore remembered arguments. |
+| `tools/forget [name]` | Clear remembered interactive arguments for a tool, or all tools if no name provided. |
 | `status` | Show target server status (PID, uptime, connection) |
 | `help` | Show available commands |
 | `exit` / `quit` | Disconnect and exit |
@@ -139,6 +144,19 @@ Once connected via `run-mcp <command>`, the following shorthand commands are ava
 
 # Arguments with spaces work fine
 > tools/call send_message {"text": "hello world", "channel": "general"}
+
+### Interactive Wizard & Argument Memory
+
+If you invoke a tool without JSON arguments, `run-mcp` will guide you through an interactive scaffolding wizard:
+```bash
+> tools/call send_message
+✔ text (string) Message text to send: Hello World!
+✔ Select optional arguments to provide: channel
+✔ channel (string) The Slack channel: general
+✔ Execute? Yes
+  Calling send_message...
+```
+`run-mcp` actively **remembers** your inputs across identical interactive calls, scaffolding defaults based on your last execution! Use `tools/forget` or `--clear` if you need a clean slate.
 ```
 
 ### Script Mode

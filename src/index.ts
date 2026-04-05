@@ -104,7 +104,7 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
 
           if (!selected) {
             // User aborted or no configs found
-            program.help();
+            console.log("Run 'run-mcp --help' to see manual usage instructions.");
             return;
           }
 
