@@ -247,6 +247,17 @@ npm run start -- node --import tsx tests/fixtures/mock-server.ts
 ```
 Once it's running in your background terminal, use your text/action input tools to simulate a user typing (`explore`, `tools/call echo {"text": "hello"}`, `exit`) and read the stream output to verify the UX formatting exactly as a human would see it!
 
+**How to dynamically test the Agent Server (MCP Mode):**
+Since `run-mcp` is *itself* an MCP server when run in Agent Mode, you can test it recursively by using the human REPL to connect to its own server mode! If you are modifying tools inside `src/server.ts`:
+```bash
+# Build your changes first
+npm run build
+
+# Start the REPL connected to the built run-mcp Agent Server
+npm run start -- node dist/index.js --mcp
+```
+Once connected, you can use `tools/list` or `explore` to invoke `call_mcp_primitive`, `list_available_mcp_servers`, or any other tool you just added directly from the terminal!
+
 ### Important: Sequential Execution
 
 Tests run **sequentially** (`fileParallelism: false` in vitest.config.ts) because integration tests spawn child processes on stdio. Parallel execution causes port/stdin conflicts. Don't change this.
