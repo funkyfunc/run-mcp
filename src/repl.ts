@@ -1008,6 +1008,14 @@ async function interactiveArgPrompt(
   const collectedArgs: Record<string, unknown> = {};
 
   return await withSuspendedReadline(target, interceptor, async () => {
+    const abortController = new AbortController();
+    const onData = (data: Buffer) => {
+      if (data.toString() === "\x1b") {
+        abortController.abort();
+      }
+    };
+    process.stdin.on("data", onData);
+
     try {
       // Phase 2a: Prompt for required args with live JSON template
       for (const [name, prop] of requiredProps) {
@@ -1019,23 +1027,26 @@ async function interactiveArgPrompt(
           ? `${name} ${pc.dim(`(${typeStr})`)} ${pc.dim(desc)}`
           : `${name} ${pc.dim(`(${typeStr})`)}`;
 
-        const answerStr = await input({ message: label });
+        const answerStr = await input({ message: label }, { signal: abortController.signal });
         collectedArgs[name] = coerceValue(answerStr, typeStr);
       }
 
       // Phase 2b: Checkbox toggle for optional args
       if (optionalProps.length > 0) {
-        const selectedNames = await checkbox({
-          message: "Select optional arguments to provide:",
-          choices: optionalProps.map(([name, prop]) => {
-            const typeStr = (prop.type as string) ?? "any";
-            const desc = (prop.description as string) ?? "";
-            return {
-              name: desc ? `${name} (${typeStr}) - ${desc}` : `${name} (${typeStr})`,
-              value: name,
-            };
-          }),
-        });
+        const selectedNames = await checkbox(
+          {
+            message: "Select optional arguments to provide:",
+            choices: optionalProps.map(([name, prop]) => {
+              const typeStr = (prop.type as string) ?? "any";
+              const desc = (prop.description as string) ?? "";
+              return {
+                name: desc ? `${name} (${typeStr}) - ${desc}` : `${name} (${typeStr})`,
+                value: name,
+              };
+            }),
+          },
+          { signal: abortController.signal },
+        );
 
         const selectedOptionals = optionalProps.filter(([name]) => selectedNames.includes(name));
 
@@ -1048,7 +1059,7 @@ async function interactiveArgPrompt(
             ? `${name} ${pc.dim(`(${typeStr})`)} ${pc.dim(desc)}`
             : `${name} ${pc.dim(`(${typeStr})`)}`;
 
-          const answerStr = await input({ message: label });
+          const answerStr = await input({ message: label }, { signal: abortController.signal });
           collectedArgs[name] = coerceValue(answerStr, typeStr);
         }
       }
@@ -1058,10 +1069,12 @@ async function interactiveArgPrompt(
       console.log(pc.dim(`  ${JSON.stringify(collectedArgs)}`));
       return collectedArgs;
     } catch (err: any) {
-      if (err.name !== "ExitPromptError") {
+      if (err.name !== "ExitPromptError" && err.name !== "AbortError") {
         throw err;
       }
       return null;
+    } finally {
+      process.stdin.off("data", onData);
     }
   });
 }
@@ -1899,7 +1912,7 @@ async function cmdExplore(target: TargetManager, interceptor: ResponseIntercepto
       await cmdPromptsGet(target, answer.name);
     }
   } catch (err: any) {
-    if (err.name !== "ExitPromptError") {
+    if (err.name !== "ExitPromptError" && err.name !== "AbortError") {
       throw err;
     }
   }
