@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   CreateMessageRequestSchema,
@@ -155,7 +155,7 @@ export class TargetManager extends EventEmitter {
           this.emit("stderr", text);
         }
       });
-      
+
       this.transport = stdioTransport;
     }
 

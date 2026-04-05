@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import type { Interface as ReadlineInterface } from "node:readline";
 import { createInterface } from "node:readline";
-import { search, input, confirm, select, checkbox } from "@inquirer/prompts";
+import { checkbox, confirm, input, search, select } from "@inquirer/prompts";
 import pc from "picocolors";
 import { ResponseInterceptor } from "./interceptor.js";
 import {
@@ -215,6 +215,16 @@ class AbortFlowError extends Error {
     super("Aborted by user.");
     this.name = "AbortFlowError";
   }
+}
+
+function isAbortError(err: any): boolean {
+  if (!err) return false;
+  return (
+    err.name === "ExitPromptError" ||
+    err.name === "AbortError" ||
+    err.message === "Prompt was aborted" ||
+    (typeof err.message === "string" && err.message.includes("User force closed"))
+  );
 }
 
 // ─── Module-level readline reference for interactive prompting ────────────────
@@ -554,7 +564,7 @@ export async function startRepl(targetCommand: string[], opts: ReplOptions): Pro
 }
 
 /**
- * Starts the readline loop. Extracted so it can be temporarily closed and 
+ * Starts the readline loop. Extracted so it can be temporarily closed and
  * restarted when we need to hand over stdin/stdout to Inquirer.
  */
 function startReadlineLoop(target: TargetManager, interceptor: ResponseInterceptor) {
@@ -601,6 +611,7 @@ function startReadlineLoop(target: TargetManager, interceptor: ResponseIntercept
         }
       }
       if (!closed && activeRl) {
+        console.log();
         activeRl.setPrompt(getPrompt(target));
         activeRl.prompt();
       }
@@ -622,7 +633,7 @@ function startReadlineLoop(target: TargetManager, interceptor: ResponseIntercept
   rl.on("close", async () => {
     closed = true;
     activeRl = null;
-    
+
     if (!globalPauseReadlineClose) {
       console.log(pc.dim("\nShutting down..."));
       await target.close();
@@ -766,7 +777,22 @@ async function handleCommand(
       // Suggest the closest known command if it's a likely typo
       const suggestion = suggestCommand(cmd, KNOWN_COMMANDS);
       if (suggestion) {
-        console.log(pc.yellow(`Unknown command: ${cmd}. Did you mean ${pc.bold(suggestion)}?`));
+        console.log(pc.yellow(`Unknown command: ${cmd}.`));
+        try {
+          await withSuspendedReadline(target, interceptor, async () => {
+            const runIt = await confirm({
+              message: `Did you mean ${pc.bold(suggestion)}?`,
+              default: true,
+            });
+            if (runIt) {
+              const rebuiltCommand = rest ? `${suggestion} ${rest}` : suggestion;
+              await handleCommand(rebuiltCommand, target, interceptor);
+            }
+          });
+        } catch (err: any) {
+          if (!isAbortError(err)) throw err;
+          throw new AbortFlowError();
+        }
       } else {
         console.log(pc.yellow(`Unknown command: ${cmd}. Type ${pc.bold("help")} for usage.`));
       }
@@ -945,6 +971,14 @@ async function cmdToolsCall(
     console.log(formatJson(result, 2));
   }
 
+  if (isError) {
+    console.log(
+      pc.yellow(
+        `  💡 Tip: Check the tool arguments via 'tools/describe ${toolName}' \n          or view the raw server stderr above.`,
+      ),
+    );
+  }
+
   console.log(pc.dim(`  (${elapsed}ms)`));
 }
 
@@ -1069,7 +1103,7 @@ async function interactiveArgPrompt(
       console.log(pc.dim(`  ${JSON.stringify(collectedArgs)}`));
       return collectedArgs;
     } catch (err: any) {
-      if (err.name !== "ExitPromptError" && err.name !== "AbortError") {
+      if (!isAbortError(err)) {
         throw err;
       }
       return null;
@@ -1130,7 +1164,7 @@ function question(rl: ReadlineInterface, prompt: string): Promise<string> {
         aborted = true;
         cleanup();
         process.stdout.write("\x1b[2K\r");
-        
+
         // Clear rl buffer and simulate Enter to release .question callback
         rl.write("", { ctrl: true, name: "u" });
         rl.write("\n");
@@ -1178,14 +1212,13 @@ async function checkboxSelect(
   const nameWidth = Math.max(6, ...options.map(([n]) => n.length));
 
   const render = () => {
-
     console.log(
       `\x1b[2K` +
         pc.dim(
           `  Optional arguments (${pc.bold("↑↓")} move, ${pc.bold("Space")} toggle, ${pc.bold("Enter")} confirm):`,
         ),
     );
-    
+
     const cols = process.stdout.columns || 80;
     const reservedWidth = 20 + nameWidth; // Marker + Checkbox + Name + Type + spaces
     const maxDescLen = Math.max(0, cols - reservedWidth - 2); // -2 for safety margin
@@ -1195,7 +1228,7 @@ async function checkboxSelect(
       const check = selected.has(i) ? pc.green("✓") : " ";
       const marker = i === cursor ? pc.cyan("›") : " ";
       const typeStr = (prop.type as string) ?? "any";
-      
+
       let desc = (prop.description as string) ?? "";
       if (desc.length > maxDescLen && maxDescLen > 3) {
         desc = desc.slice(0, maxDescLen - 3) + "...";
@@ -1862,7 +1895,7 @@ async function cmdExplore(target: TargetManager, interceptor: ResponseIntercepto
   if (caps.resources) {
     try {
       const { resources } = await target.listResources();
-      for (const r of (resources as any[])) {
+      for (const r of resources as any[]) {
         choices.push({
           name: `📄 Resource: ${r.name || r.uri}`,
           value: { type: "resource", uri: r.uri },
@@ -1891,18 +1924,17 @@ async function cmdExplore(target: TargetManager, interceptor: ResponseIntercepto
   }
 
   try {
-    const answer = await search({
+    const answer = (await search({
       message: "Explore server capabilities:",
       source: async (term: string | undefined) => {
         if (!term) return choices;
         const lower = term.toLowerCase();
         return choices.filter(
           (c) =>
-            c.name.toLowerCase().includes(lower) ||
-            c.description.toLowerCase().includes(lower),
+            c.name.toLowerCase().includes(lower) || c.description.toLowerCase().includes(lower),
         );
       },
-    }) as any;
+    })) as any;
 
     if (answer.type === "tool") {
       await cmdToolsCall(target, interceptor, answer.name);
@@ -1912,7 +1944,7 @@ async function cmdExplore(target: TargetManager, interceptor: ResponseIntercepto
       await cmdPromptsGet(target, answer.name);
     }
   } catch (err: any) {
-    if (err.name !== "ExitPromptError" && err.name !== "AbortError") {
+    if (!isAbortError(err)) {
       throw err;
     }
   }

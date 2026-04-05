@@ -101,13 +101,13 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
           // Human is running it in a terminal without arguments -> pick a config
           const { pickDiscoveredServer } = await import("./config-scanner.js");
           const selected = await pickDiscoveredServer();
-          
+
           if (!selected) {
             // User aborted or no configs found
             program.help();
             return;
           }
-          
+
           // Environment variables from config
           if (selected.config.env) {
             Object.assign(process.env, selected.config.env);

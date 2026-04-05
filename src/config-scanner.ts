@@ -37,7 +37,13 @@ function getConfigPaths(): { source: string; file: string }[] {
   if (isWin) {
     claudeDesktopGlob = path.join(appData, "Claude", "claude_desktop_config.json");
   } else if (isMac) {
-    claudeDesktopGlob = path.join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json");
+    claudeDesktopGlob = path.join(
+      home,
+      "Library",
+      "Application Support",
+      "Claude",
+      "claude_desktop_config.json",
+    );
   } else {
     claudeDesktopGlob = path.join(home, ".config", "Claude", "claude_desktop_config.json");
   }
@@ -70,9 +76,9 @@ export async function discoverServers(): Promise<DiscoveredServer[]> {
     try {
       const content = await readFile(file, "utf8");
       const json = JSON.parse(content);
-      
+
       let mcpServers: McpConfigMap | undefined;
-      
+
       // Some configs wrap in mcpServers, some might be direct
       if (json.mcpServers && typeof json.mcpServers === "object") {
         mcpServers = json.mcpServers;
@@ -101,7 +107,7 @@ export async function discoverServers(): Promise<DiscoveredServer[]> {
  */
 export async function pickDiscoveredServer(): Promise<DiscoveredServer | null> {
   const servers = await discoverServers();
-  
+
   if (servers.length === 0) {
     return null;
   }
@@ -120,7 +126,7 @@ export async function pickDiscoveredServer(): Promise<DiscoveredServer | null> {
     }
   }
 
-  const choices = Array.from(uniqueServers.values()).map(s => {
+  const choices = Array.from(uniqueServers.values()).map((s) => {
     return {
       name: `${s.name} (from ${s.source})`,
       value: s,
