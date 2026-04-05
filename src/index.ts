@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 
 import { program } from "commander";
+import { pickDiscoveredServer } from "./config-scanner.js";
 import { startRepl } from "./repl.js";
 import { startServer } from "./server.js";
-import { pickDiscoveredServer } from "./config-scanner.js";
 
 program
   .name("run-mcp")
   .description("A smart interactive REPL and live test harness for MCP servers")
-  .version("1.4.0")
+  .version(PKG_VERSION)
   .passThroughOptions()
   .allowUnknownOption()
   .argument(

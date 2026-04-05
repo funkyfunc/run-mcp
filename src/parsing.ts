@@ -223,14 +223,16 @@ export function formatToolDescription(tool: ToolInfo): string {
   }
 
   // Annotations
-  if (tool.annotations && Object.keys(tool.annotations).length > 0) {
-    lines.push("");
-    lines.push("  Annotations:");
-    const annotationParts: string[] = [];
-    for (const [key, value] of Object.entries(tool.annotations)) {
-      annotationParts.push(`${key}: ${value}`);
+  if (tool.annotations) {
+    // Filter out 'title' since it duplicates the tool name header
+    const entries = Object.entries(tool.annotations).filter(([key]) => key !== "title");
+    if (entries.length > 0) {
+      lines.push("");
+      lines.push("  Annotations:");
+      for (const [key, value] of entries) {
+        lines.push(`    ${key}: ${value}`);
+      }
     }
-    lines.push(`    ${annotationParts.join(", ")}`);
   }
 
   return lines.join("\n");

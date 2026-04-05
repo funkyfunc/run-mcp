@@ -80,7 +80,7 @@ function getText(result: any): string {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("server: tool discovery", () => {
-  it("exposes exactly 6 consolidated tools", async () => {
+  it("exposes exactly 7 consolidated tools", async () => {
     const c = await startRunMcpServer();
     const result = await c.listTools();
     const names = result.tools.map((t) => t.name);
@@ -91,7 +91,8 @@ describe("server: tool discovery", () => {
     expect(names).toContain("call_mcp_primitive");
     expect(names).toContain("list_mcp_primitives");
     expect(names).toContain("get_mcp_server_stderr");
-    expect(names).toHaveLength(6);
+    expect(names).toContain("list_available_mcp_servers");
+    expect(names).toHaveLength(7);
   }, 15_000);
 
   it("tools have descriptions", async () => {

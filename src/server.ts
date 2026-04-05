@@ -2,10 +2,10 @@ import { createHash } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { discoverServers } from "./config-scanner.js";
 import { ResponseInterceptor } from "./interceptor.js";
 import { suggestCommand } from "./parsing.js";
 import { TargetManager } from "./target-manager.js";
-import { discoverServers } from "./config-scanner.js";
 
 export interface ServerOptions {
   outDir?: string;
@@ -126,7 +126,7 @@ function formatDiffLine(label: string, diff: DiffEntry): string {
  *   list_mcp_primitives   → List tools, resources, and/or prompts
  *   get_mcp_server_stderr → View target server stderr output
  *   list_available_mcp_servers → Discover other local MCP servers from config files
- * 
+ *
  * Note: list_available_mcp_servers exists to help agents discover other local server configurations.
  */
 export async function startServer(opts: ServerOptions): Promise<void> {
@@ -140,7 +140,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
   });
 
   const mcpServer = new McpServer(
-    { name: "run-mcp", version: "1.4.0" },
+    { name: "run-mcp", version: PKG_VERSION },
     {
       capabilities: {
         tools: {},
@@ -641,15 +641,20 @@ export async function startServer(opts: ServerOptions): Promise<void> {
     async () => {
       try {
         const servers = await discoverServers();
-        
+
         if (servers.length === 0) {
           return {
-            content: [{ type: "text" as const, text: "No configured MCP servers discovered in common locations." }],
+            content: [
+              {
+                type: "text" as const,
+                text: "No configured MCP servers discovered in common locations.",
+              },
+            ],
           };
         }
 
         const lines: string[] = ["Discovered the following MCP server configurations:"];
-        
+
         // Deduplicate similar to the REPL
         const uniqueServers = new Map<string, any>();
         for (const s of servers) {
@@ -661,11 +666,11 @@ export async function startServer(opts: ServerOptions): Promise<void> {
           }
         }
 
-        const list = Array.from(uniqueServers.values()).map(s => ({
+        const list = Array.from(uniqueServers.values()).map((s) => ({
           name: s.name,
           source: s.source,
           command: s.config.command,
-          args: s.config.args || []
+          args: s.config.args || [],
         }));
 
         lines.push(JSON.stringify(list, null, 2));
@@ -677,7 +682,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
           isError: true,
         };
       }
-    }
+    },
   );
 
   // ─── call_mcp_primitive ─────────────────────────────────────────────────

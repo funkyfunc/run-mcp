@@ -58,7 +58,11 @@ function getConfigPaths(): { source: string; file: string }[] {
     {
       source: "VS Code (Global)",
       file: path.join(
-        isMac ? path.join(home, "Library", "Application Support") : isWin ? appData : path.join(home, ".config"),
+        isMac
+          ? path.join(home, "Library", "Application Support")
+          : isWin
+            ? appData
+            : path.join(home, ".config"),
         "Code",
         "User",
         "settings.json",

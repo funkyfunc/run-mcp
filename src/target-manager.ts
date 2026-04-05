@@ -160,7 +160,7 @@ export class TargetManager extends EventEmitter {
     }
 
     this.client = new Client(
-      { name: "run-mcp", version: "1.4.0" },
+      { name: "run-mcp", version: PKG_VERSION },
       {
         capabilities: {
           roots: { listChanged: true },

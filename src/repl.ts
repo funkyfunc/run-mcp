@@ -47,6 +47,7 @@ const KNOWN_COMMANDS = [
   "!!",
   "last",
   "help",
+  "?",
   "exit",
   "quit",
   // Short aliases
@@ -691,6 +692,10 @@ async function handleCommand(
       printHelp();
       return;
 
+    case "?":
+      printShortHelp();
+      return;
+
     case "explore":
     case "interactive":
       await withSuspendedReadline(target, interceptor, async () => {
@@ -797,9 +802,12 @@ async function handleCommand(
       return;
 
     case "exit":
-    case "quit":
-      process.emit("SIGINT", "SIGINT");
-      return;
+    case "quit": {
+      console.log(pc.dim("Shutting down..."));
+      await target.close();
+      process.exit(0);
+      return; // unreachable, satisfies linter
+    }
 
     default: {
       // Suggest the closest known command if it's a likely typo
@@ -1002,12 +1010,15 @@ async function cmdToolsCall(
   lastToolArgsMap.set(toolName, { ...args });
 
   // Print result with visual separator
-  const width = 60;
   const isError = (result as any).isError === true;
-  const topText = isError ? "Error" : "Result";
-  const resultLabel = isError ? pc.red("Error") : pc.green("Result");
-  const topPads = Math.max(0, width - 4 - topText.length);
-  console.log(`\n  ${pc.dim("──")} ${resultLabel} ${pc.dim("─".repeat(topPads))}`);
+
+  console.log();
+  printResultBlock({
+    label: isError ? "Error" : "Result",
+    labelColor: isError ? "red" : "green",
+    elapsed,
+    toolName,
+  });
 
   const content = (result as any).content;
   if (Array.isArray(content)) {
@@ -1030,9 +1041,7 @@ async function cmdToolsCall(
     );
   }
 
-  const elapsedStr = `${elapsed}ms`;
-  const bottomPads = Math.max(0, width - 4 - elapsedStr.length);
-  console.log(`  ${pc.dim("─".repeat(bottomPads))} ${pc.dim(elapsedStr)} ${pc.dim("──")}`);
+  console.log();
 }
 
 // ─── Interactive Argument Prompting ─────────────────────────────────────────
@@ -1477,19 +1486,26 @@ async function cmdResourcesRead(target: TargetManager, rest: string): Promise<vo
     return;
   }
 
+  const startTime = Date.now();
   const result = await target.readResource({ uri });
+  const elapsed = Date.now() - startTime;
+
+  console.log();
+  printResultBlock({ label: "Resource", labelColor: "cyan", elapsed, detail: uri });
 
   for (const item of result.contents) {
     if ((item as any).text !== undefined) {
-      console.log((item as any).text);
+      console.log(`  ${(item as any).text}`);
     } else if ((item as any).blob !== undefined) {
       const mimeType = (item as any).mimeType ?? "application/octet-stream";
       const sizeBytes = Buffer.from((item as any).blob, "base64").length;
-      console.log(pc.dim(`[Binary: ${mimeType}, ${sizeBytes} bytes]`));
+      console.log(pc.dim(`  [Binary: ${mimeType}, ${sizeBytes} bytes]`));
     } else {
       console.log(formatJson(item, 2));
     }
   }
+
+  console.log();
 }
 
 async function cmdResourcesTemplates(target: TargetManager): Promise<void> {
@@ -1567,13 +1583,25 @@ async function cmdPromptsGet(target: TargetManager, rest: string): Promise<void>
     }
   }
 
+  const startTime = Date.now();
   const result = await target.getPrompt({ name: promptName, arguments: promptArgs });
+  const elapsed = Date.now() - startTime;
+
+  if (result.messages.length === 0) {
+    console.log(pc.dim("  No messages returned."));
+    return;
+  }
+
+  console.log();
+  printResultBlock({ label: "Prompt", labelColor: "blue", elapsed, detail: promptName });
 
   for (const msg of result.messages) {
     const role = msg.role === "user" ? pc.blue("user") : pc.magenta("assistant");
     const text = (msg.content as any).text ?? JSON.stringify(msg.content);
     console.log(`  ${pc.bold(role)}: ${text}`);
   }
+
+  console.log();
 }
 
 // ─── Ping ───────────────────────────────────────────────────────────────────
@@ -1581,9 +1609,13 @@ async function cmdPromptsGet(target: TargetManager, rest: string): Promise<void>
 async function cmdPing(target: TargetManager): Promise<void> {
   try {
     const elapsed = await target.ping();
+    console.log();
     console.log(pc.green(`  ✓ Pong! Round-trip: ${elapsed}ms`));
+    console.log();
   } catch (err: any) {
+    console.log();
     console.error(pc.red(`  ✗ Ping failed: ${err.message}`));
+    console.log();
   }
 }
 
@@ -1886,7 +1918,46 @@ function cmdStatus(target: TargetManager): void {
   console.log();
 }
 
+// ─── Result Block ───────────────────────────────────────────────────────────
+
+interface ResultBlockOptions {
+  label: string;
+  labelColor: "green" | "red" | "cyan" | "blue";
+  elapsed: number;
+  toolName?: string;
+  detail?: string;
+}
+
+/**
+ * Print a consistent metadata header for MCP primitive results.
+ * Shows the result type, elapsed time, and optional detail (tool name, URI, etc.)
+ */
+function printResultBlock(opts: ResultBlockOptions): void {
+  const colorFn = pc[opts.labelColor];
+  const elapsedStr =
+    opts.elapsed < 1000 ? `${opts.elapsed}ms` : `${(opts.elapsed / 1000).toFixed(1)}s`;
+  const detail = opts.detail ?? opts.toolName ?? "";
+
+  console.log(`  ${colorFn(opts.label)}  ${pc.dim(detail)}  ${pc.dim(`(${elapsedStr})`)}`);
+  console.log(pc.dim(`  ${"─".repeat(60)}`));
+}
+
 // ─── Help ───────────────────────────────────────────────────────────────────
+
+function printShortHelp(): void {
+  console.log(`
+${pc.bold("Quick Reference:")}
+
+  ${pc.green("tl")}  tools/list        ${pc.green("rl")}  resources/list     ${pc.green("pl")}  prompts/list
+  ${pc.green("td")}  tools/describe    ${pc.green("rr")}  resources/read     ${pc.green("pg")}  prompts/get
+  ${pc.green("tc")}  tools/call        ${pc.green("rt")}  resources/templates
+  ${pc.green("ts")}  tools/scaffold    ${pc.green("rs")}  resources/subscribe
+
+  ${pc.green("ping")}  ${pc.green("status")}  ${pc.green("timing")}  ${pc.green("history")}  ${pc.green("!!")}  ${pc.green("explore")}  ${pc.green("reconnect")}
+
+${pc.dim("Type 'help' for full command reference.")}
+`);
+}
 
 function printHelp(): void {
   console.log(`
