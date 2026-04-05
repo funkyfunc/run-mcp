@@ -233,6 +233,20 @@ npx vitest
 npx vitest run tests/parsing.test.ts
 ```
 
+### Progressive / Dynamic Testing (For AI Agents)
+
+While unit tests are great for verifying logic, `run-mcp` is a highly interactive tool. When making UX changes, prompt flow updates, or adding features to the REPL, **AI Agents should dynamically test their changes** just like a human developer would.
+
+Instead of writing code blindly and relying solely on `vitest`, agents should spawn the app in the background and interact with it using their command input tools. 
+
+**How to dynamically test the REPL:**
+Spawning the REPL with the built-in mock server gives you a safe sandbox to test commands, view UI elements (like separators and prompts), and ensure everything behaves correctly.
+```bash
+# Start the REPL interactively hooked up to the mock server
+npm run start -- node --import tsx tests/fixtures/mock-server.ts
+```
+Once it's running in your background terminal, use your text/action input tools to simulate a user typing (`explore`, `tools/call echo {"text": "hello"}`, `exit`) and read the stream output to verify the UX formatting exactly as a human would see it!
+
 ### Important: Sequential Execution
 
 Tests run **sequentially** (`fileParallelism: false` in vitest.config.ts) because integration tests spawn child processes on stdio. Parallel execution causes port/stdin conflicts. Don't change this.
