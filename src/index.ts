@@ -3,6 +3,7 @@
 import { program } from "commander";
 import { startRepl } from "./repl.js";
 import { startServer } from "./server.js";
+import { pickDiscoveredServer } from "./config-scanner.js";
 
 program
   .name("run-mcp")
@@ -99,7 +100,6 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
           });
         } else {
           // Human is running it in a terminal without arguments -> pick a config
-          const { pickDiscoveredServer } = await import("./config-scanner.js");
           const selected = await pickDiscoveredServer();
 
           if (!selected) {
