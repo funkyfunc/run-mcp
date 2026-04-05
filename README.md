@@ -62,6 +62,7 @@ Options:
   -o, --out-dir <path>        Directory to save intercepted images and audio
   -t, --timeout <ms>          Default tool call timeout in milliseconds (default: 300000) (Agent Mode only)
       --max-text <chars>      Max text response length before truncation (default: 50000) (Agent Mode only)
+      --mcp                   Force start Agent Server mode even if run interactively without arguments
   -s, --script <file>         Read commands from a file instead of stdin (REPL Mode only)
   -h, --help                  Display help for command
 
@@ -113,6 +114,7 @@ Once connected via `run-mcp <command>`, the following shorthand commands are ava
 
 | Command | Description |
 |---------|-------------|
+| `explore` | Open interactive fuzzy-search selector for tools, resources, and prompts |
 | `tools/list` | List all tools exposed by the target server |
 | `tools/describe <name>` | Show a tool's full input schema |
 | `tools/call <name> <json> [--timeout <ms>]` | Call a tool with JSON arguments |
