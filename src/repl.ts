@@ -1900,7 +1900,7 @@ async function cmdExplore(target: TargetManager, interceptor: ResponseIntercepto
     }
   } catch (err: any) {
     if (err.name !== "ExitPromptError") {
-      // ignore
+      throw err;
     }
   }
 }
