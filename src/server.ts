@@ -5,6 +5,7 @@ import { z } from "zod";
 import { ResponseInterceptor } from "./interceptor.js";
 import { suggestCommand } from "./parsing.js";
 import { TargetManager } from "./target-manager.js";
+import { discoverServers } from "./config-scanner.js";
 
 export interface ServerOptions {
   outDir?: string;
@@ -124,6 +125,9 @@ function formatDiffLine(label: string, diff: DiffEntry): string {
  *   call_mcp_primitive    → Call a tool, read a resource, or get a prompt (auto-connects if needed)
  *   list_mcp_primitives   → List tools, resources, and/or prompts
  *   get_mcp_server_stderr → View target server stderr output
+ *   list_available_mcp_servers → Discover other local MCP servers from config files
+ * 
+ * Note: list_available_mcp_servers exists to help agents discover other local server configurations.
  */
 export async function startServer(opts: ServerOptions): Promise<void> {
   let target: TargetManager | null = null;
@@ -621,6 +625,59 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         content: [{ type: "text" as const, text: sections.join("\n") }],
       };
     },
+  );
+
+  // ─── list_available_mcp_servers ─────────────────────────────────────────
+
+  mcpServer.registerTool(
+    "list_available_mcp_servers",
+    {
+      title: "List Available MCP Servers",
+      description:
+        "Scans common configuration files (VS Code, Claude Desktop, Cursor, etc.) " +
+        "and returns a list of local MCP servers that the user has configured on their machine. " +
+        "This is useful for discovering what other servers are available to connect to.",
+    },
+    async () => {
+      try {
+        const servers = await discoverServers();
+        
+        if (servers.length === 0) {
+          return {
+            content: [{ type: "text" as const, text: "No configured MCP servers discovered in common locations." }],
+          };
+        }
+
+        const lines: string[] = ["Discovered the following MCP server configurations:"];
+        
+        // Deduplicate similar to the REPL
+        const uniqueServers = new Map<string, any>();
+        for (const s of servers) {
+          const key = `${s.name}::${s.config.command}::${(s.config.args || []).join(" ")}`;
+          if (!uniqueServers.has(key)) {
+            uniqueServers.set(key, s);
+          } else if (s.source.includes("Project")) {
+            uniqueServers.set(key, s);
+          }
+        }
+
+        const list = Array.from(uniqueServers.values()).map(s => ({
+          name: s.name,
+          source: s.source,
+          command: s.config.command,
+          args: s.config.args || []
+        }));
+
+        lines.push(JSON.stringify(list, null, 2));
+
+        return { content: [{ type: "text" as const, text: lines.join("\n\n") }] };
+      } catch (err: any) {
+        return {
+          content: [{ type: "text" as const, text: `Error discovering servers: ${err.message}` }],
+          isError: true,
+        };
+      }
+    }
   );
 
   // ─── call_mcp_primitive ─────────────────────────────────────────────────

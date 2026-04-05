@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { select } from "@inquirer/prompts";
+import { input, select } from "@inquirer/prompts";
 
 export interface McpServerConfig {
   command: string;
@@ -55,6 +55,16 @@ function getConfigPaths(): { source: string; file: string }[] {
     { source: "Claude Desktop", file: claudeDesktopGlob },
     { source: "Cline", file: path.join(home, "Documents", "Cline", "MCP", "mcp.json") },
     { source: "VS Code (Project)", file: path.join(cwd, ".vscode", "mcp.json") },
+    {
+      source: "VS Code (Global)",
+      file: path.join(
+        isMac ? path.join(home, "Library", "Application Support") : isWin ? appData : path.join(home, ".config"),
+        "Code",
+        "User",
+        "settings.json",
+      ),
+    },
+    { source: "Copilot CLI (Global)", file: path.join(home, ".copilot", "mcp-config.json") },
     { source: "Gemini CLI (Global)", file: path.join(home, ".gemini", "settings.json") },
     { source: "Gemini CLI (Project)", file: path.join(cwd, ".gemini", "settings.json") },
     { source: "Claude Code (Global)", file: path.join(home, ".claude.json") },
@@ -82,8 +92,9 @@ export async function discoverServers(): Promise<DiscoveredServer[]> {
       // Some configs wrap in mcpServers, some might be direct
       if (json.mcpServers && typeof json.mcpServers === "object") {
         mcpServers = json.mcpServers;
-      } else if (source.startsWith("Claude Code") && json.servers) {
-        // Handle variations if any
+      } else if (json.mcp?.servers && typeof json.mcp.servers === "object") {
+        mcpServers = json.mcp.servers;
+      } else if (json.servers && typeof json.servers === "object") {
         mcpServers = json.servers;
       }
 
@@ -126,12 +137,18 @@ export async function pickDiscoveredServer(): Promise<DiscoveredServer | null> {
     }
   }
 
-  const choices = Array.from(uniqueServers.values()).map((s) => {
+  const choices: any[] = Array.from(uniqueServers.values()).map((s) => {
     return {
       name: `${s.name} (from ${s.source})`,
       value: s,
       description: `${s.config.command} ${(s.config.args || []).join(" ")}`,
     };
+  });
+
+  choices.push({
+    name: "Enter custom server command...",
+    value: "CUSTOM",
+    description: "Manually specify a command, e.g. 'npx foo' or 'python server.py'",
   });
 
   try {
@@ -140,6 +157,26 @@ export async function pickDiscoveredServer(): Promise<DiscoveredServer | null> {
       choices,
       pageSize: 15,
     });
+
+    if (answer === "CUSTOM") {
+      const customCommand = await input({ message: "Command to spawn target MCP server:" });
+      if (!customCommand.trim()) return null;
+
+      // Basic shell-like split (obviously real parsing would handle quotes, but this works for 90% of cases)
+      const parts = customCommand
+        .trim()
+        .match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g)
+        ?.map((p) => p.replace(/^["']|["']$/g, ""));
+
+      if (!parts || parts.length === 0) return null;
+
+      return {
+        name: "Custom",
+        config: { command: parts[0], args: parts.slice(1) },
+        source: "Manual",
+      };
+    }
+
     return answer;
   } catch {
     // User aborted
