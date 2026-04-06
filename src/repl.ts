@@ -2025,17 +2025,22 @@ function printResultBlock(opts: ResultBlockOptions): void {
 // ─── Help ───────────────────────────────────────────────────────────────────
 
 function printShortHelp(): void {
+  const hasTools = !!activeCapabilities?.tools;
   const hasResources = !!activeCapabilities?.resources;
   const hasPrompts = !!activeCapabilities?.prompts;
+
+  const tC = hasTools ? pc.green : pc.dim;
+  const rC = hasResources ? pc.green : pc.dim;
+  const pC = hasPrompts ? pc.green : pc.dim;
 
   console.log(`
 ${pc.bold("Quick Reference:")}
 
-  ${pc.green("tl")}  tools/list      ${hasResources ? `  ${pc.green("rl")}  resources/list   ` : ""}${hasPrompts ? `  ${pc.green("pl")}  prompts/list` : ""}
-  ${pc.green("td")}  tools/describe  ${hasResources ? `  ${pc.green("rr")}  resources/read   ` : ""}${hasPrompts ? `  ${pc.green("pg")}  prompts/get` : ""}
-  ${pc.green("tc")}  tools/call      ${hasResources ? `  ${pc.green("rt")}  resources/templates` : ""}
-  ${pc.green("ts")}  tools/scaffold  ${hasResources ? `  ${pc.green("rs")}  resources/subscribe` : ""}
-                      ${hasResources ? `  ${pc.green("ru")}  resources/unsubscribe` : ""}
+  ${tC("tl")}  ${tC("tools/list")}        ${rC("rl")}  ${rC("resources/list")}     ${pC("pl")}  ${pC("prompts/list")}
+  ${tC("td")}  ${tC("tools/describe")}    ${rC("rr")}  ${rC("resources/read")}     ${pC("pg")}  ${pC("prompts/get")}
+  ${tC("tc")}  ${tC("tools/call")}        ${rC("rt")}  ${rC("resources/templates")}
+  ${tC("ts")}  ${tC("tools/scaffold")}    ${rC("rs")}  ${rC("resources/subscribe")}
+                          ${rC("ru")}  ${rC("resources/unsubscribe")}
 
   ${pc.green("ping")}  ${pc.green("status")}  ${pc.green("timing")}  ${pc.green("history")}  ${pc.green("!!")}  ${pc.green("explore")}  ${pc.green("reconnect")}
 
@@ -2044,37 +2049,53 @@ ${pc.dim("Type 'help' for full command reference.")}
 }
 
 function printHelp(): void {
+  const hasTools = !!activeCapabilities?.tools;
   const hasResources = !!activeCapabilities?.resources;
   const hasPrompts = !!activeCapabilities?.prompts;
+  const hasLogging = !!activeCapabilities?.logging;
+
+  const tC = hasTools ? pc.green : pc.dim;
+  const rC = hasResources ? pc.green : pc.dim;
+  const pC = hasPrompts ? pc.green : pc.dim;
+  const lC = hasLogging ? pc.green : pc.dim;
+
+  const tD = hasTools ? (s: string) => s : pc.dim;
+  const rD = hasResources ? (s: string) => s : pc.dim;
+  const pD = hasPrompts ? (s: string) => s : pc.dim;
+  const lD = hasLogging ? (s: string) => s : pc.dim;
+
+  const tH = hasTools ? pc.bold("Tool Commands:") : pc.dim(pc.bold("Tool Commands:")) + pc.dim("  (Unsupported)");
+  const rH = hasResources ? pc.bold("Resource Commands:") : pc.dim(pc.bold("Resource Commands:")) + pc.dim("  (Unsupported)");
+  const pH = hasPrompts ? pc.bold("Prompt Commands:") : pc.dim(pc.bold("Prompt Commands:")) + pc.dim("  (Unsupported)");
 
   console.log(`
-${pc.bold("Tool Commands:")}
+${tH}
 
-  ${pc.green("tools/list")}                         List all available tools
-  ${pc.green("tools/describe")} <name>              Show a tool's input schema
-  ${pc.green("tools/call")} <name> [json] [opts]    Call a tool (interactive if no json)
-    Options: ${pc.dim("--timeout <ms>")}            Override default timeout (60s)
-             ${pc.dim("--clear")}                  Ignore remembered argument defaults
-  ${pc.green("tools/scaffold")} <name>              Generate a template for a tool's arguments
-  ${pc.green("tools/forget")} [name]                Clear remembered interactive defaults
-${hasResources ? `
-${pc.bold("Resource Commands:")}
+  ${tC("tools/list")}                         ${tD("List all available tools")}
+  ${tC("tools/describe")} <name>              ${tD("Show a tool's input schema")}
+  ${tC("tools/call")} <name> [json] [opts]    ${tD("Call a tool (interactive if no json)")}
+    ${tD("Options:")} ${pc.dim("--timeout <ms>")}            ${tD("Override default timeout (60s)")}
+             ${pc.dim("--clear")}                  ${tD("Ignore remembered argument defaults")}
+  ${tC("tools/scaffold")} <name>              ${tD("Generate a template for a tool's arguments")}
+  ${tC("tools/forget")} [name]                ${tD("Clear remembered interactive defaults")}
 
-  ${pc.green("resources/list")}                     List all available resources
-  ${pc.green("resources/read")} <uri>               Read a resource by URI
-  ${pc.green("resources/templates")}                List resource templates
-  ${pc.green("resources/subscribe")} <uri>          Subscribe to resource changes
-  ${pc.green("resources/unsubscribe")} <uri>        Unsubscribe from resource changes
-` : ""}${hasPrompts ? `
-${pc.bold("Prompt Commands:")}
+${rH}
 
-  ${pc.green("prompts/list")}                       List all available prompts
-  ${pc.green("prompts/get")} <name> [json_args]    Get a prompt with arguments
-` : ""}
+  ${rC("resources/list")}                     ${rD("List all available resources")}
+  ${rC("resources/read")} <uri>               ${rD("Read a resource by URI")}
+  ${rC("resources/templates")}                ${rD("List resource templates")}
+  ${rC("resources/subscribe")} <uri>          ${rD("Subscribe to resource changes")}
+  ${rC("resources/unsubscribe")} <uri>        ${rD("Unsubscribe from resource changes")}
+
+${pH}
+
+  ${pC("prompts/list")}                       ${pD("List all available prompts")}
+  ${pC("prompts/get")} <name> [json_args]    ${pD("Get a prompt with arguments")}
+
 ${pc.bold("Protocol Commands:")}
 
   ${pc.green("ping")}                               Verify connection, show round-trip time
-  ${pc.green("log-level")} <level>                  Set server logging verbosity
+  ${lC("log-level")} <level>                  ${lD("Set server logging verbosity")}${hasLogging ? "" : pc.dim("  (Unsupported)")}
   ${pc.green("history")} [count|clear]              Show request/response history
   ${pc.green("notifications")} [count|clear]        Show server notifications
 
@@ -2095,11 +2116,11 @@ ${pc.bold("Session Commands:")}
 
 ${pc.bold("Shortcuts:")}
 
-  ${pc.green("tl")}  tools/list          ${hasResources ? `${pc.green("rl")}  resources/list     ` : ""}${hasPrompts ? `${pc.green("pl")}  prompts/list` : ""}
-  ${pc.green("td")}  tools/describe      ${hasResources ? `${pc.green("rr")}  resources/read     ` : ""}${hasPrompts ? `${pc.green("pg")}  prompts/get` : ""}
-  ${pc.green("tc")}  tools/call          ${hasResources ? `${pc.green("rt")}  resources/templates` : ""}
-  ${pc.green("ts")}  tools/scaffold      ${hasResources ? `${pc.green("rs")}  resources/subscribe` : ""}
-                          ${hasResources ? `${pc.green("ru")}  resources/unsubscribe` : ""}
+  ${tC("tl")}  ${tC("tools/list")}          ${rC("rl")}  ${rC("resources/list")}     ${pC("pl")}  ${pC("prompts/list")}
+  ${tC("td")}  ${tC("tools/describe")}      ${rC("rr")}  ${rC("resources/read")}     ${pC("pg")}  ${pC("prompts/get")}
+  ${tC("tc")}  ${tC("tools/call")}          ${rC("rt")}  ${rC("resources/templates")}
+  ${tC("ts")}  ${tC("tools/scaffold")}      ${rC("rs")}  ${rC("resources/subscribe")}
+                          ${rC("ru")}  ${rC("resources/unsubscribe")}
 
 ${pc.dim("Lines starting with # are treated as comments.")}
 ${pc.dim('JSON arguments can contain spaces: tools/call say {"message": "hello world"}')}
