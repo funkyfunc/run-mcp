@@ -562,7 +562,11 @@ export async function startRepl(targetCommand: string[], opts: ReplOptions): Pro
         await handleCommand(trimmed, target, interceptor);
       } catch (err: any) {
         if (err?.message?.includes("-32601") || err?.code === -32601) {
-          console.error(pc.red(`✗ Error: Server does not support this feature (Method not found)`));
+          let msg = "Server does not support this feature (Method not found)";
+          if (trimmed.startsWith("prompts/")) msg = "This server does not have any prompts.";
+          else if (trimmed.startsWith("resources/")) msg = "This server does not have any resources.";
+          else if (trimmed.startsWith("tools/")) msg = "This server does not have any tools.";
+          console.log(pc.yellow(`  ${msg}`));
         } else {
           console.error(pc.red(`✗ Error: ${err.message}`));
         }
@@ -631,7 +635,11 @@ function startReadlineLoop(target: TargetManager, interceptor: ResponseIntercept
         if (err instanceof AbortFlowError) {
           console.log(pc.yellow("  Aborted."));
         } else if (err?.message?.includes("-32601") || err?.code === -32601) {
-          console.error(pc.red(`✗ Error: Server does not support this feature (Method not found)`));
+          let msg = "Server does not support this feature (Method not found)";
+          if (trimmed.startsWith("prompts/")) msg = "This server does not have any prompts.";
+          else if (trimmed.startsWith("resources/")) msg = "This server does not have any resources.";
+          else if (trimmed.startsWith("tools/")) msg = "This server does not have any tools.";
+          console.log(pc.yellow(`  ${msg}`));
         } else {
           console.error(pc.red(`✗ Error: ${err.message}`));
         }
