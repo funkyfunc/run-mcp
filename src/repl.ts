@@ -74,9 +74,22 @@ interface ReplOptions {
 let cachedToolNames: string[] = [];
 let cachedResourceUris: string[] = [];
 let cachedPromptNames: string[] = [];
+let activeCapabilities: import("@modelcontextprotocol/sdk/types.js").ServerCapabilities | null = null;
+
+function getActiveCommands(): string[] {
+  let commands = [...KNOWN_COMMANDS];
+  if (!activeCapabilities?.resources) {
+    commands = commands.filter((c) => !c.startsWith("resources/") && !["rl", "rr", "rt", "rs", "ru"].includes(c));
+  }
+  if (!activeCapabilities?.prompts) {
+    commands = commands.filter((c) => !c.startsWith("prompts/") && !["pl", "pg"].includes(c));
+  }
+  return commands;
+}
 
 async function refreshCaches(target: TargetManager): Promise<void> {
   const caps = target.getServerCapabilities() ?? {};
+  activeCapabilities = caps;
 
   try {
     const { tools } = await target.listTools();
@@ -151,7 +164,7 @@ function computeMatches(line: string): [string[], string] {
   }
 
   // Command-level completion
-  const matches = KNOWN_COMMANDS.filter((c) => c.startsWith(line));
+  const matches = getActiveCommands().filter((c) => c.startsWith(line));
   return [matches, line];
 }
 
@@ -825,7 +838,7 @@ async function handleCommand(
 
     default: {
       // Suggest the closest known command if it's a likely typo
-      const suggestion = suggestCommand(cmd, KNOWN_COMMANDS);
+      const suggestion = suggestCommand(cmd, getActiveCommands());
       if (suggestion) {
         console.log(pc.yellow(`Unknown command: ${cmd}.`));
         try {
@@ -2012,13 +2025,17 @@ function printResultBlock(opts: ResultBlockOptions): void {
 // ─── Help ───────────────────────────────────────────────────────────────────
 
 function printShortHelp(): void {
+  const hasResources = !!activeCapabilities?.resources;
+  const hasPrompts = !!activeCapabilities?.prompts;
+
   console.log(`
 ${pc.bold("Quick Reference:")}
 
-  ${pc.green("tl")}  tools/list        ${pc.green("rl")}  resources/list     ${pc.green("pl")}  prompts/list
-  ${pc.green("td")}  tools/describe    ${pc.green("rr")}  resources/read     ${pc.green("pg")}  prompts/get
-  ${pc.green("tc")}  tools/call        ${pc.green("rt")}  resources/templates
-  ${pc.green("ts")}  tools/scaffold    ${pc.green("rs")}  resources/subscribe
+  ${pc.green("tl")}  tools/list      ${hasResources ? `  ${pc.green("rl")}  resources/list   ` : ""}${hasPrompts ? `  ${pc.green("pl")}  prompts/list` : ""}
+  ${pc.green("td")}  tools/describe  ${hasResources ? `  ${pc.green("rr")}  resources/read   ` : ""}${hasPrompts ? `  ${pc.green("pg")}  prompts/get` : ""}
+  ${pc.green("tc")}  tools/call      ${hasResources ? `  ${pc.green("rt")}  resources/templates` : ""}
+  ${pc.green("ts")}  tools/scaffold  ${hasResources ? `  ${pc.green("rs")}  resources/subscribe` : ""}
+                      ${hasResources ? `  ${pc.green("ru")}  resources/unsubscribe` : ""}
 
   ${pc.green("ping")}  ${pc.green("status")}  ${pc.green("timing")}  ${pc.green("history")}  ${pc.green("!!")}  ${pc.green("explore")}  ${pc.green("reconnect")}
 
@@ -2027,6 +2044,9 @@ ${pc.dim("Type 'help' for full command reference.")}
 }
 
 function printHelp(): void {
+  const hasResources = !!activeCapabilities?.resources;
+  const hasPrompts = !!activeCapabilities?.prompts;
+
   console.log(`
 ${pc.bold("Tool Commands:")}
 
@@ -2037,7 +2057,7 @@ ${pc.bold("Tool Commands:")}
              ${pc.dim("--clear")}                  Ignore remembered argument defaults
   ${pc.green("tools/scaffold")} <name>              Generate a template for a tool's arguments
   ${pc.green("tools/forget")} [name]                Clear remembered interactive defaults
-
+${hasResources ? `
 ${pc.bold("Resource Commands:")}
 
   ${pc.green("resources/list")}                     List all available resources
@@ -2045,12 +2065,12 @@ ${pc.bold("Resource Commands:")}
   ${pc.green("resources/templates")}                List resource templates
   ${pc.green("resources/subscribe")} <uri>          Subscribe to resource changes
   ${pc.green("resources/unsubscribe")} <uri>        Unsubscribe from resource changes
-
+` : ""}${hasPrompts ? `
 ${pc.bold("Prompt Commands:")}
 
   ${pc.green("prompts/list")}                       List all available prompts
   ${pc.green("prompts/get")} <name> [json_args]    Get a prompt with arguments
-
+` : ""}
 ${pc.bold("Protocol Commands:")}
 
   ${pc.green("ping")}                               Verify connection, show round-trip time
@@ -2075,11 +2095,11 @@ ${pc.bold("Session Commands:")}
 
 ${pc.bold("Shortcuts:")}
 
-  ${pc.green("tl")}  tools/list          ${pc.green("rl")}  resources/list     ${pc.green("pl")}  prompts/list
-  ${pc.green("td")}  tools/describe      ${pc.green("rr")}  resources/read     ${pc.green("pg")}  prompts/get
-  ${pc.green("tc")}  tools/call          ${pc.green("rt")}  resources/templates
-  ${pc.green("ts")}  tools/scaffold      ${pc.green("rs")}  resources/subscribe
-                          ${pc.green("ru")}  resources/unsubscribe
+  ${pc.green("tl")}  tools/list          ${hasResources ? `${pc.green("rl")}  resources/list     ` : ""}${hasPrompts ? `${pc.green("pl")}  prompts/list` : ""}
+  ${pc.green("td")}  tools/describe      ${hasResources ? `${pc.green("rr")}  resources/read     ` : ""}${hasPrompts ? `${pc.green("pg")}  prompts/get` : ""}
+  ${pc.green("tc")}  tools/call          ${hasResources ? `${pc.green("rt")}  resources/templates` : ""}
+  ${pc.green("ts")}  tools/scaffold      ${hasResources ? `${pc.green("rs")}  resources/subscribe` : ""}
+                          ${hasResources ? `${pc.green("ru")}  resources/unsubscribe` : ""}
 
 ${pc.dim("Lines starting with # are treated as comments.")}
 ${pc.dim('JSON arguments can contain spaces: tools/call say {"message": "hello world"}')}
