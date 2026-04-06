@@ -74,12 +74,15 @@ interface ReplOptions {
 let cachedToolNames: string[] = [];
 let cachedResourceUris: string[] = [];
 let cachedPromptNames: string[] = [];
-let activeCapabilities: import("@modelcontextprotocol/sdk/types.js").ServerCapabilities | null = null;
+let activeCapabilities: import("@modelcontextprotocol/sdk/types.js").ServerCapabilities | null =
+  null;
 
 function getActiveCommands(): string[] {
   let commands = [...KNOWN_COMMANDS];
   if (!activeCapabilities?.resources) {
-    commands = commands.filter((c) => !c.startsWith("resources/") && !["rl", "rr", "rt", "rs", "ru"].includes(c));
+    commands = commands.filter(
+      (c) => !c.startsWith("resources/") && !["rl", "rr", "rt", "rs", "ru"].includes(c),
+    );
   }
   if (!activeCapabilities?.prompts) {
     commands = commands.filter((c) => !c.startsWith("prompts/") && !["pl", "pg"].includes(c));
@@ -303,7 +306,11 @@ function printBanner(
   if (resourceCount > 0) parts.push(`${pc.bold(resourceCount.toString())} resources`);
   if (promptCount > 0) parts.push(`${pc.bold(promptCount.toString())} prompts`);
 
-  const title = serverVersion ? `${serverName} ${pc.dim(`v${serverVersion}`)}` : serverName;
+  const baseTitle = serverVersion ? `${serverName} ${pc.dim(`v${serverVersion}`)}` : serverName;
+  const isAgentHarness = serverName === "run-mcp";
+  const title = isAgentHarness
+    ? `${baseTitle} ${pc.bgBlue(pc.white(" AGENT HARNESS "))}`
+    : baseTitle;
 
   const BOX_WIDTH = 53; // inner width between │ and │
 
@@ -577,7 +584,8 @@ export async function startRepl(targetCommand: string[], opts: ReplOptions): Pro
         if (err?.message?.includes("-32601") || err?.code === -32601) {
           let msg = "Server does not support this feature (Method not found)";
           if (trimmed.startsWith("prompts/")) msg = "This server does not have any prompts.";
-          else if (trimmed.startsWith("resources/")) msg = "This server does not have any resources.";
+          else if (trimmed.startsWith("resources/"))
+            msg = "This server does not have any resources.";
           else if (trimmed.startsWith("tools/")) msg = "This server does not have any tools.";
           console.log(pc.yellow(`  ${msg}`));
         } else {
@@ -650,7 +658,8 @@ function startReadlineLoop(target: TargetManager, interceptor: ResponseIntercept
         } else if (err?.message?.includes("-32601") || err?.code === -32601) {
           let msg = "Server does not support this feature (Method not found)";
           if (trimmed.startsWith("prompts/")) msg = "This server does not have any prompts.";
-          else if (trimmed.startsWith("resources/")) msg = "This server does not have any resources.";
+          else if (trimmed.startsWith("resources/"))
+            msg = "This server does not have any resources.";
           else if (trimmed.startsWith("tools/")) msg = "This server does not have any tools.";
           console.log(pc.yellow(`  ${msg}`));
         } else {
@@ -1065,7 +1074,20 @@ async function cmdToolsCall(
   if (Array.isArray(content)) {
     for (const item of content) {
       if (item.type === "text") {
-        console.log(isError ? pc.red(`  ✗ ${item.text}`) : `  ${item.text}`);
+        if (isError) {
+          console.log(pc.red(`  ✗ ${item.text}`));
+        } else {
+          try {
+            const parsed = JSON.parse(item.text);
+            if (typeof parsed === "object" && parsed !== null) {
+              console.log(formatJson(parsed, 2, true));
+            } else {
+              console.log(pc.yellow(`  ${item.text}`));
+            }
+          } catch {
+            console.log(pc.yellow(`  ${item.text}`));
+          }
+        }
       } else {
         console.log(formatJson(item, 2, true));
       }
@@ -1174,7 +1196,23 @@ async function interactiveArgPrompt(
           : `${name} ${pc.dim(`(${typeStr})`)}`;
 
         const answerStr = await input(
-          { message: label, default: prevVal !== undefined ? String(prevVal) : undefined },
+          {
+            message: label,
+            default: prevVal !== undefined ? String(prevVal) : undefined,
+            validate: (val) => {
+              if (!val && typeStr !== "string") {
+                return "This argument is required and cannot be empty.";
+              }
+              if (
+                val &&
+                (typeStr === "number" || typeStr === "integer") &&
+                Number.isNaN(Number(val))
+              ) {
+                return "Must be a valid number.";
+              }
+              return true;
+            },
+          },
           { signal: abortController.signal },
         );
         collectedArgs[name] = coerceValue(answerStr, typeStr);
@@ -1216,7 +1254,20 @@ async function interactiveArgPrompt(
             : `${name} ${pc.dim(`(${typeStr})`)}`;
 
           const answerStr = await input(
-            { message: label, default: prevVal !== undefined ? String(prevVal) : undefined },
+            {
+              message: label,
+              default: prevVal !== undefined ? String(prevVal) : undefined,
+              validate: (val) => {
+                if (
+                  val &&
+                  (typeStr === "number" || typeStr === "integer") &&
+                  Number.isNaN(Number(val))
+                ) {
+                  return "Must be a valid number.";
+                }
+                return true;
+              },
+            },
             { signal: abortController.signal },
           );
           collectedArgs[name] = coerceValue(answerStr, typeStr);
@@ -1225,7 +1276,7 @@ async function interactiveArgPrompt(
 
       // Show final JSON and confirm execution
       console.log();
-      console.log(pc.dim(`  ${JSON.stringify(collectedArgs)}`));
+      console.log(formatJson(collectedArgs, 2, true));
       const shouldExecute = await confirm(
         { message: "Execute?", default: true },
         { signal: abortController.signal },
@@ -1557,7 +1608,17 @@ async function cmdResourcesRead(
 
   for (const item of result.contents) {
     if ((item as any).text !== undefined) {
-      console.log(`  ${(item as any).text}`);
+      const text = (item as any).text;
+      try {
+        const parsed = JSON.parse(text);
+        if (typeof parsed === "object" && parsed !== null) {
+          console.log(formatJson(parsed, 2, true));
+        } else {
+          console.log(pc.yellow(`  ${text}`));
+        }
+      } catch {
+        console.log(pc.yellow(`  ${text}`));
+      }
     } else if ((item as any).blob !== undefined) {
       const mimeType = (item as any).mimeType ?? "application/octet-stream";
       const sizeBytes = Buffer.from((item as any).blob, "base64").length;
@@ -1678,7 +1739,17 @@ async function cmdPromptsGet(
   for (const msg of result.messages) {
     const role = msg.role === "user" ? pc.blue("user") : pc.magenta("assistant");
     const text = (msg.content as any).text ?? JSON.stringify(msg.content);
-    console.log(`  ${pc.bold(role)}: ${text}`);
+    try {
+      const parsed = JSON.parse(text);
+      if (typeof parsed === "object" && parsed !== null) {
+        console.log(`  ${pc.bold(role)}:`);
+        console.log(formatJson(parsed, 4, true));
+      } else {
+        console.log(`  ${pc.bold(role)}: ${pc.yellow(text)}`);
+      }
+    } catch {
+      console.log(`  ${pc.bold(role)}: ${pc.yellow(text)}`);
+    }
   }
 
   console.log();
@@ -2064,9 +2135,15 @@ function printHelp(): void {
   const pD = hasPrompts ? (s: string) => s : pc.dim;
   const lD = hasLogging ? (s: string) => s : pc.dim;
 
-  const tH = hasTools ? pc.bold("Tool Commands:") : pc.dim(pc.bold("Tool Commands:")) + pc.dim("  (Unsupported)");
-  const rH = hasResources ? pc.bold("Resource Commands:") : pc.dim(pc.bold("Resource Commands:")) + pc.dim("  (Unsupported)");
-  const pH = hasPrompts ? pc.bold("Prompt Commands:") : pc.dim(pc.bold("Prompt Commands:")) + pc.dim("  (Unsupported)");
+  const tH = hasTools
+    ? pc.bold("Tool Commands:")
+    : pc.dim(pc.bold("Tool Commands:")) + pc.dim("  (Unsupported)");
+  const rH = hasResources
+    ? pc.bold("Resource Commands:")
+    : pc.dim(pc.bold("Resource Commands:")) + pc.dim("  (Unsupported)");
+  const pH = hasPrompts
+    ? pc.bold("Prompt Commands:")
+    : pc.dim(pc.bold("Prompt Commands:")) + pc.dim("  (Unsupported)");
 
   console.log(`
 ${tH}
