@@ -567,3 +567,85 @@ describe("server: call_mcp_primitive — schema validation", () => {
     expect(text).toMatch(/timing test \(\d+ms\)/);
   }, 15_000);
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// call_mcp_primitive: include_metadata
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("server: call_mcp_primitive — include_metadata", () => {
+  it("returns metadata content item when include_metadata is true", async () => {
+    const c = await startRunMcpServer();
+    await connectToMockServer(c);
+
+    const result = await c.callTool({
+      name: "call_mcp_primitive",
+      arguments: {
+        type: "tool",
+        name: "echo",
+        arguments: { text: "meta test" },
+        include_metadata: true,
+      },
+    });
+
+    const content = (result as any).content;
+    expect(content.length).toBeGreaterThanOrEqual(2);
+
+    // First item should be the metadata
+    const metaItem = content[0];
+    expect(metaItem.type).toBe("text");
+    expect(metaItem.text).toContain("--- metadata ---");
+
+    // Parse the metadata JSON
+    const metaJson = JSON.parse(metaItem.text.replace("--- metadata ---\n", ""));
+    expect(metaJson.latency_ms).toBeTypeOf("number");
+    expect(metaJson.latency_ms).toBeGreaterThanOrEqual(0);
+    expect(metaJson.content_items).toBe(1); // echo returns 1 content item
+    expect(metaJson.is_error).toBe(false);
+    expect(metaJson.truncated).toBe(false);
+    expect(metaJson.images_saved).toBe(0);
+    expect(metaJson.audio_saved).toBe(0);
+    expect(metaJson.original_size_bytes).toBeTypeOf("number");
+
+    // Second item should be the actual result WITHOUT inline timing
+    const resultItem = content[1];
+    expect(resultItem.text).toBe("meta test");
+    expect(resultItem.text).not.toMatch(/\(\d+ms\)/);
+  }, 15_000);
+
+  it("reports images_saved in metadata for screenshots", async () => {
+    const c = await startRunMcpServer();
+    await connectToMockServer(c);
+
+    const result = await c.callTool({
+      name: "call_mcp_primitive",
+      arguments: {
+        type: "tool",
+        name: "screenshot",
+        include_metadata: true,
+      },
+    });
+
+    const content = (result as any).content;
+    const metaJson = JSON.parse(content[0].text.replace("--- metadata ---\n", ""));
+    expect(metaJson.images_saved).toBe(1);
+  }, 15_000);
+
+  it("omits metadata when include_metadata is false/absent", async () => {
+    const c = await startRunMcpServer();
+    await connectToMockServer(c);
+
+    const result = await c.callTool({
+      name: "call_mcp_primitive",
+      arguments: {
+        type: "tool",
+        name: "echo",
+        arguments: { text: "no meta" },
+      },
+    });
+
+    const content = (result as any).content;
+    expect(content.length).toBe(1);
+    // Should have inline timing instead of metadata
+    expect(content[0].text).toMatch(/no meta \(\d+ms\)/);
+  }, 15_000);
+});

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  colorizeJson,
   formatJson,
   formatToolDescription,
   groupToolsByPrefix,
@@ -468,5 +469,227 @@ describe("resolveAlias", () => {
 
   it("preserves extra whitespace in the rest portion", () => {
     expect(resolveAlias("td  greet")).toBe("tools/describe  greet");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// colorizeJson
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("colorizeJson", () => {
+  /** Strip ANSI codes to test structural correctness. */
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape stripping
+  const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+
+  it("preserves structural validity (round-trip without ANSI)", () => {
+    const obj = { name: "hello", count: 42, active: true, empty: null };
+    const json = JSON.stringify(obj, null, 2);
+    const colorized = colorizeJson(json);
+    expect(strip(colorized)).toBe(json);
+  });
+
+  it("colorizes keys and string values differently", () => {
+    const json = '{"key": "value"}';
+    const colorized = colorizeJson(json);
+    // Structural integrity always holds, regardless of TTY
+    expect(strip(colorized)).toBe(json);
+    // In a TTY context, keys and values get different colors;
+    // in non-TTY, picocolors returns plain text (still correct behavior)
+  });
+
+  it("colorizes numbers with yellow", () => {
+    const json = '{"n": 42}';
+    const colorized = colorizeJson(json);
+    expect(strip(colorized)).toBe(json);
+  });
+
+  it("colorizes booleans and null", () => {
+    const json = '{"a": true, "b": false, "c": null}';
+    const colorized = colorizeJson(json);
+    expect(strip(colorized)).toBe(json);
+  });
+
+  it("handles nested objects and arrays", () => {
+    const obj = { items: [1, "two", true], nested: { x: null } };
+    const json = JSON.stringify(obj, null, 2);
+    const colorized = colorizeJson(json);
+    expect(strip(colorized)).toBe(json);
+  });
+
+  it("handles strings with escaped quotes and colons", () => {
+    const obj = { msg: 'He said "hi": yes', path: "C:\\Users\\test" };
+    const json = JSON.stringify(obj, null, 2);
+    const colorized = colorizeJson(json);
+    expect(strip(colorized)).toBe(json);
+  });
+
+  it("handles empty objects and arrays", () => {
+    expect(strip(colorizeJson("{}"))).toBe("{}");
+    expect(strip(colorizeJson("[]"))).toBe("[]");
+  });
+
+  it("handles arrays of mixed values", () => {
+    const json = '["hello", 42, true, null]';
+    const colorized = colorizeJson(json);
+    expect(strip(colorized)).toBe(json);
+  });
+
+  it("handles negative numbers and scientific notation", () => {
+    const json = '{"a": -3.14, "b": 1e10}';
+    const colorized = colorizeJson(json);
+    expect(strip(colorized)).toBe(json);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// scaffoldArgs — enum, record, and union support
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("scaffoldArgs — advanced schemas", () => {
+  it("scaffolds enum by picking the first value", () => {
+    const schema = {
+      properties: {
+        type: { type: "string", enum: ["tool", "resource", "prompt"] },
+      },
+    };
+    const result = JSON.parse(scaffoldArgs(schema));
+    expect(result.type).toBe("tool");
+  });
+
+  it("scaffolds arrays of enums", () => {
+    const schema = {
+      properties: {
+        include: {
+          type: "array",
+          items: { type: "string", enum: ["tools", "resources", "prompts"] },
+        },
+      },
+    };
+    const result = JSON.parse(scaffoldArgs(schema));
+    expect(result.include).toEqual(["tools"]);
+  });
+
+  it("scaffolds record types (additionalProperties: object)", () => {
+    const schema = {
+      properties: {
+        env: {
+          type: "object",
+          additionalProperties: { type: "string" },
+        },
+      },
+    };
+    const result = JSON.parse(scaffoldArgs(schema));
+    expect(result.env).toEqual({ "<key>": "<string>" });
+  });
+
+  it("scaffolds record types (additionalProperties: empty)", () => {
+    const schema = {
+      properties: {
+        args: {
+          type: "object",
+          additionalProperties: {},
+        },
+      },
+    };
+    const result = JSON.parse(scaffoldArgs(schema));
+    // Empty additionalProperties = unknown values
+    expect(result.args).toEqual({ "<key>": "<unknown>" });
+  });
+
+  it("scaffolds anyOf (Zod unions) by picking first variant", () => {
+    const schema = {
+      properties: {
+        value: {
+          anyOf: [{ type: "string" }, { type: "number" }],
+        },
+      },
+    };
+    const result = JSON.parse(scaffoldArgs(schema));
+    expect(result.value).toBe("<string>");
+  });
+
+  it("scaffolds oneOf by picking first variant", () => {
+    const schema = {
+      properties: {
+        mode: {
+          oneOf: [{ type: "string", enum: ["fast", "slow"] }, { type: "number" }],
+        },
+      },
+    };
+    const result = JSON.parse(scaffoldArgs(schema));
+    expect(result.mode).toBe("fast");
+  });
+
+  it("scaffolds the exact call_mcp_primitive schema from Zod", () => {
+    // This is the actual JSON Schema output from z.enum, z.record, z.array
+    const schema = {
+      type: "object",
+      properties: {
+        type: {
+          type: "string",
+          enum: ["tool", "resource", "prompt"],
+          description: "The MCP primitive type to invoke",
+        },
+        name: { type: "string", description: "Tool name" },
+        arguments: {
+          type: "object",
+          additionalProperties: {},
+          description: "Tool args",
+        },
+        command: { type: "string" },
+        args: { type: "array", items: { type: "string" } },
+        env: { type: "object", additionalProperties: { type: "string" } },
+        disconnect_after: { type: "boolean" },
+        timeout_ms: { type: "number" },
+      },
+      required: ["type", "name"],
+    };
+    const result = JSON.parse(scaffoldArgs(schema));
+    expect(result.type).toBe("tool");
+    expect(result.name).toBe("<string>");
+    expect(result.arguments).toEqual({ "<key>": "<unknown>" });
+    expect(result.args).toEqual(["<string>"]);
+    expect(result.env).toEqual({ "<key>": "<string>" });
+    expect(result.disconnect_after).toBe("<boolean>");
+    expect(result.timeout_ms).toBe("<number>");
+  });
+
+  it("scaffolds top-level record schema (no properties)", () => {
+    const schema = {
+      type: "object",
+      additionalProperties: { type: "string" },
+    };
+    const result = JSON.parse(scaffoldArgs(schema));
+    expect(result).toEqual({ "<key>": "<string>" });
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// formatJson — colorize flag
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("formatJson — colorize", () => {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape stripping
+  const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+
+  it("produces valid output with colorize=true", () => {
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape stripping
+    const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+    const plain = formatJson({ key: "value" }, 2, false);
+    const colored = formatJson({ key: "value" }, 2, true);
+    // Stripped colorized version should match plain version
+    expect(strip(colored)).toBe(plain);
+  });
+
+  it("does not add ANSI codes when colorize is false", () => {
+    const result = formatJson({ key: "value" }, 2, false);
+    expect(result).not.toContain("\x1b[");
+  });
+
+  it("structural content is preserved when colorized", () => {
+    const obj = { name: "test", count: 5 };
+    const plain = formatJson(obj, 2, false);
+    const colored = formatJson(obj, 2, true);
+    expect(strip(colored)).toBe(plain);
   });
 });

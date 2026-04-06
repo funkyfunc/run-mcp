@@ -339,3 +339,64 @@ describe("mixed content processing", () => {
     expect(content[2].text).toBe("More context");
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// callToolWithMetadata
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("callToolWithMetadata", () => {
+  it("returns metadata with zero interceptions for normal text", async () => {
+    const interceptor = new ResponseInterceptor({ outDir: testOutDir });
+    const target = mockTarget({
+      content: [{ type: "text", text: "hello" }],
+    });
+
+    const { result, metadata } = await interceptor.callToolWithMetadata(target, "echo", {});
+
+    expect((result as any).content[0].text).toBe("hello");
+    expect(metadata.truncated).toBe(false);
+    expect(metadata.imagesSaved).toBe(0);
+    expect(metadata.audioSaved).toBe(0);
+    expect(metadata.originalSizeBytes).toBe(5);
+  });
+
+  it("tracks images_saved for image interception", async () => {
+    const interceptor = new ResponseInterceptor({ outDir: testOutDir });
+    const imgData = Buffer.from("fake-image-data").toString("base64");
+
+    const target = mockTarget({
+      content: [{ type: "image", data: imgData, mimeType: "image/png" }],
+    });
+
+    const { metadata } = await interceptor.callToolWithMetadata(target, "screenshot", {});
+    expect(metadata.imagesSaved).toBe(1);
+    expect(metadata.audioSaved).toBe(0);
+    expect(metadata.originalSizeBytes).toBeGreaterThan(0);
+  });
+
+  it("tracks audio_saved for audio interception", async () => {
+    const interceptor = new ResponseInterceptor({ outDir: testOutDir });
+    const audioData = Buffer.from("fake-audio").toString("base64");
+
+    const target = mockTarget({
+      content: [{ type: "audio", data: audioData, mimeType: "audio/wav" }],
+    });
+
+    const { metadata } = await interceptor.callToolWithMetadata(target, "audio_tool", {});
+    expect(metadata.audioSaved).toBe(1);
+    expect(metadata.imagesSaved).toBe(0);
+  });
+
+  it("tracks truncation in metadata", async () => {
+    const interceptor = new ResponseInterceptor({ outDir: testOutDir, maxTextLength: 100 });
+    const bigText = "Hello world. ".repeat(50); // ~650 chars
+
+    const target = mockTarget({
+      content: [{ type: "text", text: bigText }],
+    });
+
+    const { metadata } = await interceptor.callToolWithMetadata(target, "big", {});
+    expect(metadata.truncated).toBe(true);
+    expect(metadata.originalSizeBytes).toBeGreaterThan(100);
+  });
+});

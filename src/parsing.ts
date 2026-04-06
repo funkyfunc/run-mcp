@@ -4,6 +4,8 @@
  * Extracted into a separate module for testability.
  */
 
+import pc from "picocolors";
+
 /**
  * Split input into a command name and the rest of the arguments.
  * Command names are case-insensitive.
@@ -56,13 +58,142 @@ export function parseCallArgs(rest: string): {
 
 /**
  * Pretty-print an object as indented JSON.
+ * When `colorize` is true, syntax-highlights keys, values, and structural tokens.
  */
-export function formatJson(obj: unknown, indent: number = 2): string {
+export function formatJson(obj: unknown, indent: number = 2, colorize: boolean = false): string {
   const json = JSON.stringify(obj, null, indent);
-  return json
+  const output = colorize ? colorizeJson(json) : json;
+  return output
     .split("\n")
     .map((line) => " ".repeat(indent) + line)
     .join("\n");
+}
+
+// ─── JSON Syntax Highlighting ───────────────────────────────────────────────
+
+/**
+ * Syntax-highlight a JSON string using ANSI colors.
+ *
+ * Uses a character-level state machine to correctly handle:
+ * - Keys vs. string values (context-aware coloring)
+ * - Escaped quotes inside strings
+ * - Numbers, booleans, and null
+ *
+ * Color scheme:
+ *   Keys       → cyan
+ *   Strings    → green
+ *   Numbers    → yellow
+ *   Booleans   → magenta
+ *   Null       → dim
+ *   Structural → default
+ */
+export function colorizeJson(json: string): string {
+  const result: string[] = [];
+  let i = 0;
+
+  // After a ':', we're in value context until the next ',' or '}'/']'
+  let expectingValue = false;
+
+  while (i < json.length) {
+    const ch = json[i];
+
+    // String literal (key or value)
+    if (ch === '"') {
+      const str = consumeString(json, i);
+      if (expectingValue) {
+        result.push(pc.green(str));
+        expectingValue = false;
+      } else {
+        result.push(pc.cyan(str));
+      }
+      i += str.length;
+      continue;
+    }
+
+    // Colon — next token is a value
+    if (ch === ":") {
+      result.push(ch);
+      expectingValue = true;
+      i++;
+      continue;
+    }
+
+    // Comma, closing brace/bracket — reset to key context
+    if (ch === "," || ch === "}" || ch === "]") {
+      result.push(ch);
+      expectingValue = false;
+      i++;
+      continue;
+    }
+
+    // Opening brace/bracket — stays in current context
+    if (ch === "{" || ch === "[") {
+      result.push(ch);
+      // After '[', the next token is a value (array element)
+      if (ch === "[") expectingValue = true;
+      i++;
+      continue;
+    }
+
+    // Keywords: true, false, null
+    if (json.startsWith("true", i)) {
+      result.push(pc.magenta("true"));
+      expectingValue = false;
+      i += 4;
+      continue;
+    }
+    if (json.startsWith("false", i)) {
+      result.push(pc.magenta("false"));
+      expectingValue = false;
+      i += 5;
+      continue;
+    }
+    if (json.startsWith("null", i)) {
+      result.push(pc.dim("null"));
+      expectingValue = false;
+      i += 4;
+      continue;
+    }
+
+    // Numbers: digits, minus, dot
+    if (ch === "-" || (ch >= "0" && ch <= "9")) {
+      let num = "";
+      while (i < json.length && /[0-9.eE+-]/.test(json[i])) {
+        num += json[i];
+        i++;
+      }
+      result.push(pc.yellow(num));
+      expectingValue = false;
+      continue;
+    }
+
+    // Whitespace and anything else — pass through
+    result.push(ch);
+    i++;
+  }
+
+  return result.join("");
+}
+
+/**
+ * Consume a JSON string literal starting at position `start`.
+ * Handles escaped characters including `\"`, `\\`, etc.
+ * Returns the full string including surrounding quotes.
+ */
+function consumeString(json: string, start: number): string {
+  let i = start + 1; // skip opening quote
+  while (i < json.length) {
+    if (json[i] === "\\") {
+      i += 2; // skip escaped char
+      continue;
+    }
+    if (json[i] === '"') {
+      return json.slice(start, i + 1);
+    }
+    i++;
+  }
+  // Unterminated string — return what we have
+  return json.slice(start);
 }
 
 // ─── Typo Suggestion ────────────────────────────────────────────────────────
@@ -132,6 +263,17 @@ export function scaffoldArgs(schema: Record<string, unknown>): string {
 }
 
 function scaffoldValue(prop: Record<string, unknown>): unknown {
+  // Handle enum — pick the first value as the placeholder
+  if (Array.isArray(prop.enum) && prop.enum.length > 0) {
+    return prop.enum[0];
+  }
+
+  // Handle anyOf/oneOf (Zod unions / discriminated unions) — pick the first variant
+  const variants = (prop.anyOf ?? prop.oneOf) as Record<string, unknown>[] | undefined;
+  if (Array.isArray(variants) && variants.length > 0) {
+    return scaffoldValue(variants[0]);
+  }
+
   switch (prop.type as string) {
     case "string":
       return "<string>";
@@ -153,12 +295,28 @@ function scaffoldValue(prop: Record<string, unknown>): unknown {
 
 function scaffoldObject(schema: Record<string, unknown>): Record<string, unknown> {
   const properties = schema.properties as Record<string, Record<string, unknown>> | undefined;
-  if (!properties) return {};
-  const result: Record<string, unknown> = {};
-  for (const [key, prop] of Object.entries(properties)) {
-    result[key] = scaffoldValue(prop);
+
+  if (properties) {
+    const result: Record<string, unknown> = {};
+    for (const [key, prop] of Object.entries(properties)) {
+      result[key] = scaffoldValue(prop);
+    }
+    return result;
   }
-  return result;
+
+  // Handle record types: { additionalProperties: { type: "string" } }
+  const additionalProperties = schema.additionalProperties as
+    | Record<string, unknown>
+    | boolean
+    | undefined;
+  if (additionalProperties && typeof additionalProperties === "object") {
+    return { "<key>": scaffoldValue(additionalProperties) };
+  }
+  if (additionalProperties === true || (schema.type === "object" && !properties)) {
+    return { "<key>": "<value>" };
+  }
+
+  return {};
 }
 
 // ─── Tool Description Formatting ────────────────────────────────────────────

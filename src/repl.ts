@@ -561,7 +561,11 @@ export async function startRepl(targetCommand: string[], opts: ReplOptions): Pro
       try {
         await handleCommand(trimmed, target, interceptor);
       } catch (err: any) {
-        console.error(pc.red(`✗ Error: ${err.message}`));
+        if (err?.message?.includes("-32601") || err?.code === -32601) {
+          console.error(pc.red(`✗ Error: Server does not support this feature (Method not found)`));
+        } else {
+          console.error(pc.red(`✗ Error: ${err.message}`));
+        }
         console.log(pc.dim("\nShutting down..."));
         await target.close();
         process.exit(1);
@@ -626,6 +630,8 @@ function startReadlineLoop(target: TargetManager, interceptor: ResponseIntercept
       } catch (err: any) {
         if (err instanceof AbortFlowError) {
           console.log(pc.yellow("  Aborted."));
+        } else if (err?.message?.includes("-32601") || err?.code === -32601) {
+          console.error(pc.red(`✗ Error: Server does not support this feature (Method not found)`));
         } else {
           console.error(pc.red(`✗ Error: ${err.message}`));
         }
@@ -728,7 +734,7 @@ async function handleCommand(
       return;
 
     case "resources/read":
-      await cmdResourcesRead(target, rest);
+      await cmdResourcesRead(target, rest, interceptor);
       return;
 
     case "resources/templates":
@@ -740,7 +746,7 @@ async function handleCommand(
       return;
 
     case "prompts/get":
-      await cmdPromptsGet(target, rest);
+      await cmdPromptsGet(target, rest, interceptor);
       return;
 
     case "timing":
@@ -934,6 +940,20 @@ async function cmdToolsCall(
   const { toolName, jsonArgs, timeoutMs } = parseCallArgs(cleanedRest);
 
   if (!toolName) {
+    // In interactive mode with cached tools: launch the fuzzy picker
+    if (!isScriptMode && cachedToolNames.length > 0 && process.stdin.isTTY) {
+      const picked = await withSuspendedReadline(target, interceptor, async () => {
+        const tools = await target.listTools();
+        return pickInteractive(
+          tools.tools.map((t) => ({ name: t.name, description: t.description })),
+          "Pick a tool to call:",
+        );
+      });
+      if (!picked) return;
+      // Recurse with the selected tool name to enter interactive arg prompt
+      return cmdToolsCall(target, interceptor, picked);
+    }
+
     console.log(pc.yellow("  Usage: tools/call <name> [json_args] [--timeout <ms>]"));
     if (cachedToolNames.length > 0) {
       const preview = cachedToolNames.slice(0, 6);
@@ -1026,11 +1046,11 @@ async function cmdToolsCall(
       if (item.type === "text") {
         console.log(isError ? pc.red(`  ✗ ${item.text}`) : `  ${item.text}`);
       } else {
-        console.log(formatJson(item, 2));
+        console.log(formatJson(item, 2, true));
       }
     }
   } else {
-    console.log(formatJson(result, 2));
+    console.log(formatJson(result, 2, true));
   }
 
   if (isError) {
@@ -1471,11 +1491,32 @@ async function cmdResourcesList(target: TargetManager): Promise<void> {
   console.log(pc.dim(`\n  ${resources.length} resource(s) total.`));
 }
 
-async function cmdResourcesRead(target: TargetManager, rest: string): Promise<void> {
+async function cmdResourcesRead(
+  target: TargetManager,
+  rest: string,
+  interceptor?: ResponseInterceptor,
+): Promise<void> {
   const uri = rest.trim();
 
   // Change 5: Inline help hint
   if (!uri) {
+    // In interactive mode with cached resources: launch the fuzzy picker
+    if (!isScriptMode && cachedResourceUris.length > 0 && process.stdin.isTTY && interceptor) {
+      const picked = await withSuspendedReadline(target, interceptor, async () => {
+        const { resources } = await target.listResources();
+        return pickInteractive(
+          (resources as any[]).map((r) => ({
+            name: r.uri,
+            description: r.description || r.name,
+          })),
+          "Pick a resource to read:",
+        );
+      });
+      if (!picked) return;
+      // Recurse with the selected URI
+      return cmdResourcesRead(target, picked, interceptor);
+    }
+
     console.log(pc.yellow("  Usage: resources/read <uri>"));
     if (cachedResourceUris.length > 0) {
       const preview = cachedResourceUris.slice(0, 5);
@@ -1501,7 +1542,7 @@ async function cmdResourcesRead(target: TargetManager, rest: string): Promise<vo
       const sizeBytes = Buffer.from((item as any).blob, "base64").length;
       console.log(pc.dim(`  [Binary: ${mimeType}, ${sizeBytes} bytes]`));
     } else {
-      console.log(formatJson(item, 2));
+      console.log(formatJson(item, 2, true));
     }
   }
 
@@ -1560,11 +1601,29 @@ async function cmdPromptsList(target: TargetManager): Promise<void> {
   console.log(pc.dim(`\n  ${prompts.length} prompt(s) total.`));
 }
 
-async function cmdPromptsGet(target: TargetManager, rest: string): Promise<void> {
+async function cmdPromptsGet(
+  target: TargetManager,
+  rest: string,
+  interceptor?: ResponseInterceptor,
+): Promise<void> {
   const { toolName: promptName, jsonArgs } = parseCallArgs(rest);
 
   // Change 5: Inline help hint
   if (!promptName) {
+    // In interactive mode with cached prompts: launch the fuzzy picker
+    if (!isScriptMode && cachedPromptNames.length > 0 && process.stdin.isTTY && interceptor) {
+      const picked = await withSuspendedReadline(target, interceptor, async () => {
+        const { prompts } = await target.listPrompts();
+        return pickInteractive(
+          prompts.map((p) => ({ name: p.name, description: p.description })),
+          "Pick a prompt to get:",
+        );
+      });
+      if (!picked) return;
+      // Recurse with the selected prompt name
+      return cmdPromptsGet(target, picked);
+    }
+
     console.log(pc.yellow("  Usage: prompts/get <name> [json_args]"));
     if (cachedPromptNames.length > 0) {
       console.log(pc.dim(`\n  Available prompts: ${cachedPromptNames.join(", ")}`));
@@ -2043,6 +2102,49 @@ function cmdToolsForget(rest: string): void {
     const count = lastToolArgsMap.size;
     lastToolArgsMap.clear();
     console.log(pc.green(`  Cleared remembered args for ${count} tool${count === 1 ? "" : "s"}.`));
+  }
+}
+
+// ─── Interactive Pickers ────────────────────────────────────────────────────
+
+/**
+ * Show a fuzzy-search picker for a subset of MCP primitives.
+ * Returns the selected name/URI or null if the user cancels (Escape).
+ *
+ * Used by `tools/call`, `resources/read`, `prompts/get` when invoked without
+ * a specific target name, giving users a discoverable way to pick items.
+ */
+async function pickInteractive(
+  items: { name: string; description?: string }[],
+  message: string,
+): Promise<string | null> {
+  if (items.length === 0) return null;
+
+  // Non-TTY fallback: can't show interactive picker
+  if (!process.stdin.isTTY) return null;
+
+  const choices = items.map((item) => ({
+    name: item.name,
+    value: item.name,
+    description: item.description || "",
+  }));
+
+  try {
+    const picked = await search({
+      message,
+      source: async (term: string | undefined) => {
+        if (!term) return choices;
+        const lower = term.toLowerCase();
+        return choices.filter(
+          (c) =>
+            c.name.toLowerCase().includes(lower) || c.description.toLowerCase().includes(lower),
+        );
+      },
+    });
+    return picked as string;
+  } catch (err: any) {
+    if (isAbortError(err)) return null;
+    throw err;
   }
 }
 

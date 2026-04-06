@@ -18,6 +18,18 @@ export interface InterceptorOptions {
   maxTextLength?: number;
 }
 
+/**
+ * Metadata about what interception actions were taken during a tool call.
+ * Returned by `callToolWithMetadata()` for agent consumers that want
+ * structured insight into what happened.
+ */
+export interface InterceptionMetadata {
+  truncated: boolean;
+  imagesSaved: number;
+  audioSaved: number;
+  originalSizeBytes: number;
+}
+
 interface ContentItem {
   type: string;
   text?: string;
@@ -59,7 +71,39 @@ export class ResponseInterceptor {
     args: Record<string, unknown> = {},
     timeoutMs?: number,
   ): Promise<Record<string, unknown>> {
+    const { result } = await this._callToolInternal(target, name, args, timeoutMs);
+    return result;
+  }
+
+  /**
+   * Call a tool and return both the result and metadata about interception actions.
+   * Used by the agent server when `include_metadata` is requested.
+   */
+  async callToolWithMetadata(
+    target: TargetManager,
+    name: string,
+    args: Record<string, unknown> = {},
+    timeoutMs?: number,
+  ): Promise<{ result: Record<string, unknown>; metadata: InterceptionMetadata }> {
+    return this._callToolInternal(target, name, args, timeoutMs);
+  }
+
+  /**
+   * Internal implementation shared by callTool and callToolWithMetadata.
+   */
+  private async _callToolInternal(
+    target: TargetManager,
+    name: string,
+    args: Record<string, unknown> = {},
+    timeoutMs?: number,
+  ): Promise<{ result: Record<string, unknown>; metadata: InterceptionMetadata }> {
     const timeout = timeoutMs ?? this.defaultTimeoutMs;
+    const metadata: InterceptionMetadata = {
+      truncated: false,
+      imagesSaved: 0,
+      audioSaved: 0,
+      originalSizeBytes: 0,
+    };
 
     // Start the target call. We attach a dummy .catch to prevent unhandled
     // promise rejections if the real call fails AFTER our Promise.race times out.
@@ -73,12 +117,21 @@ export class ResponseInterceptor {
     // Process content array if present — modifies items in-place
     const content = (result as any).content;
     if (Array.isArray(content)) {
+      // Track original size before any interception
+      for (const item of content) {
+        if (item.type === "text" && item.text) {
+          metadata.originalSizeBytes += Buffer.byteLength(item.text, "utf8");
+        } else if ((item.type === "image" || item.type === "audio") && item.data) {
+          metadata.originalSizeBytes += Buffer.byteLength(item.data, "base64");
+        }
+      }
+
       for (let i = 0; i < content.length; i++) {
-        content[i] = await this._processItem(content[i]);
+        content[i] = await this._processItem(content[i], metadata);
       }
     }
 
-    return result as Record<string, unknown>;
+    return { result: result as Record<string, unknown>, metadata };
   }
 
   /**
@@ -86,25 +139,32 @@ export class ResponseInterceptor {
    * Preserves all item properties not related to the intercepted data
    * (e.g., annotations, _meta).
    */
-  private async _processItem(item: ContentItem): Promise<ContentItem> {
+  private async _processItem(
+    item: ContentItem,
+    metadata: InterceptionMetadata,
+  ): Promise<ContentItem> {
     // Case 1: Explicit image type with base64 data
     if (item.type === "image" && item.data) {
+      metadata.imagesSaved++;
       return this._saveMedia(item.data, item.mimeType ?? "image/png", "image");
     }
 
     // Case 2: Audio type with base64 data
     if (item.type === "audio" && item.data) {
+      metadata.audioSaved++;
       return this._saveMedia(item.data, item.mimeType ?? "audio/wav", "audio");
     }
 
     // Case 3: Text item that looks like a raw base64 blob
     if (item.type === "text" && item.text && BASE64_PATTERN.test(item.text.trim())) {
+      metadata.imagesSaved++;
       return this._saveMedia(item.text.trim(), "image/png", "image");
     }
 
     // Case 4: Truncate oversized text
     if (item.type === "text" && item.text && item.text.length > this.maxTextLength) {
       const totalLength = item.text.length;
+      metadata.truncated = true;
       return {
         ...item,
         text:

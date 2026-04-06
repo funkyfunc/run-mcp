@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { discoverServers } from "./config-scanner.js";
-import { ResponseInterceptor } from "./interceptor.js";
+import { type InterceptionMetadata, ResponseInterceptor } from "./interceptor.js";
 import { suggestCommand } from "./parsing.js";
 import { TargetManager } from "./target-manager.js";
 
@@ -727,6 +727,13 @@ export async function startServer(opts: ServerOptions): Promise<void> {
           .optional()
           .describe("Tear down the connection after this call (default: false)"),
         timeout_ms: z.number().optional().describe("Timeout in ms (only applies to type: 'tool')"),
+        include_metadata: z
+          .boolean()
+          .optional()
+          .describe(
+            "Include a structured metadata content item with latency, interception info, " +
+              "and content statistics. Useful for programmatic consumption.",
+          ),
       },
     },
     async ({
@@ -738,6 +745,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       env,
       disconnect_after,
       timeout_ms,
+      include_metadata,
     }) => {
       // Ensure connection
       try {
@@ -813,21 +821,53 @@ export async function startServer(opts: ServerOptions): Promise<void> {
             }
 
             const startMs = Date.now();
-            result = await interceptor.callTool(
-              target!,
-              name,
-              (callArgs as Record<string, unknown>) ?? {},
-              timeout_ms,
-            );
+            let interceptionMeta: InterceptionMetadata | undefined;
+
+            if (include_metadata) {
+              const { result: toolResult, metadata } = await interceptor.callToolWithMetadata(
+                target!,
+                name,
+                (callArgs as Record<string, unknown>) ?? {},
+                timeout_ms,
+              );
+              result = toolResult;
+              interceptionMeta = metadata;
+            } else {
+              result = await interceptor.callTool(
+                target!,
+                name,
+                (callArgs as Record<string, unknown>) ?? {},
+                timeout_ms,
+              );
+            }
             const elapsedMs = Date.now() - startMs;
 
-            // Append timing to text responses
+            // Append timing to text responses (only when metadata is NOT requested)
             const resultContent = (result as any).content;
-            if (Array.isArray(resultContent) && resultContent.length > 0) {
+            if (!include_metadata && Array.isArray(resultContent) && resultContent.length > 0) {
               const lastItem = resultContent[resultContent.length - 1];
               if (lastItem.type === "text") {
                 lastItem.text += ` (${elapsedMs}ms)`;
               }
+            }
+
+            // Prepend metadata content item when requested
+            if (include_metadata && Array.isArray(resultContent)) {
+              const meta: Record<string, unknown> = {
+                latency_ms: elapsedMs,
+                content_items: resultContent.length,
+                is_error: (result as any).isError === true,
+              };
+              if (interceptionMeta) {
+                meta.truncated = interceptionMeta.truncated;
+                meta.images_saved = interceptionMeta.imagesSaved;
+                meta.audio_saved = interceptionMeta.audioSaved;
+                meta.original_size_bytes = interceptionMeta.originalSizeBytes;
+              }
+              resultContent.unshift({
+                type: "text" as const,
+                text: `--- metadata ---\n${JSON.stringify(meta)}`,
+              });
             }
 
             break;
