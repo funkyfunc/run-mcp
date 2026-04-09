@@ -77,8 +77,31 @@ Examples:
   $ run-mcp --out-dir ./test-output               # Agent mode with options
   $ run-mcp --out-dir ./screenshots node srv.js   # REPL mode with options
 
+## Headless Mode (Single-Shot CI/CD)
 
+For CI/CD pipelines, shell scripts, or parsing via `jq`, `run-mcp` exposes a suite of headless subcommands that pipe clean JSON to stdout and isolate standard errors and progress updates to stderr. You must use `--` to separate the command from the target server options.
 
+```bash
+# Get tool names as a flat list
+run-mcp list-tools -- node my-server.js | jq -r '.[].name'
+
+# Call a tool and extract a field  
+run-mcp call generate '{"prompt":"test"}' -- node my-server.js | jq '.content[0].text'
+
+# Read a resource and pipe to file
+run-mcp read docs://config -- node my-server.js > config.json
+```
+
+Available subcommands:
+- `call <tool> [json_args]`
+- `list-tools`
+- `list-resources`
+- `list-prompts`
+- `read <uri>`
+- `describe <tool>`
+- `get-prompt <name> [json_args]`
+
+Use `run-mcp <subcommand> --help` for specific command options (like `--timeout` and `--raw`).
 ## Agent Use Cases
 
 ### Dynamic Testing

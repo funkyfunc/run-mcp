@@ -2,8 +2,169 @@
 
 import { program } from "commander";
 import { pickDiscoveredServer } from "./config-scanner.js";
+import { runHeadless } from "./headless.js";
 import { startRepl } from "./repl.js";
 import { startServer } from "./server.js";
+
+// ─── Headless subcommand helper ───────────────────────────────────────────────
+
+/**
+ * Extract the target server command from the variadic trailing argument.
+ * Filters out the `--` separator that Commander passes through.
+ */
+function extractTargetCommand(targetCommand: string[]): string[] {
+  return targetCommand.filter((a) => a !== "--");
+}
+
+/**
+ * Validate that a target command was provided, or exit with usage help.
+ */
+function requireTargetCommand(targetCommand: string[], subcommandUsage: string): string[] {
+  const target = extractTargetCommand(targetCommand);
+  if (target.length === 0) {
+    process.stderr.write(`Error: No target server command provided after '--'.\n`);
+    process.stderr.write(`Usage: ${subcommandUsage}\n`);
+    process.exit(2);
+  }
+  return target;
+}
+
+// ─── Shared headless options ──────────────────────────────────────────────────
+
+interface HeadlessOpts {
+  outDir?: string;
+  timeout?: string;
+  raw?: boolean;
+}
+
+function parseHeadlessOpts(opts: HeadlessOpts) {
+  return {
+    outDir: opts.outDir,
+    timeoutMs: opts.timeout ? Number.parseInt(opts.timeout, 10) : undefined,
+    raw: opts.raw,
+  };
+}
+
+// ─── Enable positional options for subcommand support ─────────────────────────
+
+program.enablePositionalOptions();
+
+// ─── Subcommand: call ─────────────────────────────────────────────────────────
+
+program
+  .command("call")
+  .argument("<tool>", "Tool name to call")
+  .argument("[json_args]", "JSON arguments for the tool")
+  .argument("[target_command...]", "Target server command (after --)")
+  .description("Call a tool on a target MCP server and print the result as JSON")
+  .option("-o, --out-dir <path>", "Output directory for saved media")
+  .option("-t, --timeout <ms>", "Timeout in milliseconds (default: 30000)")
+  .option("--raw", "Print the full result object including metadata")
+  .allowUnknownOption()
+  .action(
+    async (
+      tool: string,
+      jsonArgs: string | undefined,
+      targetCommand: string[],
+      opts: HeadlessOpts,
+    ) => {
+      const target = requireTargetCommand(
+        targetCommand,
+        "run-mcp call <tool> [json_args] -- <server_command...>",
+      );
+      await runHeadless(target, { type: "call", tool, args: jsonArgs }, parseHeadlessOpts(opts));
+    },
+  );
+
+// ─── Subcommand: list-tools ───────────────────────────────────────────────────
+
+program
+  .command("list-tools")
+  .argument("[target_command...]", "Target server command (after --)")
+  .description("List all tools on a target MCP server as JSON")
+  .allowUnknownOption()
+  .action(async (targetCommand: string[]) => {
+    const target = requireTargetCommand(targetCommand, "run-mcp list-tools -- <server_command...>");
+    await runHeadless(target, { type: "list-tools" });
+  });
+
+// ─── Subcommand: list-resources ───────────────────────────────────────────────
+
+program
+  .command("list-resources")
+  .argument("[target_command...]", "Target server command (after --)")
+  .description("List all resources on a target MCP server as JSON")
+  .allowUnknownOption()
+  .action(async (targetCommand: string[]) => {
+    const target = requireTargetCommand(
+      targetCommand,
+      "run-mcp list-resources -- <server_command...>",
+    );
+    await runHeadless(target, { type: "list-resources" });
+  });
+
+// ─── Subcommand: list-prompts ─────────────────────────────────────────────────
+
+program
+  .command("list-prompts")
+  .argument("[target_command...]", "Target server command (after --)")
+  .description("List all prompts on a target MCP server as JSON")
+  .allowUnknownOption()
+  .action(async (targetCommand: string[]) => {
+    const target = requireTargetCommand(
+      targetCommand,
+      "run-mcp list-prompts -- <server_command...>",
+    );
+    await runHeadless(target, { type: "list-prompts" });
+  });
+
+// ─── Subcommand: read ─────────────────────────────────────────────────────────
+
+program
+  .command("read")
+  .argument("<uri>", "Resource URI to read")
+  .argument("[target_command...]", "Target server command (after --)")
+  .description("Read a resource by URI from a target MCP server")
+  .allowUnknownOption()
+  .action(async (uri: string, targetCommand: string[]) => {
+    const target = requireTargetCommand(targetCommand, "run-mcp read <uri> -- <server_command...>");
+    await runHeadless(target, { type: "read", uri });
+  });
+
+// ─── Subcommand: describe ─────────────────────────────────────────────────────
+
+program
+  .command("describe")
+  .argument("<tool>", "Tool name to describe")
+  .argument("[target_command...]", "Target server command (after --)")
+  .description("Print a tool's full schema as JSON")
+  .allowUnknownOption()
+  .action(async (tool: string, targetCommand: string[]) => {
+    const target = requireTargetCommand(
+      targetCommand,
+      "run-mcp describe <tool> -- <server_command...>",
+    );
+    await runHeadless(target, { type: "describe", tool });
+  });
+
+// ─── Subcommand: get-prompt ───────────────────────────────────────────────────
+
+program
+  .command("get-prompt")
+  .argument("<name>", "Prompt name")
+  .argument("[json_args]", "JSON arguments for the prompt")
+  .argument("[target_command...]", "Target server command (after --)")
+  .description("Get a prompt with optional arguments from a target MCP server")
+  .allowUnknownOption()
+  .action(async (name: string, jsonArgs: string | undefined, targetCommand: string[]) => {
+    const target = requireTargetCommand(
+      targetCommand,
+      "run-mcp get-prompt <name> [json_args] -- <server_command...>",
+    );
+    await runHeadless(target, { type: "get-prompt", name, args: jsonArgs });
+  });
+
+// ─── Default: REPL or Agent Server ───────────────────────────────────────────
 
 program
   .name("run-mcp")
@@ -36,6 +197,15 @@ Examples:
   $ run-mcp npx -y some-mcp-server                # Test an npx server
   $ run-mcp --out-dir ./test-output               # Agent mode with options
   $ run-mcp --out-dir ./screenshots node srv.js   # REPL mode with options
+
+Headless Commands (pipe-friendly, JSON output):
+  $ run-mcp call echo '{"text":"hi"}' -- node my-server.js
+  $ run-mcp list-tools -- node my-server.js | jq '.[].name'
+  $ run-mcp list-resources -- node my-server.js
+  $ run-mcp list-prompts -- node my-server.js
+  $ run-mcp read docs://readme -- node my-server.js
+  $ run-mcp describe echo -- node my-server.js
+  $ run-mcp get-prompt greeting '{"name":"Ada"}' -- node my-server.js
 
 Agent Mode Configuration (mcp.json):
   {
