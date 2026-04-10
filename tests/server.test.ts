@@ -242,8 +242,10 @@ describe("server: call_mcp_primitive — auto-connect", () => {
         type: "tool",
         name: "echo",
         arguments: { text: "auto-connected" },
-        command: MOCK_SERVER_CMD,
-        args: MOCK_SERVER_ARGS,
+        auto_connect: {
+          command: MOCK_SERVER_CMD,
+          args: MOCK_SERVER_ARGS,
+        },
       },
     });
     expect(getText(result)).toMatch(/^auto-connected \(\d+ms\)$/);
@@ -259,8 +261,10 @@ describe("server: call_mcp_primitive — auto-connect", () => {
         type: "tool",
         name: "echo",
         arguments: { text: "one-shot" },
-        command: MOCK_SERVER_CMD,
-        args: MOCK_SERVER_ARGS,
+        auto_connect: {
+          command: MOCK_SERVER_CMD,
+          args: MOCK_SERVER_ARGS,
+        },
         disconnect_after: true,
       },
     });

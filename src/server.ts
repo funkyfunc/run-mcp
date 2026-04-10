@@ -706,20 +706,22 @@ export async function startServer(opts: ServerOptions): Promise<void> {
           .describe("Arguments for the tool or prompt (not used for resources)"),
 
         // Auto-connect params (only needed if not already connected)
-        command: z
-          .string()
+        auto_connect: z
+          .object({
+            command: z.string().describe("Command to spawn the server (e.g. 'node')."),
+            args: z
+              .array(z.string())
+              .optional()
+              .describe("Arguments for the server command (e.g. ['src/index.js'])"),
+            env: z
+              .record(z.string())
+              .optional()
+              .describe("Extra environment variables for the server process"),
+          })
           .optional()
           .describe(
-            "Command to spawn the server (e.g. 'node'). Required if not already connected.",
+            "Provide this to automatically spawn and connect to a server if not already connected. Required if no active connection exists.",
           ),
-        args: z
-          .array(z.string())
-          .optional()
-          .describe("Arguments for the server command (e.g. ['src/index.js'])"),
-        env: z
-          .record(z.string())
-          .optional()
-          .describe("Extra environment variables for the server process"),
 
         // Lifecycle
         disconnect_after: z
@@ -740,16 +742,18 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       type: primitiveType,
       name,
       arguments: callArgs,
-      command,
-      args,
-      env,
+      auto_connect,
       disconnect_after,
       timeout_ms,
       include_metadata,
     }) => {
       // Ensure connection
       try {
-        const connectError = await ensureConnected(command, args, env);
+        const connectError = await ensureConnected(
+          auto_connect?.command,
+          auto_connect?.args,
+          auto_connect?.env,
+        );
         if (connectError) {
           return {
             content: [{ type: "text" as const, text: connectError }],

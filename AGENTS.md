@@ -103,6 +103,14 @@ The REPL enables auto-reconnect for robustness during interactive sessions. The 
 3. **Stability reset (60s)**: After 60 seconds of stable connection, the retry counter resets. A server that crashes once after 10 minutes of stability gets a fresh set of retries.
 4. **MCP mode** exits on disconnect so the parent agent can decide what to do.
 
+### Agent Usability Gotchas: `call_mcp_primitive`
+
+A major pattern in `run-mcp` is multiplexing tasks (triggering a tool AND auto-connecting). Because the word "arguments" is heavily overloaded, `call_mcp_primitive` uses strict compartmentalization:
+- **`arguments`**: A JSON object mapping to the *target MCP tool's input properties*.
+- **`auto_connect.args`**: A string array used specifically for the OS spawn process (e.g. `["src/index.js", "--verbose"]`).
+
+If an AI Agent is trying to provide parameters to a mock tool and accidentally lumps them under `args: {"foo": "bar"}`, Zod will intercept this and properly complain about a string-array requirement mismatch. The correct top-level key for tool payloads is **always** `arguments`. 
+
 ---
 
 ## 🧠 Codebase Conventions
