@@ -23,6 +23,7 @@ export interface HeadlessOptions {
   outDir?: string;
   timeoutMs?: number;
   raw?: boolean;
+  showStderr?: boolean;
 }
 
 export type HeadlessOperation =
@@ -52,9 +53,14 @@ export async function runHeadless(
     defaultTimeoutMs: opts.timeoutMs ?? DEFAULT_HEADLESS_TIMEOUT_MS,
   });
 
-  // Suppress server stderr by default — don't pollute the terminal
-  // (errors are surfaced through the MCP protocol response)
-  target.on("stderr", () => {});
+  // Stream or suppress server stderr
+  if (opts.showStderr) {
+    target.on("stderr", (text) => {
+      process.stderr.write(`${text}\n`);
+    });
+  } else {
+    target.on("stderr", () => {});
+  }
 
   try {
     process.stderr.write(`Connecting to ${targetCommand.join(" ")}...\n`);

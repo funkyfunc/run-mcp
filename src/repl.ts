@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import type { Interface as ReadlineInterface } from "node:readline";
 import { createInterface } from "node:readline";
-import { checkbox, confirm, input, search, select } from "@inquirer/prompts";
+import { checkbox, confirm, input, search } from "@inquirer/prompts";
 import pc from "picocolors";
 import { ResponseInterceptor } from "./interceptor.js";
 import {
@@ -339,7 +339,6 @@ function printBanner(
 
 /** Strip ANSI escape codes for measuring display width. */
 function stripAnsi(str: string): string {
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape stripping requires matching \x1b
   return str.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
@@ -515,7 +514,7 @@ export async function startRepl(targetCommand: string[], opts: ReplOptions): Pro
 
   // ─── Startup: gather counts + show banner ─────────────────────────────────
 
-  let toolCount = 0;
+  let toolCount: number;
   let resourceCount = 0;
   let promptCount = 0;
 
@@ -1373,135 +1372,7 @@ function question(rl: ReadlineInterface, prompt: string): Promise<string> {
   });
 }
 
-/**
- * Interactive checkbox selector for optional properties.
- * Uses raw mode to handle arrow keys and space bar.
- *
- * Returns the selected [name, prop] entries.
- */
-async function checkboxSelect(
-  options: [string, Record<string, unknown>][],
-): Promise<[string, Record<string, unknown>][]> {
-  if (options.length === 0) return [];
 
-  // Can't do raw-mode selection without a TTY
-  if (!process.stdin.isTTY) return [];
-
-  const selected = new Set<number>();
-  let cursor = 0;
-
-  const nameWidth = Math.max(6, ...options.map(([n]) => n.length));
-
-  const render = () => {
-    console.log(
-      `\x1b[2K` +
-        pc.dim(
-          `  Optional arguments (${pc.bold("↑↓")} move, ${pc.bold("Space")} toggle, ${pc.bold("Enter")} confirm):`,
-        ),
-    );
-
-    const cols = process.stdout.columns || 80;
-    const reservedWidth = 20 + nameWidth; // Marker + Checkbox + Name + Type + spaces
-    const maxDescLen = Math.max(0, cols - reservedWidth - 2); // -2 for safety margin
-
-    for (let i = 0; i < options.length; i++) {
-      const [name, prop] = options[i];
-      const check = selected.has(i) ? pc.green("✓") : " ";
-      const marker = i === cursor ? pc.cyan("›") : " ";
-      const typeStr = (prop.type as string) ?? "any";
-
-      let desc = (prop.description as string) ?? "";
-      if (desc.length > maxDescLen && maxDescLen > 3) {
-        desc = desc.slice(0, maxDescLen - 3) + "...";
-      } else if (desc.length > maxDescLen) {
-        desc = desc.slice(0, maxDescLen);
-      }
-
-      console.log(
-        `\x1b[2K  ${marker} [${check}] ${pc.bold(name.padEnd(nameWidth))}  ${pc.dim(typeStr.padEnd(8))}  ${pc.dim(desc)}`,
-      );
-    }
-  };
-
-  return new Promise((resolve, reject) => {
-    // Pause the readline so we get raw keystrokes
-    activeRl?.pause();
-
-    const wasRaw = process.stdin.isRaw;
-    process.stdin.setRawMode(true);
-    process.stdin.resume();
-
-    render();
-
-    const onData = (data: Buffer) => {
-      const key = data.toString();
-
-      // Arrow up / k
-      if (key === "\x1b[A" || key === "k") {
-        cursor = (cursor - 1 + options.length) % options.length;
-      }
-      // Arrow down / j
-      else if (key === "\x1b[B" || key === "j") {
-        cursor = (cursor + 1) % options.length;
-      }
-      // Space — toggle
-      else if (key === " ") {
-        if (selected.has(cursor)) {
-          selected.delete(cursor);
-        } else {
-          selected.add(cursor);
-        }
-      }
-      // Enter — confirm
-      else if (key === "\r" || key === "\n") {
-        cleanup();
-        const result = options.filter((_, i) => selected.has(i));
-        resolve(result);
-        return;
-      }
-      // Ctrl+C / Escape — cancel
-      else if (key === "\x03" || key === "\x1b") {
-        cleanup();
-        console.log();
-        reject(new AbortFlowError());
-        return;
-      }
-
-      // Clear and re-render
-      // Move up by (options.length + 1) lines and clear
-      process.stdout.write(`\x1b[${options.length + 1}A`);
-      for (let i = 0; i < options.length + 1; i++) {
-        process.stdout.write("\x1b[2K\n");
-      }
-      process.stdout.write(`\x1b[${options.length + 1}A`);
-      render();
-    };
-
-    const cleanup = () => {
-      process.stdin.removeListener("data", onData);
-      process.stdin.setRawMode(wasRaw ?? false);
-      // Clear the selector display
-      process.stdout.write(`\x1b[${options.length + 1}A`);
-      for (let i = 0; i < options.length + 1; i++) {
-        process.stdout.write("\x1b[2K\n");
-      }
-      process.stdout.write(`\x1b[${options.length + 1}A`);
-
-      // Show what was selected
-      if (selected.size > 0) {
-        const names = options.filter((_, i) => selected.has(i)).map(([n]) => n);
-        console.log(pc.dim(`  Including optional: ${names.join(", ")}`));
-      } else {
-        console.log(pc.dim("  No optional arguments selected."));
-      }
-
-      // Resume readline
-      activeRl?.resume();
-    };
-
-    process.stdin.on("data", onData);
-  });
-}
 
 async function cmdToolsScaffold(target: TargetManager, rest: string): Promise<void> {
   const name = rest.trim();
@@ -2290,7 +2161,9 @@ async function cmdExplore(target: TargetManager, interceptor: ResponseIntercepto
         description: t.description || `Call the ${t.name} tool`,
       });
     }
-  } catch {}
+  } catch {
+    // ignore
+  }
 
   if (caps.resources) {
     try {
@@ -2302,7 +2175,9 @@ async function cmdExplore(target: TargetManager, interceptor: ResponseIntercepto
           description: r.description || `Read resource ${r.uri}`,
         });
       }
-    } catch {}
+    } catch {
+      // ignore
+    }
   }
 
   if (caps.prompts) {
@@ -2315,7 +2190,9 @@ async function cmdExplore(target: TargetManager, interceptor: ResponseIntercepto
           description: p.description || `Get the ${p.name} prompt`,
         });
       }
-    } catch {}
+    } catch {
+      // ignore
+    }
   }
 
   if (choices.length === 0) {

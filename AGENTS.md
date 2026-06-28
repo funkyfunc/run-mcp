@@ -122,14 +122,15 @@ If an AI Agent is trying to provide parameters to a mock tool and accidentally l
 - **tsc for type-checking only** — `tsconfig.json` has `noEmit: true`. Run `npm run typecheck`.
 - **Strict mode** — `strict: true` in tsconfig. No implicit any.
 
-### Linting & Formatting (Biome)
+### Linting & Formatting (ESLint & Prettier)
 
-- **Biome** handles both linting and formatting (no ESLint/Prettier).
-- **`noDeprecatedImports: "error"`** — proactively catches deprecated SDK usage.
-- **`noExplicitAny: "off"`** — relaxed because the MCP SDK returns loosely-typed results.
-- **Style**: 2-space indent, double quotes, trailing commas, 100-char line width.
-- Run `npm run lint` to check, `npm run lint:fix` to auto-fix.
-- **Always run `npx biome check --write` before committing.**
+- **ESLint** handles static analysis and code quality checks.
+- **Prettier** handles formatting.
+- **`@typescript-eslint/no-deprecated: "error"`** — type-aware linting rule that catches usage of deprecated properties, methods, classes, and imports.
+- **`@typescript-eslint/no-explicit-any: "off"`** — relaxed because the MCP SDK returns loosely-typed results.
+- **Style**: 2-space indent, double quotes, trailing commas, 100-char line width (defined in `.prettierrc`).
+- Run `npm run lint` to check, `npm run lint:fix` to auto-fix, and `npm run format` to format.
+- **Always run `npm run lint:fix` and `npm run format` before committing.**
 
 ### Intent-Based Naming
 
@@ -322,9 +323,9 @@ The mock server uses the **non-deprecated** `McpServer.registerTool()` API. Test
 npm run build        # tsup → dist/index.js (single bundled ESM file)
 npm run dev          # tsup --watch (rebuild on save)
 npm run typecheck    # tsc --noEmit (type-check without emitting)
-npm run lint         # biome check (lint + format check)
-npm run lint:fix     # biome check --write (auto-fix)
-npm run format       # biome format --write
+npm run lint         # eslint src tests (lint check)
+npm run lint:fix     # eslint src tests --fix (lint auto-fix)
+npm run format       # prettier formatting
 npm test             # pretest (build) + vitest run
 ```
 
@@ -354,7 +355,7 @@ The package is designed to work with `npx run-mcp`:
 
 ## 🚫 Common Pitfalls
 
-1. **Don't import from deprecated SDK paths.** Biome's `noDeprecatedImports` rule will catch some, but not all. Check the SDK's `@deprecated` JSDoc annotations when using new APIs.
+1. **Don't import from deprecated SDK paths.** ESLint's `@typescript-eslint/no-deprecated` rule will catch these by inspecting TypeScript type definitions, but check SDK deprecation warnings when coding.
 
 3. **Don't add per-instance process listeners.** Use the static `TargetManager._instances` pattern to avoid `MaxListenersExceeded` warnings during testing.
 

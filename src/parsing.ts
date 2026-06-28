@@ -306,9 +306,7 @@ function scaffoldObject(schema: Record<string, unknown>): Record<string, unknown
 
   // Handle record types: { additionalProperties: { type: "string" } }
   const additionalProperties = schema.additionalProperties as
-    | Record<string, unknown>
-    | boolean
-    | undefined;
+    Record<string, unknown> | boolean | undefined;
   if (additionalProperties && typeof additionalProperties === "object") {
     return { "<key>": scaffoldValue(additionalProperties) };
   }

@@ -33,9 +33,9 @@
     "dev": "tsup --watch",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
-    "lint": "biome check",
-    "lint:fix": "biome check --write",
-    "format": "biome format --write",
+    "lint": "eslint src tests",
+    "lint:fix": "eslint src tests --fix",
+    "format": "prettier --write \"src/**/*.{ts,js,json}\" \"tests/**/*.{ts,js,json}\" \"*.{ts,js,json}\"",
     "pretest": "tsup",
     "test": "vitest run",
     "prepublishOnly": "tsup"
@@ -48,11 +48,15 @@
     "zod": "^3.24.3"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.10",
+    "@eslint/js": "^10.0.1",
     "@types/node": "^22.13.14",
+    "eslint": "^10.6.0",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.9.1",
     "tsup": "^8.5.1",
     "tsx": "^4.21.0",
     "typescript": "^5.8.2",
+    "typescript-eslint": "^8.62.0",
     "vitest": "^4.1.2"
   }
 }

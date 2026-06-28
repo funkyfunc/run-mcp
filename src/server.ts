@@ -132,6 +132,8 @@ function formatDiffLine(label: string, diff: DiffEntry): string {
 export async function startServer(opts: ServerOptions): Promise<void> {
   let target: TargetManager | null = null;
   let previousSnapshot: Snapshot | null = null;
+  let cachedSpawnConfig: { command: string; args: string[]; env?: Record<string, string> } | null =
+    null;
 
   const interceptor = new ResponseInterceptor({
     outDir: opts.outDir,
@@ -144,11 +146,36 @@ export async function startServer(opts: ServerOptions): Promise<void> {
     {
       capabilities: {
         tools: {},
+        logging: {},
       },
     },
   );
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
+
+  /** Set up stderr and disconnect listeners on the target. */
+  function setupTargetListeners(t: TargetManager): void {
+    t.on("stderr", (text) => {
+      mcpServer
+        .sendLoggingMessage({
+          level: "info",
+          logger: "target-stderr",
+          data: text,
+        })
+        .catch(() => {});
+    });
+
+    t.on("disconnected", () => {
+      const pid = t.getStatus().pid;
+      mcpServer
+        .sendLoggingMessage({
+          level: "error",
+          logger: "run-mcp",
+          data: `Target server disconnected unexpectedly! (PID: ${pid})`,
+        })
+        .catch(() => {});
+    });
+  }
 
   /** Take a snapshot of the current target's primitives. */
   async function takeSnapshot(): Promise<Snapshot> {
@@ -239,7 +266,17 @@ export async function startServer(opts: ServerOptions): Promise<void> {
   ): Promise<string | null> {
     if (target?.connected) return null;
 
-    if (!command) {
+    let cmdToUse = command;
+    let argsToUse = args;
+    let envToUse = env;
+
+    if (!cmdToUse && cachedSpawnConfig) {
+      cmdToUse = cachedSpawnConfig.command;
+      argsToUse = cachedSpawnConfig.args;
+      envToUse = cachedSpawnConfig.env;
+    }
+
+    if (!cmdToUse) {
       return "Not connected to a target server. Provide command/args to auto-connect, or call connect_to_mcp first.";
     }
 
@@ -250,14 +287,16 @@ export async function startServer(opts: ServerOptions): Promise<void> {
     }
 
     // Set env vars if provided
-    if (env) {
-      for (const [key, value] of Object.entries(env)) {
+    if (envToUse) {
+      for (const [key, value] of Object.entries(envToUse)) {
         process.env[key] = value;
       }
     }
 
-    target = new TargetManager(command, args ?? []);
+    target = new TargetManager(cmdToUse, argsToUse ?? []);
+    setupTargetListeners(target);
     await target.connect();
+    cachedSpawnConfig = { command: cmdToUse, args: argsToUse ?? [], env: envToUse };
     return null;
   }
 
@@ -356,7 +395,9 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         }
 
         target = new TargetManager(command, args ?? []);
+        setupTargetListeners(target);
         await target.connect();
+        cachedSpawnConfig = { command, args: args ?? [], env };
 
         const status = target.getStatus();
         const caps = target.getServerCapabilities() ?? {};
@@ -525,9 +566,15 @@ export async function startServer(opts: ServerOptions): Promise<void> {
               "For tools: matches tool name. For resources: matches URI. For prompts: matches prompt name. " +
               "Returns the full schema/details for just that item.",
           ),
+        summary: z
+          .boolean()
+          .optional()
+          .describe(
+            "If true, returns only the name and description of each primitive (omitting full schemas) to save tokens.",
+          ),
       },
     },
-    async ({ type, name }) => {
+    async ({ type, name, summary }) => {
       if (!target?.connected) {
         return {
           content: [
@@ -557,7 +604,10 @@ export async function startServer(opts: ServerOptions): Promise<void> {
               sections.push("--- Tools ---", JSON.stringify(tools[0], null, 2));
             }
           } else {
-            sections.push("--- Tools ---", JSON.stringify(tools, null, 2));
+            const displayTools = summary
+              ? tools.map((t) => ({ name: t.name, description: t.description }))
+              : tools;
+            sections.push("--- Tools ---", JSON.stringify(displayTools, null, 2));
           }
         } catch (err: any) {
           sections.push("--- Tools ---", `Error: ${err.message}`);
@@ -580,7 +630,14 @@ export async function startServer(opts: ServerOptions): Promise<void> {
               sections.push("--- Resources ---", JSON.stringify(resources[0], null, 2));
             }
           } else {
-            sections.push("--- Resources ---", JSON.stringify(resources, null, 2));
+            const displayResources = summary
+              ? resources.map((r: any) => ({
+                  name: r.name,
+                  uri: r.uri,
+                  description: r.description,
+                }))
+              : resources;
+            sections.push("--- Resources ---", JSON.stringify(displayResources, null, 2));
           }
         } catch (err: any) {
           sections.push("--- Resources ---", `Error: ${err.message}`);
@@ -603,7 +660,10 @@ export async function startServer(opts: ServerOptions): Promise<void> {
               sections.push("--- Prompts ---", JSON.stringify(prompts[0], null, 2));
             }
           } else {
-            sections.push("--- Prompts ---", JSON.stringify(prompts, null, 2));
+            const displayPrompts = summary
+              ? prompts.map((p) => ({ name: p.name, description: p.description }))
+              : prompts;
+            sections.push("--- Prompts ---", JSON.stringify(displayPrompts, null, 2));
           }
         } catch (err: any) {
           sections.push("--- Prompts ---", `Error: ${err.message}`);

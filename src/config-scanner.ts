@@ -31,7 +31,6 @@ function getConfigPaths(): { source: string; file: string }[] {
   const isMac = process.platform === "darwin";
 
   const appData = process.env.APPDATA || path.join(home, "AppData", "Roaming");
-  const localAppData = process.env.LOCALAPPDATA || path.join(home, "AppData", "Local");
 
   let claudeDesktopGlob: string;
   if (isWin) {

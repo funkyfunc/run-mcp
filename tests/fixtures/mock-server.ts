@@ -194,7 +194,7 @@ server.registerTool(
 
 // ─── Resource: docs://readme ───────────────────────────────────────────────
 
-server.resource("readme", "docs://readme", async (uri) => ({
+server.registerResource("readme", "docs://readme", { description: "README file" }, async (uri) => ({
   contents: [
     {
       uri: uri.href,
@@ -206,7 +206,7 @@ server.resource("readme", "docs://readme", async (uri) => ({
 
 // ─── Resource: docs://config ───────────────────────────────────────────────
 
-server.resource("config", "docs://config", async (uri) => ({
+server.registerResource("config", "docs://config", { description: "Config file" }, async (uri) => ({
   contents: [
     {
       uri: uri.href,
@@ -218,9 +218,10 @@ server.resource("config", "docs://config", async (uri) => ({
 
 // ─── Resource Template: docs://pages/{page} ────────────────────────────────
 
-server.resource(
+server.registerResource(
   "page",
   new ResourceTemplate("docs://pages/{page}", { list: undefined }),
+  { description: "Dynamic pages" },
   async (uri, { page }) => ({
     contents: [
       {
@@ -234,14 +235,21 @@ server.resource(
 
 // ─── Prompt: greeting ──────────────────────────────────────────────────────
 
-server.prompt("greeting", { name: z.string() }, ({ name }) => ({
-  messages: [
-    {
-      role: "user" as const,
-      content: { type: "text" as const, text: `Please greet ${name} warmly.` },
-    },
-  ],
-}));
+server.registerPrompt(
+  "greeting",
+  {
+    description: "Warm greeting",
+    argsSchema: { name: z.string() },
+  },
+  ({ name }) => ({
+    messages: [
+      {
+        role: "user" as const,
+        content: { type: "text" as const, text: `Please greet ${name} warmly.` },
+      },
+    ],
+  }),
+);
 
 // ─── Start ─────────────────────────────────────────────────────────────────
 

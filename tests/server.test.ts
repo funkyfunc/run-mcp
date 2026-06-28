@@ -653,3 +653,66 @@ describe("server: call_mcp_primitive — include_metadata", () => {
     expect(content[0].text).toMatch(/no meta \(\d+ms\)/);
   }, 15_000);
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Agent Experience Improvements Tests
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("server: agent experience improvements", () => {
+  it("list_mcp_primitives with summary: true returns only name and description", async () => {
+    const c = await startRunMcpServer();
+    await connectToMockServer(c);
+
+    const result = await c.callTool({
+      name: "list_mcp_primitives",
+      arguments: { type: ["tools"], summary: true },
+    });
+    const text = getText(result);
+    expect(text).toContain("--- Tools ---");
+    expect(text).toContain("echo");
+    // Should NOT contain the schema information
+    expect(text).not.toContain("inputSchema");
+    expect(text).not.toContain("additionalProperties");
+  }, 15_000);
+
+  it("cached spawn config allows reconnecting without supplying command/args", async () => {
+    const c = await startRunMcpServer();
+    // First connection (caches config)
+    await connectToMockServer(c);
+
+    // Disconnect
+    await c.callTool({ name: "disconnect_from_mcp", arguments: {} });
+
+    // Call primitive WITHOUT auto_connect -- should reconnect automatically using cache
+    const result = await c.callTool({
+      name: "call_mcp_primitive",
+      arguments: {
+        type: "tool",
+        name: "echo",
+        arguments: { text: "cached reconnect test" },
+      },
+    });
+    expect(getText(result)).toMatch(/cached reconnect test \(\d+ms\)/);
+  }, 25_000);
+
+  it("streams target stderr as logging notifications", async () => {
+    const c = await startRunMcpServer();
+
+    // Listen for logging notifications
+    let logReceived: any = null;
+    const { LoggingMessageNotificationSchema } = await import("@modelcontextprotocol/sdk/types.js");
+    c.setNotificationHandler(LoggingMessageNotificationSchema, (notification) => {
+      logReceived = notification;
+    });
+
+    await connectToMockServer(c);
+
+    // Wait a brief moment for the target stderr to be flushed and notification received
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    expect(logReceived).not.toBeNull();
+    expect(logReceived.params.level).toBe("info");
+    expect(logReceived.params.logger).toBe("target-stderr");
+    expect(logReceived.params.data).toContain("Mock MCP server running on stdio");
+  }, 20_000);
+});

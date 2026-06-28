@@ -133,6 +133,7 @@ export class TargetManager extends EventEmitter {
 
     // Detect if we should use SSE or Stdio based on the command
     if (this.command.startsWith("http://") || this.command.startsWith("https://")) {
+      // eslint-disable-next-line @typescript-eslint/no-deprecated
       this.transport = new SSEClientTransport(new URL(this.command));
     } else {
       const stdioTransport = new StdioClientTransport({

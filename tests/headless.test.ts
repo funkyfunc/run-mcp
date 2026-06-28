@@ -232,3 +232,18 @@ describe("headless: connection error", () => {
     expect(stderr).toContain("not found");
   }, 15_000);
 });
+
+describe("headless: show-stderr flag", () => {
+  it("streams target server stderr to process stderr when --show-stderr is passed", async () => {
+    const { stderr, exitCode } = await runCli([
+      "call",
+      "echo",
+      '{"text":"hello"}',
+      "--show-stderr",
+      ...TARGET,
+    ]);
+
+    expect(exitCode).toBe(0);
+    expect(stderr).toContain("Mock MCP server running on stdio");
+  }, 15_000);
+});

@@ -35,6 +35,7 @@ interface HeadlessOpts {
   outDir?: string;
   timeout?: string;
   raw?: boolean;
+  showStderr?: boolean;
 }
 
 function parseHeadlessOpts(opts: HeadlessOpts) {
@@ -42,6 +43,7 @@ function parseHeadlessOpts(opts: HeadlessOpts) {
     outDir: opts.outDir,
     timeoutMs: opts.timeout ? Number.parseInt(opts.timeout, 10) : undefined,
     raw: opts.raw,
+    showStderr: opts.showStderr,
   };
 }
 
@@ -60,6 +62,7 @@ program
   .option("-o, --out-dir <path>", "Output directory for saved media")
   .option("-t, --timeout <ms>", "Timeout in milliseconds (default: 30000)")
   .option("--raw", "Print the full result object including metadata")
+  .option("--show-stderr", "Stream target server stderr to process stderr")
   .allowUnknownOption()
   .action(
     async (
@@ -82,10 +85,11 @@ program
   .command("list-tools")
   .argument("[target_command...]", "Target server command (after --)")
   .description("List all tools on a target MCP server as JSON")
+  .option("--show-stderr", "Stream target server stderr to process stderr")
   .allowUnknownOption()
-  .action(async (targetCommand: string[]) => {
+  .action(async (targetCommand: string[], opts: HeadlessOpts) => {
     const target = requireTargetCommand(targetCommand, "run-mcp list-tools -- <server_command...>");
-    await runHeadless(target, { type: "list-tools" });
+    await runHeadless(target, { type: "list-tools" }, parseHeadlessOpts(opts));
   });
 
 // ─── Subcommand: list-resources ───────────────────────────────────────────────
@@ -94,13 +98,14 @@ program
   .command("list-resources")
   .argument("[target_command...]", "Target server command (after --)")
   .description("List all resources on a target MCP server as JSON")
+  .option("--show-stderr", "Stream target server stderr to process stderr")
   .allowUnknownOption()
-  .action(async (targetCommand: string[]) => {
+  .action(async (targetCommand: string[], opts: HeadlessOpts) => {
     const target = requireTargetCommand(
       targetCommand,
       "run-mcp list-resources -- <server_command...>",
     );
-    await runHeadless(target, { type: "list-resources" });
+    await runHeadless(target, { type: "list-resources" }, parseHeadlessOpts(opts));
   });
 
 // ─── Subcommand: list-prompts ─────────────────────────────────────────────────
@@ -109,13 +114,14 @@ program
   .command("list-prompts")
   .argument("[target_command...]", "Target server command (after --)")
   .description("List all prompts on a target MCP server as JSON")
+  .option("--show-stderr", "Stream target server stderr to process stderr")
   .allowUnknownOption()
-  .action(async (targetCommand: string[]) => {
+  .action(async (targetCommand: string[], opts: HeadlessOpts) => {
     const target = requireTargetCommand(
       targetCommand,
       "run-mcp list-prompts -- <server_command...>",
     );
-    await runHeadless(target, { type: "list-prompts" });
+    await runHeadless(target, { type: "list-prompts" }, parseHeadlessOpts(opts));
   });
 
 // ─── Subcommand: read ─────────────────────────────────────────────────────────
@@ -125,10 +131,11 @@ program
   .argument("<uri>", "Resource URI to read")
   .argument("[target_command...]", "Target server command (after --)")
   .description("Read a resource by URI from a target MCP server")
+  .option("--show-stderr", "Stream target server stderr to process stderr")
   .allowUnknownOption()
-  .action(async (uri: string, targetCommand: string[]) => {
+  .action(async (uri: string, targetCommand: string[], opts: HeadlessOpts) => {
     const target = requireTargetCommand(targetCommand, "run-mcp read <uri> -- <server_command...>");
-    await runHeadless(target, { type: "read", uri });
+    await runHeadless(target, { type: "read", uri }, parseHeadlessOpts(opts));
   });
 
 // ─── Subcommand: describe ─────────────────────────────────────────────────────
@@ -138,13 +145,14 @@ program
   .argument("<tool>", "Tool name to describe")
   .argument("[target_command...]", "Target server command (after --)")
   .description("Print a tool's full schema as JSON")
+  .option("--show-stderr", "Stream target server stderr to process stderr")
   .allowUnknownOption()
-  .action(async (tool: string, targetCommand: string[]) => {
+  .action(async (tool: string, targetCommand: string[], opts: HeadlessOpts) => {
     const target = requireTargetCommand(
       targetCommand,
       "run-mcp describe <tool> -- <server_command...>",
     );
-    await runHeadless(target, { type: "describe", tool });
+    await runHeadless(target, { type: "describe", tool }, parseHeadlessOpts(opts));
   });
 
 // ─── Subcommand: get-prompt ───────────────────────────────────────────────────
@@ -155,14 +163,26 @@ program
   .argument("[json_args]", "JSON arguments for the prompt")
   .argument("[target_command...]", "Target server command (after --)")
   .description("Get a prompt with optional arguments from a target MCP server")
+  .option("--show-stderr", "Stream target server stderr to process stderr")
   .allowUnknownOption()
-  .action(async (name: string, jsonArgs: string | undefined, targetCommand: string[]) => {
-    const target = requireTargetCommand(
-      targetCommand,
-      "run-mcp get-prompt <name> [json_args] -- <server_command...>",
-    );
-    await runHeadless(target, { type: "get-prompt", name, args: jsonArgs });
-  });
+  .action(
+    async (
+      name: string,
+      jsonArgs: string | undefined,
+      targetCommand: string[],
+      opts: HeadlessOpts,
+    ) => {
+      const target = requireTargetCommand(
+        targetCommand,
+        "run-mcp get-prompt <name> [json_args] -- <server_command...>",
+      );
+      await runHeadless(
+        target,
+        { type: "get-prompt", name, args: jsonArgs },
+        parseHeadlessOpts(opts),
+      );
+    },
+  );
 
 // ─── Default: REPL or Agent Server ───────────────────────────────────────────
 
