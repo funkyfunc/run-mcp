@@ -716,3 +716,80 @@ describe("server: agent experience improvements", () => {
     expect(logReceived.params.data).toContain("Mock MCP server running on stdio");
   }, 20_000);
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Advanced features and protocol compliance
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("server: advanced features and protocol compliance", () => {
+  it("connects to target and returns summary view when summary: true", async () => {
+    const c = await startRunMcpServer();
+    const result = await c.callTool({
+      name: "connect_to_mcp",
+      arguments: {
+        command: "node",
+        args: ["--import", "tsx", "tests/fixtures/mock-server.ts"],
+        include: ["tools", "resources"],
+        summary: true,
+      },
+    });
+
+    const text = getText(result);
+    // It should contain the tool lists but only name and description (no inputSchema keys)
+    expect(text).toContain("--- Tools ---");
+    expect(text).toContain("greet");
+    expect(text).not.toContain("inputSchema");
+  }, 25_000);
+
+  it("lists resource templates in list_mcp_primitives", async () => {
+    const c = await startRunMcpServer();
+    await connectToMockServer(c);
+
+    const result = await c.callTool({
+      name: "list_mcp_primitives",
+      arguments: {
+        type: ["resource_templates"],
+      },
+    });
+
+    const text = getText(result);
+    expect(text).toContain("--- Resource Templates ---");
+    expect(text).toContain("docs://pages/{page}");
+  }, 20_000);
+
+  it("supports pagination cursor in list_mcp_primitives", async () => {
+    const c = await startRunMcpServer();
+    await connectToMockServer(c);
+
+    // Call with a dummy cursor
+    const result = await c.callTool({
+      name: "list_mcp_primitives",
+      arguments: {
+        type: ["tools"],
+        cursor: "dummy-cursor",
+      },
+    });
+
+    const text = getText(result);
+    expect(text).toContain("--- Tools ---");
+    expect(text).toContain("greet");
+  }, 20_000);
+
+  it("applies custom max_text_length limit in call_mcp_primitive", async () => {
+    const c = await startRunMcpServer();
+    await connectToMockServer(c);
+
+    const result = await c.callTool({
+      name: "call_mcp_primitive",
+      arguments: {
+        type: "tool",
+        name: "big_response",
+        arguments: { size: 100 },
+        max_text_length: 10,
+      },
+    });
+
+    const text = getText(result);
+    expect(text).toContain("(truncated, 100 chars total)");
+  }, 20_000);
+});

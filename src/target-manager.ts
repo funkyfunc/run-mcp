@@ -97,6 +97,7 @@ export class TargetManager extends EventEmitter {
   private _autoReconnect: boolean = false;
   private _reconnecting: boolean = false;
   private _intentionalClose: boolean = false;
+  private _everConnected: boolean = false;
 
   // Request history
   private _history: HistoryRecord[] = [];
@@ -130,185 +131,191 @@ export class TargetManager extends EventEmitter {
    */
   async connect(): Promise<void> {
     this._intentionalClose = false;
+    this._everConnected = false;
+    try {
+      // Detect if we should use SSE or Stdio based on the command
+      if (this.command.startsWith("http://") || this.command.startsWith("https://")) {
+        // eslint-disable-next-line @typescript-eslint/no-deprecated
+        this.transport = new SSEClientTransport(new URL(this.command));
+      } else {
+        const stdioTransport = new StdioClientTransport({
+          command: this.command,
+          args: this.args,
+          stderr: "pipe",
+        });
 
-    // Detect if we should use SSE or Stdio based on the command
-    if (this.command.startsWith("http://") || this.command.startsWith("https://")) {
-      // eslint-disable-next-line @typescript-eslint/no-deprecated
-      this.transport = new SSEClientTransport(new URL(this.command));
-    } else {
-      const stdioTransport = new StdioClientTransport({
-        command: this.command,
-        args: this.args,
-        stderr: "pipe",
-      });
-
-      // Capture stderr from child process
-      stdioTransport.stderr?.on("data", (chunk: Buffer) => {
-        const text = chunk.toString().trimEnd();
-        if (text) {
-          const lines = text.split("\n");
-          this._stderrLineCount += lines.length;
-          // Store in ring buffer for later retrieval
-          this._stderrLines.push(...lines);
-          if (this._stderrLines.length > TargetManager.MAX_STDERR_LINES) {
-            this._stderrLines = this._stderrLines.slice(-TargetManager.MAX_STDERR_LINES);
+        // Capture stderr from child process
+        stdioTransport.stderr?.on("data", (chunk: Buffer) => {
+          const text = chunk.toString().trimEnd();
+          if (text) {
+            const lines = text.split("\n");
+            this._stderrLineCount += lines.length;
+            // Store in ring buffer for later retrieval
+            this._stderrLines.push(...lines);
+            if (this._stderrLines.length > TargetManager.MAX_STDERR_LINES) {
+              this._stderrLines = this._stderrLines.slice(-TargetManager.MAX_STDERR_LINES);
+            }
+            this.emit("stderr", text);
           }
-          this.emit("stderr", text);
-        }
-      });
-
-      this.transport = stdioTransport;
-    }
-
-    this.client = new Client(
-      { name: "run-mcp", version: PKG_VERSION },
-      {
-        capabilities: {
-          roots: { listChanged: true },
-          sampling: {},
-          elicitation: {},
-        },
-      },
-    );
-
-    // ─── Notification handlers ──────────────────────────────────────────────
-
-    // Logging messages from server
-    this.client.setNotificationHandler(
-      LoggingMessageNotificationSchema,
-      async (notification: any) => {
-        const record: ServerNotification = {
-          method: "notifications/message",
-          params: notification.params,
-          timestamp: Date.now(),
-        };
-        this._pushNotification(record);
-        this.emit("notification", record);
-      },
-    );
-
-    // Tool list changed
-    this.client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
-      const record: ServerNotification = {
-        method: "notifications/tools/list_changed",
-        timestamp: Date.now(),
-      };
-      this._pushNotification(record);
-      this.emit("notification", record);
-    });
-
-    // Resource list changed
-    this.client.setNotificationHandler(ResourceListChangedNotificationSchema, async () => {
-      const record: ServerNotification = {
-        method: "notifications/resources/list_changed",
-        timestamp: Date.now(),
-      };
-      this._pushNotification(record);
-      this.emit("notification", record);
-    });
-
-    // Resource updated (subscription)
-    this.client.setNotificationHandler(
-      ResourceUpdatedNotificationSchema,
-      async (notification: any) => {
-        const record: ServerNotification = {
-          method: "notifications/resources/updated",
-          params: notification.params,
-          timestamp: Date.now(),
-        };
-        this._pushNotification(record);
-        this.emit("notification", record);
-      },
-    );
-
-    // Prompt list changed
-    this.client.setNotificationHandler(PromptListChangedNotificationSchema, async () => {
-      const record: ServerNotification = {
-        method: "notifications/prompts/list_changed",
-        timestamp: Date.now(),
-      };
-      this._pushNotification(record);
-      this.emit("notification", record);
-    });
-
-    // ─── Request handlers (sampling, roots) ──────────────────────────────────
-
-    // Sampling: createMessage
-    this.client.setRequestHandler(CreateMessageRequestSchema, async (request: any) => {
-      return new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          reject(new Error("Sampling request timed out (no response from user in 5 minutes)"));
-        }, 300_000);
-
-        this.emit("sampling_request", {
-          request: request.params,
-          respond: (result: any) => {
-            clearTimeout(timeout);
-            resolve(result);
-          },
-          reject: (err: Error) => {
-            clearTimeout(timeout);
-            reject(err);
-          },
         });
-      });
-    });
 
-    // Elicitation: create
-    this.client.setRequestHandler(ElicitRequestSchema, async (request: any) => {
-      return new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          reject(new Error("Elicitation request timed out (no response from user in 5 minutes)"));
-        }, 300_000);
-
-        this.emit("elicitation_request", {
-          request: request.params,
-          respond: (result: any) => {
-            clearTimeout(timeout);
-            resolve(result);
-          },
-          reject: (err: Error) => {
-            clearTimeout(timeout);
-            reject(err);
-          },
-        });
-      });
-    });
-
-    // Roots: list
-    this.client.setRequestHandler(ListRootsRequestSchema, async () => {
-      return { roots: this._roots };
-    });
-
-    this.client.onclose = () => {
-      this._connected = false;
-      this._clearStableTimer();
-
-      if (this._intentionalClose) {
-        // User asked to close — don't reconnect
-        return;
+        this.transport = stdioTransport;
       }
 
-      this.emit("disconnected");
-      this._maybeReconnect();
-    };
+      this.client = new Client(
+        { name: "run-mcp", version: PKG_VERSION },
+        {
+          capabilities: {
+            roots: { listChanged: true },
+            sampling: {},
+            elicitation: {},
+          },
+        },
+      );
 
-    await this.client.connect(this.transport);
+      // ─── Notification handlers ──────────────────────────────────────────────
 
-    this._connected = true;
-    this.startTime = Date.now();
+      // Logging messages from server
+      this.client.setNotificationHandler(
+        LoggingMessageNotificationSchema,
+        async (notification: any) => {
+          const record: ServerNotification = {
+            method: "notifications/message",
+            params: notification.params,
+            timestamp: Date.now(),
+          };
+          this._pushNotification(record);
+          this.emit("notification", record);
+        },
+      );
 
-    // Try to capture child PID from transport internals (only valid for stdio)
-    const proc = (this.transport as any)._process;
-    if (proc?.pid) {
-      this.childPid = proc.pid;
-    } else {
-      this.childPid = null;
+      // Tool list changed
+      this.client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
+        const record: ServerNotification = {
+          method: "notifications/tools/list_changed",
+          timestamp: Date.now(),
+        };
+        this._pushNotification(record);
+        this.emit("notification", record);
+      });
+
+      // Resource list changed
+      this.client.setNotificationHandler(ResourceListChangedNotificationSchema, async () => {
+        const record: ServerNotification = {
+          method: "notifications/resources/list_changed",
+          timestamp: Date.now(),
+        };
+        this._pushNotification(record);
+        this.emit("notification", record);
+      });
+
+      // Resource updated (subscription)
+      this.client.setNotificationHandler(
+        ResourceUpdatedNotificationSchema,
+        async (notification: any) => {
+          const record: ServerNotification = {
+            method: "notifications/resources/updated",
+            params: notification.params,
+            timestamp: Date.now(),
+          };
+          this._pushNotification(record);
+          this.emit("notification", record);
+        },
+      );
+
+      // Prompt list changed
+      this.client.setNotificationHandler(PromptListChangedNotificationSchema, async () => {
+        const record: ServerNotification = {
+          method: "notifications/prompts/list_changed",
+          timestamp: Date.now(),
+        };
+        this._pushNotification(record);
+        this.emit("notification", record);
+      });
+
+      // ─── Request handlers (sampling, roots) ──────────────────────────────────
+
+      // Sampling: createMessage
+      this.client.setRequestHandler(CreateMessageRequestSchema, async (request: any) => {
+        return new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            reject(new Error("Sampling request timed out (no response from user in 5 minutes)"));
+          }, 300_000);
+
+          this.emit("sampling_request", {
+            request: request.params,
+            respond: (result: any) => {
+              clearTimeout(timeout);
+              resolve(result);
+            },
+            reject: (err: Error) => {
+              clearTimeout(timeout);
+              reject(err);
+            },
+          });
+        });
+      });
+
+      // Elicitation: create
+      this.client.setRequestHandler(ElicitRequestSchema, async (request: any) => {
+        return new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            reject(new Error("Elicitation request timed out (no response from user in 5 minutes)"));
+          }, 300_000);
+
+          this.emit("elicitation_request", {
+            request: request.params,
+            respond: (result: any) => {
+              clearTimeout(timeout);
+              resolve(result);
+            },
+            reject: (err: Error) => {
+              clearTimeout(timeout);
+              reject(err);
+            },
+          });
+        });
+      });
+
+      // Roots: list
+      this.client.setRequestHandler(ListRootsRequestSchema, async () => {
+        return { roots: this._roots };
+      });
+
+      this.client.onclose = () => {
+        this._connected = false;
+        this._clearStableTimer();
+
+        if (this._intentionalClose || !this._everConnected) {
+          // User asked to close or connection was never fully established — don't reconnect
+          return;
+        }
+
+        this.emit("disconnected");
+        this._maybeReconnect();
+      };
+
+      await this.client.connect(this.transport);
+
+      this._connected = true;
+      this._everConnected = true;
+      this.startTime = Date.now();
+
+      // Try to capture child PID from transport internals (only valid for stdio)
+      const proc = (this.transport as any)._process;
+      if (proc?.pid) {
+        this.childPid = proc.pid;
+      } else {
+        this.childPid = null;
+      }
+
+      this.emit("connected");
+      this._registerCleanup();
+      this._startStableTimer();
+    } catch (err) {
+      await this.close().catch(() => {});
+      throw err;
     }
-
-    this.emit("connected");
-    this._registerCleanup();
-    this._startStableTimer();
   }
 
   get connected(): boolean {

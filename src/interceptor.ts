@@ -16,6 +16,7 @@ export interface InterceptorOptions {
   outDir?: string;
   defaultTimeoutMs?: number;
   maxTextLength?: number;
+  mediaThresholdKb?: number;
 }
 
 /**
@@ -39,7 +40,7 @@ interface ContentItem {
 }
 
 /**
- * Middleware that wraps callTool with:
+ * Middleware that wraps callTool, readResource, and getPrompt with:
  *  1. Configurable timeouts (Promise.race)
  *  2. Base64 image/audio extraction → save to disk
  *  3. Large text truncation
@@ -51,12 +52,14 @@ export class ResponseInterceptor {
   private readonly outDir: string;
   private readonly defaultTimeoutMs: number;
   private readonly maxTextLength: number;
+  private readonly mediaThresholdKb: number;
   private fileCounter = 0;
 
   constructor(opts: InterceptorOptions = {}) {
     this.outDir = opts.outDir ?? join(tmpdir(), "run-mcp");
     this.defaultTimeoutMs = opts.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.maxTextLength = opts.maxTextLength ?? DEFAULT_MAX_TEXT_LENGTH;
+    this.mediaThresholdKb = opts.mediaThresholdKb ?? 0;
   }
 
   /**
@@ -70,8 +73,9 @@ export class ResponseInterceptor {
     name: string,
     args: Record<string, unknown> = {},
     timeoutMs?: number,
+    maxTextLength?: number,
   ): Promise<Record<string, unknown>> {
-    const { result } = await this._callToolInternal(target, name, args, timeoutMs);
+    const { result } = await this._callToolInternal(target, name, args, timeoutMs, maxTextLength);
     return result;
   }
 
@@ -84,8 +88,111 @@ export class ResponseInterceptor {
     name: string,
     args: Record<string, unknown> = {},
     timeoutMs?: number,
+    maxTextLength?: number,
   ): Promise<{ result: Record<string, unknown>; metadata: InterceptionMetadata }> {
-    return this._callToolInternal(target, name, args, timeoutMs);
+    return this._callToolInternal(target, name, args, timeoutMs, maxTextLength);
+  }
+
+  /**
+   * Read a resource on the target, applying timeout, media extraction, and truncation.
+   */
+  async readResource(
+    target: TargetManager,
+    params: { uri: string; [key: string]: unknown },
+    timeoutMs?: number,
+    maxTextLength?: number,
+  ): Promise<Record<string, unknown>> {
+    const timeout = timeoutMs ?? this.defaultTimeoutMs;
+    const metadata: InterceptionMetadata = {
+      truncated: false,
+      imagesSaved: 0,
+      audioSaved: 0,
+      originalSizeBytes: 0,
+    };
+
+    const targetCall = target.readResource(params);
+    targetCall.catch(() => {});
+
+    const result = await Promise.race([
+      targetCall,
+      this._timeout(timeout, `resource:${params.uri}`),
+    ]);
+
+    const contents = (result as any).contents;
+    if (Array.isArray(contents)) {
+      for (const item of contents) {
+        if (item.text) {
+          metadata.originalSizeBytes += Buffer.byteLength(item.text, "utf8");
+        } else if (item.blob) {
+          metadata.originalSizeBytes += Buffer.byteLength(item.blob, "base64");
+        }
+      }
+
+      for (let i = 0; i < contents.length; i++) {
+        contents[i] = await this._processResourceItem(contents[i], metadata, maxTextLength);
+      }
+    }
+
+    return result as Record<string, unknown>;
+  }
+
+  /**
+   * Get a prompt on the target, applying timeout, media extraction, and truncation.
+   */
+  async getPrompt(
+    target: TargetManager,
+    params: { name: string; arguments?: Record<string, string> },
+    timeoutMs?: number,
+    maxTextLength?: number,
+  ): Promise<Record<string, unknown>> {
+    const timeout = timeoutMs ?? this.defaultTimeoutMs;
+    const metadata: InterceptionMetadata = {
+      truncated: false,
+      imagesSaved: 0,
+      audioSaved: 0,
+      originalSizeBytes: 0,
+    };
+
+    const targetCall = target.getPrompt(params);
+    targetCall.catch(() => {});
+
+    const result = await Promise.race([
+      targetCall,
+      this._timeout(timeout, `prompt:${params.name}`),
+    ]);
+
+    const messages = (result as any).messages;
+    if (Array.isArray(messages)) {
+      for (const msg of messages) {
+        const content = msg.content;
+        if (content) {
+          if (Array.isArray(content)) {
+            for (const item of content) {
+              if (item.type === "text" && item.text) {
+                metadata.originalSizeBytes += Buffer.byteLength(item.text, "utf8");
+              } else if ((item.type === "image" || item.type === "audio") && item.data) {
+                metadata.originalSizeBytes += Buffer.byteLength(item.data, "base64");
+              }
+            }
+            for (let i = 0; i < content.length; i++) {
+              content[i] = await this._processItem(content[i], metadata, maxTextLength);
+            }
+          } else if (typeof content === "object") {
+            if ((content as any).type === "text" && (content as any).text) {
+              metadata.originalSizeBytes += Buffer.byteLength((content as any).text, "utf8");
+            } else if (
+              ((content as any).type === "image" || (content as any).type === "audio") &&
+              (content as any).data
+            ) {
+              metadata.originalSizeBytes += Buffer.byteLength((content as any).data, "base64");
+            }
+            msg.content = await this._processItem(content as any, metadata, maxTextLength);
+          }
+        }
+      }
+    }
+
+    return result as Record<string, unknown>;
   }
 
   /**
@@ -96,6 +203,7 @@ export class ResponseInterceptor {
     name: string,
     args: Record<string, unknown> = {},
     timeoutMs?: number,
+    maxTextLength?: number,
   ): Promise<{ result: Record<string, unknown>; metadata: InterceptionMetadata }> {
     const timeout = timeoutMs ?? this.defaultTimeoutMs;
     const metadata: InterceptionMetadata = {
@@ -127,7 +235,7 @@ export class ResponseInterceptor {
       }
 
       for (let i = 0; i < content.length; i++) {
-        content[i] = await this._processItem(content[i], metadata);
+        content[i] = await this._processItem(content[i], metadata, maxTextLength);
       }
     }
 
@@ -142,38 +250,106 @@ export class ResponseInterceptor {
   private async _processItem(
     item: ContentItem,
     metadata: InterceptionMetadata,
+    maxTextLength?: number,
   ): Promise<ContentItem> {
     // Case 1: Explicit image type with base64 data
     if (item.type === "image" && item.data) {
+      const sizeKB = Buffer.byteLength(item.data, "base64") / 1024;
+      if (
+        this.mediaThresholdKb === -1 ||
+        (this.mediaThresholdKb > 0 && sizeKB <= this.mediaThresholdKb)
+      ) {
+        return item;
+      }
       metadata.imagesSaved++;
       return this._saveMedia(item.data, item.mimeType ?? "image/png", "image");
     }
 
     // Case 2: Audio type with base64 data
     if (item.type === "audio" && item.data) {
+      const sizeKB = Buffer.byteLength(item.data, "base64") / 1024;
+      if (
+        this.mediaThresholdKb === -1 ||
+        (this.mediaThresholdKb > 0 && sizeKB <= this.mediaThresholdKb)
+      ) {
+        return item;
+      }
       metadata.audioSaved++;
       return this._saveMedia(item.data, item.mimeType ?? "audio/wav", "audio");
     }
 
     // Case 3: Text item that looks like a raw base64 blob
     if (item.type === "text" && item.text && BASE64_PATTERN.test(item.text.trim())) {
+      const sizeKB = Buffer.byteLength(item.text.trim(), "base64") / 1024;
+      if (
+        this.mediaThresholdKb === -1 ||
+        (this.mediaThresholdKb > 0 && sizeKB <= this.mediaThresholdKb)
+      ) {
+        return item;
+      }
       metadata.imagesSaved++;
       return this._saveMedia(item.text.trim(), "image/png", "image");
     }
 
     // Case 4: Truncate oversized text
-    if (item.type === "text" && item.text && item.text.length > this.maxTextLength) {
+    const limit = maxTextLength ?? this.maxTextLength;
+    if (item.type === "text" && item.text && limit !== -1 && item.text.length > limit) {
       const totalLength = item.text.length;
       metadata.truncated = true;
       return {
         ...item,
         text:
-          item.text.slice(0, this.maxTextLength) +
+          item.text.slice(0, limit) +
           `\n... (truncated, ${totalLength.toLocaleString()} chars total)`,
       };
     }
 
     // Default: pass through unchanged (resource, resource_link, etc.)
+    return item;
+  }
+
+  /**
+   * Process a single resource content item.
+   */
+  private async _processResourceItem(
+    item: any,
+    metadata: InterceptionMetadata,
+    maxTextLength?: number,
+  ): Promise<any> {
+    if (item.blob) {
+      const mime = item.mimeType ?? "image/png";
+      const isAudio = mime.startsWith("audio/");
+      const sizeKB = Buffer.byteLength(item.blob, "base64") / 1024;
+      if (
+        this.mediaThresholdKb === -1 ||
+        (this.mediaThresholdKb > 0 && sizeKB <= this.mediaThresholdKb)
+      ) {
+        return item;
+      }
+
+      if (isAudio) metadata.audioSaved++;
+      else metadata.imagesSaved++;
+
+      const saved = await this._saveMedia(item.blob, mime, isAudio ? "audio" : "image");
+      return {
+        uri: item.uri,
+        mimeType: "text/plain",
+        text: saved.text,
+      };
+    }
+
+    const limit = maxTextLength ?? this.maxTextLength;
+    if (item.text && limit !== -1 && item.text.length > limit) {
+      const totalLength = item.text.length;
+      metadata.truncated = true;
+      return {
+        ...item,
+        text:
+          item.text.slice(0, limit) +
+          `\n... (truncated, ${totalLength.toLocaleString()} chars total)`,
+      };
+    }
+
     return item;
   }
 
@@ -210,13 +386,14 @@ export class ResponseInterceptor {
   /**
    * Returns a promise that rejects after the given timeout.
    */
-  private _timeout(ms: number, toolName: string): Promise<never> {
+  private _timeout(ms: number, targetName: string): Promise<never> {
     return new Promise((_, reject) => {
       setTimeout(() => {
         const humanMs = ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
+        const typeLabel = targetName.includes(":") ? "Request" : "Tool";
         reject(
           new Error(
-            `Tool "${toolName}" timed out after ${ms}ms (${humanMs}). ` +
+            `${typeLabel} "${targetName}" timed out after ${ms}ms (${humanMs}). ` +
               `Use --timeout <ms> to increase the limit.`,
           ),
         );

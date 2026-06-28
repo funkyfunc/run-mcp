@@ -11,6 +11,7 @@ export interface ServerOptions {
   outDir?: string;
   timeoutMs?: number;
   maxTextLength?: number;
+  mediaThresholdKb?: number;
 }
 
 // ─── Snapshot types for reconnect diffing ──────────────────────────────────
@@ -33,6 +34,7 @@ interface PromptSnapshot {
 interface Snapshot {
   tools?: ToolSnapshot[];
   resources?: ResourceSnapshot[];
+  resourceTemplates?: { uriTemplate: string; name: string }[];
   prompts?: PromptSnapshot[];
 }
 
@@ -94,6 +96,22 @@ function computeResourceDiff(prev: ResourceSnapshot[], curr: ResourceSnapshot[])
 }
 
 /**
+ * Compute a diff between two resource template lists (no hash — just presence).
+ */
+function computeResourceTemplateDiff(
+  prev: { uriTemplate: string; name: string }[],
+  curr: { uriTemplate: string; name: string }[],
+): DiffEntry {
+  const prevUris = new Set(prev.map((t) => t.uriTemplate));
+  const currUris = new Set(curr.map((t) => t.uriTemplate));
+
+  const added = [...currUris].filter((u) => !prevUris.has(u));
+  const removed = [...prevUris].filter((u) => !currUris.has(u));
+
+  return { added, removed, modified: [] };
+}
+
+/**
  * Format a diff entry as a human-readable summary line.
  */
 function formatDiffLine(label: string, diff: DiffEntry): string {
@@ -139,6 +157,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
     outDir: opts.outDir,
     defaultTimeoutMs: opts.timeoutMs,
     maxTextLength: opts.maxTextLength,
+    mediaThresholdKb: opts.mediaThresholdKb,
   });
 
   const mcpServer = new McpServer(
@@ -209,6 +228,15 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       } catch {
         /* ignore */
       }
+      try {
+        const { resourceTemplates } = await target.listResourceTemplates();
+        snap.resourceTemplates = resourceTemplates.map((t) => ({
+          uriTemplate: t.uriTemplate,
+          name: t.name ?? "",
+        }));
+      } catch {
+        /* ignore */
+      }
     }
 
     if (caps.prompts) {
@@ -240,6 +268,17 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         formatDiffLine(
           "Resources",
           computeResourceDiff(previousSnapshot.resources, current.resources),
+        ),
+      );
+    }
+    if (current.resourceTemplates && previousSnapshot.resourceTemplates) {
+      lines.push(
+        formatDiffLine(
+          "Resource Templates",
+          computeResourceTemplateDiff(
+            previousSnapshot.resourceTemplates,
+            current.resourceTemplates,
+          ),
         ),
       );
     }
@@ -295,13 +334,19 @@ export async function startServer(opts: ServerOptions): Promise<void> {
 
     target = new TargetManager(cmdToUse, argsToUse ?? []);
     setupTargetListeners(target);
-    await target.connect();
+    try {
+      await target.connect();
+    } catch (err) {
+      await target.close().catch(() => {});
+      target = null;
+      throw err;
+    }
     cachedSpawnConfig = { command: cmdToUse, args: argsToUse ?? [], env: envToUse };
     return null;
   }
 
   /** Build include data for connect response. */
-  async function buildIncludeData(include: string[]): Promise<string[]> {
+  async function buildIncludeData(include: string[], summary = false): Promise<string[]> {
     if (!target?.connected || include.length === 0) return [];
 
     const lines: string[] = [];
@@ -309,7 +354,10 @@ export async function startServer(opts: ServerOptions): Promise<void> {
     if (include.includes("tools")) {
       try {
         const { tools } = await target.listTools();
-        lines.push("", "--- Tools ---", JSON.stringify(tools, null, 2));
+        const displayTools = summary
+          ? tools.map((t) => ({ name: t.name, description: t.description }))
+          : tools;
+        lines.push("", "--- Tools ---", JSON.stringify(displayTools, null, 2));
       } catch (err: any) {
         lines.push("", "--- Tools ---", `Error: ${err.message}`);
       }
@@ -318,16 +366,42 @@ export async function startServer(opts: ServerOptions): Promise<void> {
     if (include.includes("resources")) {
       try {
         const { resources } = await target.listResources();
-        lines.push("", "--- Resources ---", JSON.stringify(resources, null, 2));
+        const displayResources = summary
+          ? resources.map((r: any) => ({
+              name: r.name,
+              uri: r.uri,
+              description: r.description,
+            }))
+          : resources;
+        lines.push("", "--- Resources ---", JSON.stringify(displayResources, null, 2));
       } catch (err: any) {
         lines.push("", "--- Resources ---", `Error: ${err.message}`);
+      }
+    }
+
+    if (include.includes("resource_templates")) {
+      try {
+        const { resourceTemplates } = await target.listResourceTemplates();
+        const displayTemplates = summary
+          ? resourceTemplates.map((t: any) => ({
+              name: t.name,
+              uriTemplate: t.uriTemplate,
+              description: t.description,
+            }))
+          : resourceTemplates;
+        lines.push("", "--- Resource Templates ---", JSON.stringify(displayTemplates, null, 2));
+      } catch (err: any) {
+        lines.push("", "--- Resource Templates ---", `Error: ${err.message}`);
       }
     }
 
     if (include.includes("prompts")) {
       try {
         const { prompts } = await target.listPrompts();
-        lines.push("", "--- Prompts ---", JSON.stringify(prompts, null, 2));
+        const displayPrompts = summary
+          ? prompts.map((p) => ({ name: p.name, description: p.description }))
+          : prompts;
+        lines.push("", "--- Prompts ---", JSON.stringify(displayPrompts, null, 2));
       } catch (err: any) {
         lines.push("", "--- Prompts ---", `Error: ${err.message}`);
       }
@@ -346,7 +420,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         "Spawn and connect to a local MCP server process. " +
         "Use this to test an MCP server you're building. " +
         "Only one connection at a time — call disconnect_from_mcp first if already connected. " +
-        "Use the 'include' parameter to get tools/resources/prompts in the response, saving round trips.",
+        "Use the 'include' parameter to get tools/resources/prompts/resource_templates in the response, saving round trips.",
       inputSchema: {
         command: z.string().describe("Command to run (e.g. 'node', 'python', 'npx')"),
         args: z
@@ -358,16 +432,22 @@ export async function startServer(opts: ServerOptions): Promise<void> {
           .optional()
           .describe("Extra environment variables for the child process"),
         include: z
-          .array(z.enum(["tools", "resources", "prompts"]))
+          .array(z.enum(["tools", "resources", "resource_templates", "prompts"]))
           .optional()
           .describe(
             "Primitives to include in the response. " +
               "Saves round trips vs calling list_mcp_primitives separately. " +
               "On reconnect, also shows a diff of what changed since the last connection.",
           ),
+        summary: z
+          .boolean()
+          .optional()
+          .describe(
+            "If true, returns only the name and description of each primitive (omitting full schemas) when included to save tokens.",
+          ),
       },
     },
-    async ({ command, args, env, include }) => {
+    async ({ command, args, env, include, summary }) => {
       if (target?.connected) {
         return {
           content: [
@@ -396,7 +476,13 @@ export async function startServer(opts: ServerOptions): Promise<void> {
 
         target = new TargetManager(command, args ?? []);
         setupTargetListeners(target);
-        await target.connect();
+        try {
+          await target.connect();
+        } catch (err) {
+          await target.close().catch(() => {});
+          target = null;
+          throw err;
+        }
         cachedSpawnConfig = { command, args: args ?? [], env };
 
         const status = target.getStatus();
@@ -441,7 +527,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
 
         // Add included data if requested
         if (include && include.length > 0) {
-          lines.push(...(await buildIncludeData(include)));
+          lines.push(...(await buildIncludeData(include, summary)));
         }
 
         // Surface server instructions if present
@@ -547,12 +633,12 @@ export async function startServer(opts: ServerOptions): Promise<void> {
     {
       title: "List MCP Primitives",
       description:
-        "List tools, resources, and/or prompts on the connected MCP server. " +
+        "List tools, resources, resource templates, and/or prompts on the connected MCP server. " +
         "Specify which types to include. Defaults to all available. " +
         "Use 'name' to filter to a specific item (e.g. describe a single tool's schema).",
       inputSchema: {
         type: z
-          .array(z.enum(["tools", "resources", "prompts"]))
+          .array(z.enum(["tools", "resources", "resource_templates", "prompts"]))
           .optional()
           .describe(
             "Which primitives to list. Defaults to all that the server supports. " +
@@ -563,7 +649,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
           .optional()
           .describe(
             "Filter to a specific item by name. " +
-              "For tools: matches tool name. For resources: matches URI. For prompts: matches prompt name. " +
+              "For tools: matches tool name. For resources: matches URI. For resource templates: matches URI template. For prompts: matches prompt name. " +
               "Returns the full schema/details for just that item.",
           ),
         summary: z
@@ -572,9 +658,13 @@ export async function startServer(opts: ServerOptions): Promise<void> {
           .describe(
             "If true, returns only the name and description of each primitive (omitting full schemas) to save tokens.",
           ),
+        cursor: z
+          .string()
+          .optional()
+          .describe("Cursor for pagination (returned from a previous list call)"),
       },
     },
-    async ({ type, name, summary }) => {
+    async ({ type, name, summary, cursor }) => {
       if (!target?.connected) {
         return {
           content: [
@@ -588,12 +678,12 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       }
 
       const caps = target.getServerCapabilities() ?? {};
-      const requested = type ?? ["tools", "resources", "prompts"];
+      const requested = type ?? ["tools", "resources", "resource_templates", "prompts"];
       const sections: string[] = [];
 
       if (requested.includes("tools") && caps.tools) {
         try {
-          const result = await target.listTools();
+          const result = await target.listTools({ cursor });
           let tools = result.tools;
           if (name) {
             tools = tools.filter((t) => t.name === name);
@@ -609,6 +699,9 @@ export async function startServer(opts: ServerOptions): Promise<void> {
               : tools;
             sections.push("--- Tools ---", JSON.stringify(displayTools, null, 2));
           }
+          if (result.nextCursor) {
+            sections.push(`--- Tools Next Cursor: ${result.nextCursor} ---`);
+          }
         } catch (err: any) {
           sections.push("--- Tools ---", `Error: ${err.message}`);
         }
@@ -616,7 +709,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
 
       if (requested.includes("resources") && caps.resources) {
         try {
-          const result = await target.listResources();
+          const result = await target.listResources({ cursor });
           let resources = result.resources;
           if (name) {
             resources = resources.filter((r: any) => r.uri === name || r.name === name);
@@ -639,14 +732,50 @@ export async function startServer(opts: ServerOptions): Promise<void> {
               : resources;
             sections.push("--- Resources ---", JSON.stringify(displayResources, null, 2));
           }
+          if (result.nextCursor) {
+            sections.push(`--- Resources Next Cursor: ${result.nextCursor} ---`);
+          }
         } catch (err: any) {
           sections.push("--- Resources ---", `Error: ${err.message}`);
         }
       }
 
+      if (requested.includes("resource_templates") && caps.resources) {
+        try {
+          const result = await target.listResourceTemplates({ cursor });
+          let templates = result.resourceTemplates;
+          if (name) {
+            templates = templates.filter((t: any) => t.uriTemplate === name || t.name === name);
+            if (templates.length === 0) {
+              const available = result.resourceTemplates.map((t: any) => t.uriTemplate).join(", ");
+              sections.push(
+                "--- Resource Templates ---",
+                `Resource Template "${name}" not found.\nAvailable: ${available}`,
+              );
+            } else {
+              sections.push("--- Resource Templates ---", JSON.stringify(templates[0], null, 2));
+            }
+          } else {
+            const displayTemplates = summary
+              ? templates.map((t: any) => ({
+                  name: t.name,
+                  uriTemplate: t.uriTemplate,
+                  description: t.description,
+                }))
+              : templates;
+            sections.push("--- Resource Templates ---", JSON.stringify(displayTemplates, null, 2));
+          }
+          if (result.nextCursor) {
+            sections.push(`--- Resource Templates Next Cursor: ${result.nextCursor} ---`);
+          }
+        } catch (err: any) {
+          sections.push("--- Resource Templates ---", `Error: ${err.message}`);
+        }
+      }
+
       if (requested.includes("prompts") && caps.prompts) {
         try {
-          const result = await target.listPrompts();
+          const result = await target.listPrompts({ cursor });
           let prompts = result.prompts;
           if (name) {
             prompts = prompts.filter((p) => p.name === name);
@@ -664,6 +793,9 @@ export async function startServer(opts: ServerOptions): Promise<void> {
               ? prompts.map((p) => ({ name: p.name, description: p.description }))
               : prompts;
             sections.push("--- Prompts ---", JSON.stringify(displayPrompts, null, 2));
+          }
+          if (result.nextCursor) {
+            sections.push(`--- Prompts Next Cursor: ${result.nextCursor} ---`);
           }
         } catch (err: any) {
           sections.push("--- Prompts ---", `Error: ${err.message}`);
@@ -796,6 +928,12 @@ export async function startServer(opts: ServerOptions): Promise<void> {
             "Include a structured metadata content item with latency, interception info, " +
               "and content statistics. Useful for programmatic consumption.",
           ),
+        max_text_length: z
+          .number()
+          .optional()
+          .describe(
+            "Max text response length before truncation for this call. Use -1 to disable truncation.",
+          ),
       },
     },
     async ({
@@ -806,6 +944,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       disconnect_after,
       timeout_ms,
       include_metadata,
+      max_text_length,
     }) => {
       // Ensure connection
       try {
@@ -893,6 +1032,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
                 name,
                 (callArgs as Record<string, unknown>) ?? {},
                 timeout_ms,
+                max_text_length,
               );
               result = toolResult;
               interceptionMeta = metadata;
@@ -902,6 +1042,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
                 name,
                 (callArgs as Record<string, unknown>) ?? {},
                 timeout_ms,
+                max_text_length,
               );
             }
             const elapsedMs = Date.now() - startMs;
@@ -938,25 +1079,81 @@ export async function startServer(opts: ServerOptions): Promise<void> {
           }
 
           case "resource": {
-            const resourceResult = await target!.readResource({ uri: name });
-            result = {
-              content: [
-                { type: "text" as const, text: JSON.stringify(resourceResult.contents, null, 2) },
-              ],
-            };
+            const startMs = Date.now();
+            const resourceResult = (await interceptor.readResource(
+              target!,
+              { uri: name },
+              timeout_ms,
+              max_text_length,
+            )) as any;
+            const elapsedMs = Date.now() - startMs;
+            const contentItems = resourceResult.contents.map((c: any) => {
+              if (c.text !== undefined) {
+                return { type: "text" as const, text: c.text };
+              } else {
+                return { type: "text" as const, text: `[Resource blob: ${c.uri}]` };
+              }
+            });
+            result = { content: contentItems };
+
+            if (include_metadata) {
+              const meta: Record<string, unknown> = {
+                latency_ms: elapsedMs,
+                content_items: contentItems.length,
+                is_error: false,
+              };
+              contentItems.unshift({
+                type: "text" as const,
+                text: `--- metadata ---\n${JSON.stringify(meta)}`,
+              });
+            }
             break;
           }
 
           case "prompt": {
-            const promptResult = await target!.getPrompt({
-              name,
-              arguments: (callArgs as Record<string, string>) ?? {},
-            });
-            result = {
-              content: [
-                { type: "text" as const, text: JSON.stringify(promptResult.messages, null, 2) },
-              ],
-            };
+            const startMs = Date.now();
+            const promptResult = (await interceptor.getPrompt(
+              target!,
+              {
+                name,
+                arguments: (callArgs as Record<string, string>) ?? {},
+              },
+              timeout_ms,
+              max_text_length,
+            )) as any;
+            const elapsedMs = Date.now() - startMs;
+            const contentItems: any[] = [];
+            for (const msg of promptResult.messages) {
+              const role = msg.role;
+              const content = msg.content;
+              const prefix = `[${role.toUpperCase()} MESSAGE]`;
+              if (content.type === "text") {
+                contentItems.push({ type: "text" as const, text: `${prefix}\n${content.text}` });
+              } else if (Array.isArray(content)) {
+                for (const item of content) {
+                  if (item.type === "text") {
+                    contentItems.push({ type: "text" as const, text: `${prefix}\n${item.text}` });
+                  } else {
+                    contentItems.push(item);
+                  }
+                }
+              } else {
+                contentItems.push(content);
+              }
+            }
+            result = { content: contentItems };
+
+            if (include_metadata) {
+              const meta: Record<string, unknown> = {
+                latency_ms: elapsedMs,
+                content_items: contentItems.length,
+                is_error: false,
+              };
+              contentItems.unshift({
+                type: "text" as const,
+                text: `--- metadata ---\n${JSON.stringify(meta)}`,
+              });
+            }
             break;
           }
         }

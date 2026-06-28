@@ -80,7 +80,7 @@ describe("headless: call", () => {
     const { stderr, exitCode } = await runCli(["call", "nonexistent_tool_xyz", ...TARGET]);
 
     expect(exitCode).toBe(1);
-    expect(stderr).toContain("Error");
+    expect(stderr.toLowerCase()).toContain("error");
   }, 15_000);
 
   it("exits 2 with invalid JSON args", async () => {

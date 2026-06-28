@@ -36,6 +36,7 @@ interface HeadlessOpts {
   timeout?: string;
   raw?: boolean;
   showStderr?: boolean;
+  mediaThreshold?: string;
 }
 
 function parseHeadlessOpts(opts: HeadlessOpts) {
@@ -44,7 +45,19 @@ function parseHeadlessOpts(opts: HeadlessOpts) {
     timeoutMs: opts.timeout ? Number.parseInt(opts.timeout, 10) : undefined,
     raw: opts.raw,
     showStderr: opts.showStderr,
+    mediaThresholdKb: opts.mediaThreshold ? Number.parseInt(opts.mediaThreshold, 10) : undefined,
   };
+}
+
+// ─── Pre-process argv to split target command from run-mcp arguments ─────────
+
+let activeTargetCommand: string[] | undefined;
+let argvToParse = process.argv;
+
+const dashDashIndex = process.argv.indexOf("--");
+if (dashDashIndex !== -1) {
+  activeTargetCommand = process.argv.slice(dashDashIndex + 1);
+  argvToParse = [...process.argv.slice(0, dashDashIndex)];
 }
 
 // ─── Enable positional options for subcommand support ─────────────────────────
@@ -61,6 +74,10 @@ program
   .description("Call a tool on a target MCP server and print the result as JSON")
   .option("-o, --out-dir <path>", "Output directory for saved media")
   .option("-t, --timeout <ms>", "Timeout in milliseconds (default: 30000)")
+  .option(
+    "-m, --media-threshold <kb>",
+    "Media size threshold in KB to save to disk (0 to always save, -1 to keep inline)",
+  )
   .option("--raw", "Print the full result object including metadata")
   .option("--show-stderr", "Stream target server stderr to process stderr")
   .allowUnknownOption()
@@ -72,7 +89,7 @@ program
       opts: HeadlessOpts,
     ) => {
       const target = requireTargetCommand(
-        targetCommand,
+        activeTargetCommand ?? targetCommand,
         "run-mcp call <tool> [json_args] -- <server_command...>",
       );
       await runHeadless(target, { type: "call", tool, args: jsonArgs }, parseHeadlessOpts(opts));
@@ -88,7 +105,10 @@ program
   .option("--show-stderr", "Stream target server stderr to process stderr")
   .allowUnknownOption()
   .action(async (targetCommand: string[], opts: HeadlessOpts) => {
-    const target = requireTargetCommand(targetCommand, "run-mcp list-tools -- <server_command...>");
+    const target = requireTargetCommand(
+      activeTargetCommand ?? targetCommand,
+      "run-mcp list-tools -- <server_command...>",
+    );
     await runHeadless(target, { type: "list-tools" }, parseHeadlessOpts(opts));
   });
 
@@ -102,7 +122,7 @@ program
   .allowUnknownOption()
   .action(async (targetCommand: string[], opts: HeadlessOpts) => {
     const target = requireTargetCommand(
-      targetCommand,
+      activeTargetCommand ?? targetCommand,
       "run-mcp list-resources -- <server_command...>",
     );
     await runHeadless(target, { type: "list-resources" }, parseHeadlessOpts(opts));
@@ -118,7 +138,7 @@ program
   .allowUnknownOption()
   .action(async (targetCommand: string[], opts: HeadlessOpts) => {
     const target = requireTargetCommand(
-      targetCommand,
+      activeTargetCommand ?? targetCommand,
       "run-mcp list-prompts -- <server_command...>",
     );
     await runHeadless(target, { type: "list-prompts" }, parseHeadlessOpts(opts));
@@ -131,10 +151,17 @@ program
   .argument("<uri>", "Resource URI to read")
   .argument("[target_command...]", "Target server command (after --)")
   .description("Read a resource by URI from a target MCP server")
+  .option(
+    "-m, --media-threshold <kb>",
+    "Media size threshold in KB to save to disk (0 to always save, -1 to keep inline)",
+  )
   .option("--show-stderr", "Stream target server stderr to process stderr")
   .allowUnknownOption()
   .action(async (uri: string, targetCommand: string[], opts: HeadlessOpts) => {
-    const target = requireTargetCommand(targetCommand, "run-mcp read <uri> -- <server_command...>");
+    const target = requireTargetCommand(
+      activeTargetCommand ?? targetCommand,
+      "run-mcp read <uri> -- <server_command...>",
+    );
     await runHeadless(target, { type: "read", uri }, parseHeadlessOpts(opts));
   });
 
@@ -149,7 +176,7 @@ program
   .allowUnknownOption()
   .action(async (tool: string, targetCommand: string[], opts: HeadlessOpts) => {
     const target = requireTargetCommand(
-      targetCommand,
+      activeTargetCommand ?? targetCommand,
       "run-mcp describe <tool> -- <server_command...>",
     );
     await runHeadless(target, { type: "describe", tool }, parseHeadlessOpts(opts));
@@ -163,6 +190,10 @@ program
   .argument("[json_args]", "JSON arguments for the prompt")
   .argument("[target_command...]", "Target server command (after --)")
   .description("Get a prompt with optional arguments from a target MCP server")
+  .option(
+    "-m, --media-threshold <kb>",
+    "Media size threshold in KB to save to disk (0 to always save, -1 to keep inline)",
+  )
   .option("--show-stderr", "Stream target server stderr to process stderr")
   .allowUnknownOption()
   .action(
@@ -173,7 +204,7 @@ program
       opts: HeadlessOpts,
     ) => {
       const target = requireTargetCommand(
-        targetCommand,
+        activeTargetCommand ?? targetCommand,
         "run-mcp get-prompt <name> [json_args] -- <server_command...>",
       );
       await runHeadless(
@@ -204,6 +235,10 @@ program
   .option(
     "--max-text <chars>",
     "Max text response length before truncation (default: 50000) (Agent Mode only)",
+  )
+  .option(
+    "-m, --media-threshold <kb>",
+    "Media size threshold in KB to save to disk (0 to always save, -1 to keep inline)",
   )
   .option("--mcp", "Force start Agent Server mode even if run interactively without arguments")
   .option("-s, --script <file>", "Read commands from a file instead of stdin (REPL Mode only)")
@@ -274,11 +309,27 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
   .action(
     async (
       targetCommand: string[],
-      opts: { script?: string; outDir?: string; timeout?: string; maxText?: string; mcp?: boolean },
+      opts: {
+        script?: string;
+        outDir?: string;
+        timeout?: string;
+        maxText?: string;
+        mediaThreshold?: string;
+        mcp?: boolean;
+      },
     ) => {
+      const target =
+        targetCommand && targetCommand.length > 0 ? targetCommand : (activeTargetCommand ?? []);
+
       // If we have a target command, start the REPL mode
-      if (targetCommand && targetCommand.length > 0) {
-        await startRepl(targetCommand, { script: opts.script, outDir: opts.outDir });
+      if (target && target.length > 0) {
+        await startRepl(target, {
+          script: opts.script,
+          outDir: opts.outDir,
+          mediaThresholdKb: opts.mediaThreshold
+            ? Number.parseInt(opts.mediaThreshold, 10)
+            : undefined,
+        });
       } else {
         // No target command provided
         if (opts.mcp || !process.stdin.isTTY) {
@@ -287,6 +338,9 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
             outDir: opts.outDir,
             timeoutMs: opts.timeout ? Number.parseInt(opts.timeout, 10) : undefined,
             maxTextLength: opts.maxText ? Number.parseInt(opts.maxText, 10) : undefined,
+            mediaThresholdKb: opts.mediaThreshold
+              ? Number.parseInt(opts.mediaThreshold, 10)
+              : undefined,
           });
         } else {
           // Human is running it in a terminal without arguments -> pick a config
@@ -306,10 +360,13 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
           await startRepl([selected.config.command, ...(selected.config.args || [])], {
             script: opts.script,
             outDir: opts.outDir,
+            mediaThresholdKb: opts.mediaThreshold
+              ? Number.parseInt(opts.mediaThreshold, 10)
+              : undefined,
           });
         }
       }
     },
   );
 
-program.parse();
+program.parse(argvToParse);

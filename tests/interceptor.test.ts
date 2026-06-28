@@ -400,3 +400,88 @@ describe("callToolWithMetadata", () => {
     expect(metadata.originalSizeBytes).toBeGreaterThan(100);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Resource and prompt interception
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("resource and prompt interception", () => {
+  it("intercepts resource contents (truncation & blobs)", async () => {
+    const interceptor = new ResponseInterceptor({ outDir: testOutDir, maxTextLength: 10 });
+    const imgData = Buffer.from("fake-resource-image").toString("base64");
+    const target = {
+      readResource: vi.fn().mockResolvedValue({
+        contents: [
+          { uri: "docs://short", text: "hello" },
+          { uri: "docs://long", text: "this is a very long text" },
+          { uri: "docs://img", blob: imgData, mimeType: "image/png" },
+        ],
+      }),
+    } as any;
+
+    const result = (await interceptor.readResource(target, { uri: "docs://test" })) as any;
+    expect(result.contents).toHaveLength(3);
+    expect(result.contents[0].text).toBe("hello");
+    expect(result.contents[1].text).toContain("(truncated");
+    expect(result.contents[2].text).toMatch(/\[Image saved to/);
+    expect(result.contents[2].blob).toBeUndefined(); // saved to disk
+  });
+
+  it("intercepts prompt messages content", async () => {
+    const interceptor = new ResponseInterceptor({ outDir: testOutDir, maxTextLength: 10 });
+    const target = {
+      getPrompt: vi.fn().mockResolvedValue({
+        messages: [
+          { role: "user", content: { type: "text", text: "short" } },
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "very long assistant response here" }],
+          },
+        ],
+      }),
+    } as any;
+
+    const result = (await interceptor.getPrompt(target, { name: "test-prompt" })) as any;
+    expect(result.messages[0].content.text).toBe("short");
+    expect(result.messages[1].content[0].text).toContain("(truncated");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Custom maxTextLength per-call and Media Threshold
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("custom limits and media threshold", () => {
+  it("respects custom maxTextLength per call override", async () => {
+    const interceptor = new ResponseInterceptor({ outDir: testOutDir, maxTextLength: 100 });
+    const target = mockTarget({
+      content: [{ type: "text", text: "this is longer than 5" }],
+    });
+
+    const result = await interceptor.callTool(target, "echo", {}, undefined, 5);
+    expect((result as any).content[0].text).toContain("(truncated");
+  });
+
+  it("allows keeping media inline when below threshold", async () => {
+    const interceptor = new ResponseInterceptor({ outDir: testOutDir, mediaThresholdKb: 100 });
+    const tinyImg = Buffer.from("tiny").toString("base64");
+    const target = mockTarget({
+      content: [{ type: "image", data: tinyImg, mimeType: "image/png" }],
+    });
+
+    const result = await interceptor.callTool(target, "echo", {});
+    expect((result as any).content[0].type).toBe("image");
+    expect((result as any).content[0].data).toBe(tinyImg); // Kept inline!
+  });
+
+  it("saves media to disk if above threshold", async () => {
+    const interceptor = new ResponseInterceptor({ outDir: testOutDir, mediaThresholdKb: 1 }); // 1KB threshold
+    const bigImg = Buffer.alloc(1500, "a").toString("base64"); // ~1.5KB
+    const target = mockTarget({
+      content: [{ type: "image", data: bigImg, mimeType: "image/png" }],
+    });
+
+    const result = await interceptor.callTool(target, "echo", {});
+    expect((result as any).content[0].text).toMatch(/\[Image saved to/);
+  });
+});

@@ -69,13 +69,13 @@ export async function runHeadless(
     const status = target.getStatus();
     process.stderr.write(`Connected (PID: ${status.pid})\n`);
 
-    const result = await executeOperation(target, interceptor, operation, opts);
+    const { result, hasError } = await executeOperation(target, interceptor, operation, opts);
 
     // Write clean JSON to stdout
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 
     await target.close();
-    process.exit(0);
+    process.exit(hasError ? 1 : 0);
   } catch (err: any) {
     const msg = err.message ?? String(err);
 
@@ -106,7 +106,7 @@ async function executeOperation(
   interceptor: ResponseInterceptor,
   operation: HeadlessOperation,
   opts: HeadlessOptions,
-): Promise<unknown> {
+): Promise<{ result: unknown; hasError: boolean }> {
   switch (operation.type) {
     case "call": {
       let parsedArgs: Record<string, unknown> = {};
@@ -135,32 +135,32 @@ async function executeOperation(
           }
         }
         // Still output the result for programmatic consumption
-        if (opts.raw) return result;
-        return (result as any).content ?? result;
+        if (opts.raw) return { result, hasError: true };
+        return { result: (result as any).content ?? result, hasError: true };
       }
 
-      if (opts.raw) return result;
-      return (result as any).content ?? result;
+      if (opts.raw) return { result, hasError: false };
+      return { result: (result as any).content ?? result, hasError: false };
     }
 
     case "list-tools": {
       const { tools } = await target.listTools();
-      return tools;
+      return { result: tools, hasError: false };
     }
 
     case "list-resources": {
       const { resources } = await target.listResources();
-      return resources;
+      return { result: resources, hasError: false };
     }
 
     case "list-prompts": {
       const { prompts } = await target.listPrompts();
-      return prompts;
+      return { result: prompts, hasError: false };
     }
 
     case "read": {
-      const result = await target.readResource({ uri: operation.uri });
-      return result;
+      const result = await interceptor.readResource(target, { uri: operation.uri });
+      return { result, hasError: false };
     }
 
     case "describe": {
@@ -173,7 +173,7 @@ async function executeOperation(
         );
         process.exit(1);
       }
-      return tool;
+      return { result: tool, hasError: false };
     }
 
     case "get-prompt": {
@@ -188,11 +188,11 @@ async function executeOperation(
         }
       }
 
-      const result = await target.getPrompt({
+      const result = await interceptor.getPrompt(target, {
         name: operation.name,
         arguments: parsedArgs,
       });
-      return result;
+      return { result, hasError: false };
     }
   }
 }

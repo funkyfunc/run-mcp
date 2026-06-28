@@ -67,6 +67,7 @@ const KNOWN_COMMANDS = [
 interface ReplOptions {
   script?: string;
   outDir?: string;
+  mediaThresholdKb?: number;
 }
 
 // ─── Tab completion caches ────────────────────────────────────────────────────
@@ -351,7 +352,10 @@ function stripAnsi(str: string): string {
 export async function startRepl(targetCommand: string[], opts: ReplOptions): Promise<void> {
   const [command, ...args] = targetCommand;
   const target = new TargetManager(command, args);
-  const interceptor = new ResponseInterceptor({ outDir: opts.outDir });
+  const interceptor = new ResponseInterceptor({
+    outDir: opts.outDir,
+    mediaThresholdKb: opts.mediaThresholdKb,
+  });
 
   isScriptMode = !!opts.script;
 
@@ -1371,8 +1375,6 @@ function question(rl: ReadlineInterface, prompt: string): Promise<string> {
     });
   });
 }
-
-
 
 async function cmdToolsScaffold(target: TargetManager, rest: string): Promise<void> {
   const name = rest.trim();
