@@ -94,7 +94,7 @@ describe("headless: call", () => {
     const { stderr, exitCode } = await runCli(["call", "echo"]);
 
     expect(exitCode).toBe(2);
-    expect(stderr).toContain("No target server command");
+    expect(stderr).toContain("separated by '--'");
   }, 15_000);
 
   it("stdout contains no ANSI escape sequences", async () => {
@@ -246,4 +246,57 @@ describe("headless: show-stderr flag", () => {
     expect(exitCode).toBe(0);
     expect(stderr).toContain("Mock MCP server running on stdio");
   }, 15_000);
+});
+
+describe("headless: HTTPie shorthand arguments", () => {
+  it("calls tool using shorthand string args", async () => {
+    const { stdout, exitCode } = await runCli(["call", "echo", "text=hello_shorthand", ...TARGET]);
+
+    expect(exitCode).toBe(0);
+    const result = JSON.parse(stdout);
+    expect(result[0].text).toBe("hello_shorthand");
+  }, 15_000);
+
+  it("calls tool using shorthand JSON args", async () => {
+    const { stdout, exitCode } = await runCli(["call", "greet", "name=Alice", ...TARGET]);
+
+    expect(exitCode).toBe(0);
+    const result = JSON.parse(stdout);
+    expect(result[0].text).toBe("Hello, Alice!");
+  }, 15_000);
+});
+
+describe("headless: persistent sessions", () => {
+  it("spawns a background session daemon and runs consecutive calls on it", async () => {
+    // 1. Spawns session 'test-session-1' on target
+    const { stdout: out1, exitCode: code1 } = await runCli([
+      "call",
+      "echo",
+      "text=hello_session",
+      "--session",
+      "test-session-1",
+      ...TARGET,
+    ]);
+
+    expect(code1).toBe(0);
+    const res1 = JSON.parse(out1);
+    expect(res1[0].text).toBe("hello_session");
+
+    // 2. Runs call on the active session without target command
+    const { stdout: out2, exitCode: code2 } = await runCli([
+      "call",
+      "echo",
+      "text=hello_again",
+      "--session",
+      "test-session-1",
+    ]);
+
+    expect(code2).toBe(0);
+    const res2 = JSON.parse(out2);
+    expect(res2[0].text).toBe("hello_again");
+
+    // 3. Closes the session
+    const { exitCode: code3 } = await runCli(["close-session", "test-session-1"]);
+    expect(code3).toBe(0);
+  }, 30_000);
 });

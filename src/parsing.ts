@@ -507,3 +507,99 @@ export function resolveAlias(input: string): string | null {
 
   return expanded + rest;
 }
+
+/**
+ * Splits a string into tokens by space, respecting single/double quotes.
+ */
+export function splitArgs(input: string): string[] {
+  const tokens: string[] = [];
+  let current = "";
+  let inDoubleQuote = false;
+  let inSingleQuote = false;
+  let escape = false;
+
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+
+    if (escape) {
+      current += ch;
+      escape = false;
+      continue;
+    }
+
+    if (ch === "\\") {
+      escape = true;
+      continue;
+    }
+
+    if (ch === '"' && !inSingleQuote) {
+      inDoubleQuote = !inDoubleQuote;
+      current += ch;
+      continue;
+    }
+
+    if (ch === "'" && !inDoubleQuote) {
+      inSingleQuote = !inSingleQuote;
+      current += ch;
+      continue;
+    }
+
+    if (ch === " " && !inDoubleQuote && !inSingleQuote) {
+      if (current.trim()) {
+        tokens.push(current.trim());
+      }
+      current = "";
+      continue;
+    }
+
+    current += ch;
+  }
+
+  if (current.trim()) {
+    tokens.push(current.trim());
+  }
+
+  return tokens;
+}
+
+/**
+ * Parse a list of HTTPie-style key-value arguments:
+ *   key=value (string)
+ *   key:=json_val (JSON value like number, boolean, array, object, null)
+ */
+export function parseHttpieArgs(argsString: string): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  const trimmedArgs = argsString.trim();
+  if (!trimmedArgs) return result;
+
+  const tokens = splitArgs(trimmedArgs);
+
+  for (const token of tokens) {
+    const eqIdx = token.indexOf("=");
+    if (eqIdx === -1) continue;
+
+    const isJson = eqIdx > 0 && token[eqIdx - 1] === ":";
+    const key = isJson ? token.slice(0, eqIdx - 1).trim() : token.slice(0, eqIdx).trim();
+    let rawVal = token.slice(eqIdx + 1).trim();
+
+    // Strip wrapping quotes if any
+    if (
+      (rawVal.startsWith('"') && rawVal.endsWith('"')) ||
+      (rawVal.startsWith("'") && rawVal.endsWith("'"))
+    ) {
+      rawVal = rawVal.slice(1, -1);
+    }
+
+    if (isJson) {
+      try {
+        result[key] = JSON.parse(rawVal);
+      } catch {
+        result[key] = rawVal;
+      }
+    } else {
+      result[key] = rawVal;
+    }
+  }
+
+  return result;
+}

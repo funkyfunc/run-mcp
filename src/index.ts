@@ -1,32 +1,158 @@
 #!/usr/bin/env node
 
 import { program } from "commander";
+import { createConnection, createServer } from "node:net";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { spawn } from "node:child_process";
 import { pickDiscoveredServer } from "./config-scanner.js";
-import { runHeadless } from "./headless.js";
+import { runHeadless, executeOperation } from "./headless.js";
 import { startRepl } from "./repl.js";
 import { startServer } from "./server.js";
+import { TargetManager } from "./target-manager.js";
+import { ResponseInterceptor } from "./interceptor.js";
 
 // ─── Headless subcommand helper ───────────────────────────────────────────────
-
-/**
- * Extract the target server command from the variadic trailing argument.
- * Filters out the `--` separator that Commander passes through.
- */
-function extractTargetCommand(targetCommand: string[]): string[] {
-  return targetCommand.filter((a) => a !== "--");
-}
 
 /**
  * Validate that a target command was provided, or exit with usage help.
  */
 function requireTargetCommand(targetCommand: string[], subcommandUsage: string): string[] {
-  const target = extractTargetCommand(targetCommand);
-  if (target.length === 0) {
-    process.stderr.write(`Error: No target server command provided after '--'.\n`);
+  if (!activeTargetCommand) {
+    process.stderr.write(`Error: Target server command must be separated by '--'.\n`);
+    process.stderr.write(`This avoids option parsing conflicts.\n\n`);
     process.stderr.write(`Usage: ${subcommandUsage}\n`);
     process.exit(2);
   }
-  return target;
+  return activeTargetCommand;
+}
+
+const SESSION_DIR = join(tmpdir(), "run-mcp", "sessions");
+
+interface SessionData {
+  port: number;
+  pid: number;
+}
+
+function getSessionPath(name: string): string {
+  return join(SESSION_DIR, `${name}.json`);
+}
+
+async function getSession(name: string): Promise<SessionData | null> {
+  const path = getSessionPath(name);
+  if (!existsSync(path)) return null;
+  try {
+    const data = await readFile(path, "utf8");
+    const parsed = JSON.parse(data) as SessionData;
+    try {
+      process.kill(parsed.pid, 0);
+      return parsed;
+    } catch {
+      await rm(path, { force: true }).catch(() => {});
+      return null;
+    }
+  } catch {
+    return null;
+  }
+}
+
+function sendDaemonRequest(
+  port: number,
+  request: unknown,
+): Promise<{ result: unknown; hasError: boolean }> {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection({ port });
+    let buffer = "";
+
+    socket.on("connect", () => {
+      socket.write(JSON.stringify(request) + "\n");
+    });
+
+    socket.on("data", (data) => {
+      buffer += data.toString();
+    });
+
+    socket.on("end", () => {
+      try {
+        const parsed = JSON.parse(buffer);
+        if (parsed.error) {
+          reject(new Error(parsed.error.message));
+        } else {
+          resolve(parsed.result as { result: unknown; hasError: boolean });
+        }
+      } catch (err) {
+        reject(new Error(`Failed to parse daemon response: ${err}`));
+      }
+    });
+
+    socket.on("error", (err) => {
+      reject(err);
+    });
+  });
+}
+
+async function handleHeadlessSession(
+  sessionName: string,
+  targetCommand: string[],
+  operation: any,
+  opts: any,
+  subcommandUsage: string,
+): Promise<void> {
+  let session = await getSession(sessionName);
+
+  if (!session) {
+    // Check if we have activeTargetCommand. If not, fail with coaching error
+    if (!activeTargetCommand) {
+      process.stderr.write(`Error: Session "${sessionName}" is not running.\n`);
+      process.stderr.write(`Please provide a target command after '--' to start it.\n\n`);
+      process.stderr.write(`Usage: ${subcommandUsage}\n`);
+      process.exit(2);
+    }
+
+    const target = activeTargetCommand;
+
+    // Spawn the daemon process in background
+    const binPath = resolve(import.meta.dirname, "./index.js");
+    const daemonProcess = spawn("node", [binPath, "daemon", sessionName, ...target], {
+      detached: true,
+      stdio: "ignore",
+    });
+    daemonProcess.unref();
+
+    // Poll until session file exists and is readable (up to 5s)
+    let attempts = 0;
+    while (attempts < 50) {
+      session = await getSession(sessionName);
+      if (session) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      attempts++;
+    }
+
+    if (!session) {
+      process.stderr.write(
+        `Error: Failed to spawn background daemon for session "${sessionName}".\n`,
+      );
+      process.exit(1);
+    }
+  }
+
+  // Forward request to daemon
+  try {
+    const response = await sendDaemonRequest(session.port, {
+      jsonrpc: "2.0",
+      method: "execute",
+      params: { operation, opts },
+      id: 1,
+    });
+
+    process.stdout.write(`${JSON.stringify(response.result, null, 2)}\n`);
+    process.exit(response.hasError ? 1 : 0);
+  } catch (err: any) {
+    process.stderr.write(`Error communicating with session daemon: ${err.message}\n`);
+    process.exit(1);
+  }
 }
 
 // ─── Shared headless options ──────────────────────────────────────────────────
@@ -37,6 +163,7 @@ interface HeadlessOpts {
   raw?: boolean;
   showStderr?: boolean;
   mediaThreshold?: string;
+  session?: string;
 }
 
 function parseHeadlessOpts(opts: HeadlessOpts) {
@@ -80,6 +207,7 @@ program
   )
   .option("--raw", "Print the full result object including metadata")
   .option("--show-stderr", "Stream target server stderr to process stderr")
+  .option("--session <name>", "Persistent session name")
   .allowUnknownOption()
   .action(
     async (
@@ -88,11 +216,23 @@ program
       targetCommand: string[],
       opts: HeadlessOpts,
     ) => {
-      const target = requireTargetCommand(
-        activeTargetCommand ?? targetCommand,
-        "run-mcp call <tool> [json_args] -- <server_command...>",
-      );
-      await runHeadless(target, { type: "call", tool, args: jsonArgs }, parseHeadlessOpts(opts));
+      const operation = { type: "call" as const, tool, args: jsonArgs };
+      const parsedOpts = parseHeadlessOpts(opts);
+      if (opts.session) {
+        await handleHeadlessSession(
+          opts.session,
+          targetCommand,
+          operation,
+          parsedOpts,
+          "run-mcp call <tool> [json_args] -- <server_command...>",
+        );
+      } else {
+        const target = requireTargetCommand(
+          activeTargetCommand ?? targetCommand,
+          "run-mcp call <tool> [json_args] -- <server_command...>",
+        );
+        await runHeadless(target, operation, parsedOpts);
+      }
     },
   );
 
@@ -103,13 +243,26 @@ program
   .argument("[target_command...]", "Target server command (after --)")
   .description("List all tools on a target MCP server as JSON")
   .option("--show-stderr", "Stream target server stderr to process stderr")
+  .option("--session <name>", "Persistent session name")
   .allowUnknownOption()
   .action(async (targetCommand: string[], opts: HeadlessOpts) => {
-    const target = requireTargetCommand(
-      activeTargetCommand ?? targetCommand,
-      "run-mcp list-tools -- <server_command...>",
-    );
-    await runHeadless(target, { type: "list-tools" }, parseHeadlessOpts(opts));
+    const operation = { type: "list-tools" as const };
+    const parsedOpts = parseHeadlessOpts(opts);
+    if (opts.session) {
+      await handleHeadlessSession(
+        opts.session,
+        targetCommand,
+        operation,
+        parsedOpts,
+        "run-mcp list-tools -- <server_command...>",
+      );
+    } else {
+      const target = requireTargetCommand(
+        activeTargetCommand ?? targetCommand,
+        "run-mcp list-tools -- <server_command...>",
+      );
+      await runHeadless(target, operation, parsedOpts);
+    }
   });
 
 // ─── Subcommand: list-resources ───────────────────────────────────────────────
@@ -119,13 +272,26 @@ program
   .argument("[target_command...]", "Target server command (after --)")
   .description("List all resources on a target MCP server as JSON")
   .option("--show-stderr", "Stream target server stderr to process stderr")
+  .option("--session <name>", "Persistent session name")
   .allowUnknownOption()
   .action(async (targetCommand: string[], opts: HeadlessOpts) => {
-    const target = requireTargetCommand(
-      activeTargetCommand ?? targetCommand,
-      "run-mcp list-resources -- <server_command...>",
-    );
-    await runHeadless(target, { type: "list-resources" }, parseHeadlessOpts(opts));
+    const operation = { type: "list-resources" as const };
+    const parsedOpts = parseHeadlessOpts(opts);
+    if (opts.session) {
+      await handleHeadlessSession(
+        opts.session,
+        targetCommand,
+        operation,
+        parsedOpts,
+        "run-mcp list-resources -- <server_command...>",
+      );
+    } else {
+      const target = requireTargetCommand(
+        activeTargetCommand ?? targetCommand,
+        "run-mcp list-resources -- <server_command...>",
+      );
+      await runHeadless(target, operation, parsedOpts);
+    }
   });
 
 // ─── Subcommand: list-prompts ─────────────────────────────────────────────────
@@ -135,13 +301,26 @@ program
   .argument("[target_command...]", "Target server command (after --)")
   .description("List all prompts on a target MCP server as JSON")
   .option("--show-stderr", "Stream target server stderr to process stderr")
+  .option("--session <name>", "Persistent session name")
   .allowUnknownOption()
   .action(async (targetCommand: string[], opts: HeadlessOpts) => {
-    const target = requireTargetCommand(
-      activeTargetCommand ?? targetCommand,
-      "run-mcp list-prompts -- <server_command...>",
-    );
-    await runHeadless(target, { type: "list-prompts" }, parseHeadlessOpts(opts));
+    const operation = { type: "list-prompts" as const };
+    const parsedOpts = parseHeadlessOpts(opts);
+    if (opts.session) {
+      await handleHeadlessSession(
+        opts.session,
+        targetCommand,
+        operation,
+        parsedOpts,
+        "run-mcp list-prompts -- <server_command...>",
+      );
+    } else {
+      const target = requireTargetCommand(
+        activeTargetCommand ?? targetCommand,
+        "run-mcp list-prompts -- <server_command...>",
+      );
+      await runHeadless(target, operation, parsedOpts);
+    }
   });
 
 // ─── Subcommand: read ─────────────────────────────────────────────────────────
@@ -156,13 +335,26 @@ program
     "Media size threshold in KB to save to disk (0 to always save, -1 to keep inline)",
   )
   .option("--show-stderr", "Stream target server stderr to process stderr")
+  .option("--session <name>", "Persistent session name")
   .allowUnknownOption()
   .action(async (uri: string, targetCommand: string[], opts: HeadlessOpts) => {
-    const target = requireTargetCommand(
-      activeTargetCommand ?? targetCommand,
-      "run-mcp read <uri> -- <server_command...>",
-    );
-    await runHeadless(target, { type: "read", uri }, parseHeadlessOpts(opts));
+    const operation = { type: "read" as const, uri };
+    const parsedOpts = parseHeadlessOpts(opts);
+    if (opts.session) {
+      await handleHeadlessSession(
+        opts.session,
+        targetCommand,
+        operation,
+        parsedOpts,
+        "run-mcp read <uri> -- <server_command...>",
+      );
+    } else {
+      const target = requireTargetCommand(
+        activeTargetCommand ?? targetCommand,
+        "run-mcp read <uri> -- <server_command...>",
+      );
+      await runHeadless(target, operation, parsedOpts);
+    }
   });
 
 // ─── Subcommand: describe ─────────────────────────────────────────────────────
@@ -173,13 +365,26 @@ program
   .argument("[target_command...]", "Target server command (after --)")
   .description("Print a tool's full schema as JSON")
   .option("--show-stderr", "Stream target server stderr to process stderr")
+  .option("--session <name>", "Persistent session name")
   .allowUnknownOption()
   .action(async (tool: string, targetCommand: string[], opts: HeadlessOpts) => {
-    const target = requireTargetCommand(
-      activeTargetCommand ?? targetCommand,
-      "run-mcp describe <tool> -- <server_command...>",
-    );
-    await runHeadless(target, { type: "describe", tool }, parseHeadlessOpts(opts));
+    const operation = { type: "describe" as const, tool };
+    const parsedOpts = parseHeadlessOpts(opts);
+    if (opts.session) {
+      await handleHeadlessSession(
+        opts.session,
+        targetCommand,
+        operation,
+        parsedOpts,
+        "run-mcp describe <tool> -- <server_command...>",
+      );
+    } else {
+      const target = requireTargetCommand(
+        activeTargetCommand ?? targetCommand,
+        "run-mcp describe <tool> -- <server_command...>",
+      );
+      await runHeadless(target, operation, parsedOpts);
+    }
   });
 
 // ─── Subcommand: get-prompt ───────────────────────────────────────────────────
@@ -195,6 +400,7 @@ program
     "Media size threshold in KB to save to disk (0 to always save, -1 to keep inline)",
   )
   .option("--show-stderr", "Stream target server stderr to process stderr")
+  .option("--session <name>", "Persistent session name")
   .allowUnknownOption()
   .action(
     async (
@@ -203,17 +409,139 @@ program
       targetCommand: string[],
       opts: HeadlessOpts,
     ) => {
-      const target = requireTargetCommand(
-        activeTargetCommand ?? targetCommand,
-        "run-mcp get-prompt <name> [json_args] -- <server_command...>",
-      );
-      await runHeadless(
-        target,
-        { type: "get-prompt", name, args: jsonArgs },
-        parseHeadlessOpts(opts),
-      );
+      const operation = { type: "get-prompt" as const, name, args: jsonArgs };
+      const parsedOpts = parseHeadlessOpts(opts);
+      if (opts.session) {
+        await handleHeadlessSession(
+          opts.session,
+          targetCommand,
+          operation,
+          parsedOpts,
+          "run-mcp get-prompt <name> [json_args] -- <server_command...>",
+        );
+      } else {
+        const target = requireTargetCommand(
+          activeTargetCommand ?? targetCommand,
+          "run-mcp get-prompt <name> [json_args] -- <server_command...>",
+        );
+        await runHeadless(target, operation, parsedOpts);
+      }
     },
   );
+
+// ─── Subcommand: daemon ───────────────────────────────────────────────────────
+
+program
+  .command("daemon")
+  .argument("<session_name>", "Session name")
+  .argument("[target_command...]", "Target server command")
+  .description("Start run-mcp in background session daemon mode")
+  .allowUnknownOption()
+  .action(async (sessionName: string, targetCommand: string[]) => {
+    const targetCmd = activeTargetCommand ?? targetCommand;
+    if (!targetCmd || targetCmd.length === 0) {
+      process.stderr.write("Error: No target command provided for daemon.\n");
+      process.exit(1);
+    }
+
+    const server = createServer();
+    server.listen(0, "127.0.0.1", async () => {
+      const addr = server.address();
+      const port = (addr as any).port;
+
+      const target = new TargetManager(targetCmd[0], targetCmd.slice(1));
+      const interceptor = new ResponseInterceptor();
+
+      try {
+        await target.connect();
+      } catch (err: any) {
+        process.stderr.write(`Daemon failed to connect to target: ${err.message}\n`);
+        process.exit(1);
+      }
+
+      await mkdir(SESSION_DIR, { recursive: true });
+      await writeFile(
+        getSessionPath(sessionName),
+        JSON.stringify({ port, pid: process.pid }),
+        "utf8",
+      );
+
+      server.on("connection", (socket) => {
+        let buffer = "";
+        socket.on("data", async (data) => {
+          buffer += data.toString();
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            try {
+              const req = JSON.parse(trimmed);
+              if (req.method === "execute") {
+                const { operation, opts } = req.params;
+                const { result, hasError } = await executeOperation(
+                  target,
+                  interceptor,
+                  operation,
+                  opts,
+                );
+                socket.write(
+                  JSON.stringify({ jsonrpc: "2.0", result: { result, hasError }, id: req.id }) +
+                    "\n",
+                );
+                socket.end();
+              } else if (req.method === "close") {
+                socket.write(
+                  JSON.stringify({ jsonrpc: "2.0", result: { ok: true }, id: req.id }) + "\n",
+                );
+                socket.end();
+                await target.close().catch(() => {});
+                await rm(getSessionPath(sessionName), { force: true }).catch(() => {});
+                process.exit(0);
+              }
+            } catch (err: any) {
+              socket.write(
+                JSON.stringify({ jsonrpc: "2.0", error: { message: err.message }, id: 1 }) + "\n",
+              );
+              socket.end();
+            }
+          }
+        });
+      });
+    });
+  });
+
+// ─── Subcommand: close-session ───────────────────────────────────────────────
+
+program
+  .command("close-session")
+  .argument("<session_name>", "Session name")
+  .description("Stop a running session daemon")
+  .action(async (sessionName: string) => {
+    const session = await getSession(sessionName);
+    if (!session) {
+      console.log(`Session "${sessionName}" is not running.`);
+      return;
+    }
+
+    try {
+      await sendDaemonRequest(session.port, {
+        jsonrpc: "2.0",
+        method: "close",
+        params: {},
+        id: 1,
+      });
+      console.log(`Session "${sessionName}" stopped successfully.`);
+    } catch {
+      try {
+        process.kill(session.pid, "SIGTERM");
+        console.log(`Session "${sessionName}" stopped (SIGTERM).`);
+      } catch {
+        console.log(`Failed to stop session "${sessionName}".`);
+      }
+    }
+  });
 
 // ─── Default: REPL or Agent Server ───────────────────────────────────────────
 
@@ -318,8 +646,19 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
         mcp?: boolean;
       },
     ) => {
-      const target =
-        targetCommand && targetCommand.length > 0 ? targetCommand : (activeTargetCommand ?? []);
+      // If targetCommand has items but activeTargetCommand is undefined, they forgot '--'
+      if (targetCommand && targetCommand.length > 0 && !activeTargetCommand) {
+        process.stderr.write(
+          "Error: Target server command must be separated by '--'.\n" +
+            "This avoids argument parsing ambiguity.\n\n" +
+            "Example:\n" +
+            "  run-mcp -- node my-server.js\n" +
+            "  run-mcp -s script.txt -- node my-server.js\n",
+        );
+        process.exit(1);
+      }
+
+      const target = activeTargetCommand ?? [];
 
       // If we have a target command, start the REPL mode
       if (target && target.length > 0) {

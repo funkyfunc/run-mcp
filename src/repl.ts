@@ -11,6 +11,7 @@ import {
   LOG_LEVELS,
   parseCallArgs,
   parseCommandLine,
+  parseHttpieArgs,
   resolveAlias,
   scaffoldArgs,
   suggestCommand,
@@ -849,6 +850,12 @@ async function handleCommand(
     }
 
     default: {
+      // If it matches a tool name, execute it directly as tools/call
+      if (cachedToolNames.includes(cmd)) {
+        await cmdToolsCall(target, interceptor, input);
+        return;
+      }
+
       // Suggest the closest known command if it's a likely typo
       const suggestion = suggestCommand(cmd, getActiveCommands());
       if (suggestion) {
@@ -1002,13 +1009,22 @@ async function cmdToolsCall(
   let args: Record<string, unknown> = {};
 
   if (jsonArgs) {
-    // User provided JSON — parse it
-    try {
-      args = JSON.parse(jsonArgs);
-    } catch (err: any) {
-      console.error(pc.red(`Invalid JSON: ${err.message}`));
-      console.log(pc.dim(`  Received: ${jsonArgs}`));
-      return;
+    const trimmed = jsonArgs.trim();
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      try {
+        args = JSON.parse(trimmed);
+      } catch (err: any) {
+        console.error(pc.red(`Invalid JSON: ${err.message}`));
+        console.log(pc.dim(`  Received: ${jsonArgs}`));
+        return;
+      }
+    } else {
+      try {
+        args = parseHttpieArgs(trimmed);
+      } catch (err: any) {
+        console.error(pc.red(`Invalid shorthand arguments: ${err.message}`));
+        return;
+      }
     }
 
     // Change 4: Check for missing required args and show scaffold
@@ -1588,12 +1604,22 @@ async function cmdPromptsGet(
 
   let promptArgs: Record<string, string> = {};
   if (jsonArgs) {
-    try {
-      promptArgs = JSON.parse(jsonArgs);
-    } catch (err: any) {
-      console.error(pc.red(`Invalid JSON: ${err.message}`));
-      console.log(pc.dim(`  Received: ${jsonArgs}`));
-      return;
+    const trimmed = jsonArgs.trim();
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      try {
+        promptArgs = JSON.parse(trimmed) as Record<string, string>;
+      } catch (err: any) {
+        console.error(pc.red(`Invalid JSON: ${err.message}`));
+        console.log(pc.dim(`  Received: ${jsonArgs}`));
+        return;
+      }
+    } else {
+      try {
+        promptArgs = parseHttpieArgs(trimmed) as Record<string, string>;
+      } catch (err: any) {
+        console.error(pc.red(`Invalid shorthand arguments: ${err.message}`));
+        return;
+      }
     }
   }
 

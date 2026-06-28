@@ -14,6 +14,7 @@
  */
 
 import { ResponseInterceptor } from "./interceptor.js";
+import { parseHttpieArgs } from "./parsing.js";
 import { TargetManager } from "./target-manager.js";
 
 /** Default timeout for headless tool calls (30 seconds). */
@@ -101,7 +102,7 @@ export async function runHeadless(
  * For `call`, returns the content array by default or the full result
  * envelope when `--raw` is specified.
  */
-async function executeOperation(
+export async function executeOperation(
   target: TargetManager,
   interceptor: ResponseInterceptor,
   operation: HeadlessOperation,
@@ -111,12 +112,17 @@ async function executeOperation(
     case "call": {
       let parsedArgs: Record<string, unknown> = {};
       if (operation.args) {
-        try {
-          parsedArgs = JSON.parse(operation.args);
-        } catch (err: any) {
-          process.stderr.write(`Error: Invalid JSON arguments: ${err.message}\n`);
-          process.stderr.write(`  Received: ${operation.args}\n`);
-          process.exit(2);
+        const trimmed = operation.args.trim();
+        if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+          try {
+            parsedArgs = JSON.parse(trimmed);
+          } catch (err: any) {
+            process.stderr.write(`Error: Invalid JSON arguments: ${err.message}\n`);
+            process.stderr.write(`  Received: ${operation.args}\n`);
+            process.exit(2);
+          }
+        } else {
+          parsedArgs = parseHttpieArgs(trimmed);
         }
       }
 
@@ -179,12 +185,17 @@ async function executeOperation(
     case "get-prompt": {
       let parsedArgs: Record<string, string> | undefined;
       if (operation.args) {
-        try {
-          parsedArgs = JSON.parse(operation.args);
-        } catch (err: any) {
-          process.stderr.write(`Error: Invalid JSON arguments: ${err.message}\n`);
-          process.stderr.write(`  Received: ${operation.args}\n`);
-          process.exit(2);
+        const trimmed = operation.args.trim();
+        if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+          try {
+            parsedArgs = JSON.parse(trimmed) as Record<string, string>;
+          } catch (err: any) {
+            process.stderr.write(`Error: Invalid JSON arguments: ${err.message}\n`);
+            process.stderr.write(`  Received: ${operation.args}\n`);
+            process.exit(2);
+          }
+        } else {
+          parsedArgs = parseHttpieArgs(trimmed) as Record<string, string>;
         }
       }
 

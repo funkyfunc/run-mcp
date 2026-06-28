@@ -10,6 +10,8 @@ import {
   resolveAlias,
   scaffoldArgs,
   suggestCommand,
+  splitArgs,
+  parseHttpieArgs,
 } from "../src/parsing.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -691,5 +693,47 @@ describe("formatJson — colorize", () => {
     const plain = formatJson(obj, 2, false);
     const colored = formatJson(obj, 2, true);
     expect(strip(colored)).toBe(plain);
+  });
+});
+
+describe("splitArgs", () => {
+  it("splits simple space-separated arguments", () => {
+    expect(splitArgs("foo=bar count=10")).toEqual(["foo=bar", "count=10"]);
+  });
+
+  it("respects double quotes", () => {
+    expect(splitArgs('title="Hello World" count=5')).toEqual(['title="Hello World"', "count=5"]);
+  });
+
+  it("respects single quotes", () => {
+    expect(splitArgs("title='Hello World' count=5")).toEqual(["title='Hello World'", "count=5"]);
+  });
+
+  it("handles backslash escapes", () => {
+    expect(splitArgs('title="Hello \\"World\\""')).toEqual(['title="Hello "World""']);
+  });
+});
+
+describe("parseHttpieArgs", () => {
+  it("parses string key-value pairs", () => {
+    expect(parseHttpieArgs("name=Alice role=admin")).toEqual({
+      name: "Alice",
+      role: "admin",
+    });
+  });
+
+  it("parses JSON key-value pairs with :=", () => {
+    expect(parseHttpieArgs("headless:=true port:=3000 details:='{\"a\":1}'")).toEqual({
+      headless: true,
+      port: 3000,
+      details: { a: 1 },
+    });
+  });
+
+  it("strips wrapping quotes from values", () => {
+    expect(parseHttpieArgs("name=\"Alice Smith\" role='admin'")).toEqual({
+      name: "Alice Smith",
+      role: "admin",
+    });
   });
 });
