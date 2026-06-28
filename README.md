@@ -61,57 +61,86 @@ You'll see an interactive prompt:
 run-mcp [options] [target_command...]
 
 Options:
-  -V, --version               Show version number
-  -o, --out-dir <path>        Directory to save intercepted images and audio
-  -t, --timeout <ms>          Default tool call timeout in milliseconds (default: 300000) (Agent Mode only)
-      --max-text <chars>      Max text response length before truncation (default: 50000) (Agent Mode only)
-      --mcp                   Force start Agent Server mode even if run interactively without arguments
-  -s, --script <file>         Read commands from a file instead of stdin (REPL Mode only)
-  -h, --help                  Display help for command
+-V, --version Show version number
+-o, --out-dir <path> Directory to save intercepted images and audio
+-t, --timeout <ms> Default tool call timeout in milliseconds (default: 300000) (Agent Mode only)
+--max-text <chars> Max text response length before truncation (default: 50000) (Agent Mode only)
+--mcp Force start Agent Server mode even if run interactively without arguments
+-s, --script <file> Read commands from a file instead of stdin (REPL Mode only)
+-h, --help Display help for command
 
 Examples:
-  $ run-mcp                                       # Test harness (agent mode)
-  $ run-mcp node my-server.js                     # Interactive testing (human REPL mode)
-  $ run-mcp node my-server.js -s test.txt         # Run a script in REPL mode
-  $ run-mcp npx -y some-mcp-server                # Test an npx server
-  $ run-mcp --out-dir ./test-output               # Agent mode with options
-  $ run-mcp --out-dir ./screenshots node srv.js   # REPL mode with options
+$ run-mcp                                       # Test harness (agent mode)
+  $ run-mcp node my-server.js # Interactive testing (human REPL mode)
+$ run-mcp node my-server.js -s test.txt         # Run a script in REPL mode
+  $ run-mcp npx -y some-mcp-server # Test an npx server
+$ run-mcp --out-dir ./test-output               # Agent mode with options
+  $ run-mcp --out-dir ./screenshots node srv.js # REPL mode with options
 
 ## Headless Mode (Single-Shot CI/CD)
 
-For CI/CD pipelines, shell scripts, or parsing via `jq`, `run-mcp` exposes a suite of headless subcommands that pipe clean JSON to stdout and isolate standard errors and progress updates to stderr. You must use `--` to separate the command from the target server options.
+For CI/CD pipelines, shell scripts, or parsing via `jq`, `run-mcp` exposes a suite of headless subcommands that pipe clean JSON to stdout and isolate standard errors and progress updates to stderr.
+
+### ⚠️ Strictly Required Double-Dash `--`
+
+To prevent argument parsing conflicts between `run-mcp` and the target server, **you must always separate the target command with a double-dash `--`**. This applies to both default REPL launching and all headless subcommands.
+
+- **Correct**: `run-mcp list-tools -- node my-server.js`
+- **Incorrect**: `run-mcp list-tools node my-server.js` (will exit with a coaching error)
+
+### ⚡ HTTPie-Style Shorthand Arguments
+
+Instead of escaping complex JSON strings on the command line, you can provide arguments using simple key-value shorthand notation:
+
+- `key=value` -> evaluated as a string
+- `key:=json_val` -> parsed as a JSON primitive (boolean, number, array, object, null)
+
+_Example:_
 
 ```bash
-# Get tool names as a flat list
-run-mcp list-tools -- node my-server.js | jq -r '.[].name'
-
-# Call a tool and extract a field  
-run-mcp call generate '{"prompt":"test"}' -- node my-server.js | jq '.content[0].text'
-
-# Read a resource and pipe to file
-run-mcp read docs://config -- node my-server.js > config.json
+# Call a tool using shorthand arguments
+run-mcp call greet name=Alice count:=5 -- node my-server.js
 ```
 
-Available subcommands:
-- `call <tool> [json_args]`
+### 🔄 Stateful/Persistent CLI Sessions
+
+Normally, every headless command spawns a fresh process of the target server, which is slow and discards connection state. By passing `--session <name>`, `run-mcp` will spawn a persistent background daemon on the first call. Subsequent commands will dynamically attach to the same running session:
+
+```bash
+# Spawns a background session daemon & launches a browser
+run-mcp call browser_launch headless:=true --session main -- node browser-server.js
+
+# Navigates the browser on the active running session (no target command needed!)
+run-mcp call browser_navigate url=https://google.com --session main
+
+# Closes the session and stops the background target server
+run-mcp close-session main
+```
+
+### Available Headless Subcommands
+
+- `call <tool> [json_or_shorthand_args]`
 - `list-tools`
 - `list-resources`
 - `list-prompts`
 - `read <uri>`
 - `describe <tool>`
-- `get-prompt <name> [json_args]`
+- `get-prompt <name> [json_or_shorthand_args]`
+- `close-session <session_name>`
 
-Use `run-mcp <subcommand> --help` for specific command options (like `--timeout` and `--raw`).
+Use `run-mcp <subcommand> --help` for specific command options.
+
 ## Agent Use Cases
 
 ### Dynamic Testing
 
-When an AI agent is actively *developing* an MCP server, it needs to test it. Standard MCP clients require updating a configuration file (`mcp.json`) and restarting the agent session entirely.
+When an AI agent is actively _developing_ an MCP server, it needs to test it. Standard MCP clients require updating a configuration file (`mcp.json`) and restarting the agent session entirely.
 
 `run-mcp` solves this by giving the agent a suite of tools to dynamically spawn, inspect, and test local MCP servers on the fly.
 
 **How to use:**
 Add `run-mcp` to your agent's MCP configuration using `npx`:
+
 ```json
 {
   "mcpServers": {
@@ -125,30 +154,30 @@ Add `run-mcp` to your agent's MCP configuration using `npx`:
 
 Then use these tools from your agent:
 
-| Tool | Description |
-|------|-------------|
-| `connect_to_mcp` | Spawn and connect to a local MCP server. Use `include` to get tools/resources/prompts inline. Shows a diff on reconnect. |
-| `disconnect_from_mcp` | Tear down the connection |
-| `mcp_server_status` | Check connection status |
-| `call_mcp_primitive` | Call a tool, read a resource, or get a prompt. Auto-connects if not already connected. Use `disconnect_after` for one-shot tests. |
-| `list_mcp_primitives` | List tools, resources, and/or prompts on the connected server |
-| `get_mcp_server_stderr` | View target server stderr output |
-| `list_available_mcp_servers`| Discover other local MCP servers configured on the host machine |
+| Tool                         | Description                                                                                                                       |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `connect_to_mcp`             | Spawn and connect to a local MCP server. Use `include` to get tools/resources/prompts inline. Shows a diff on reconnect.          |
+| `disconnect_from_mcp`        | Tear down the connection                                                                                                          |
+| `mcp_server_status`          | Check connection status                                                                                                           |
+| `call_mcp_primitive`         | Call a tool, read a resource, or get a prompt. Auto-connects if not already connected. Use `disconnect_after` for one-shot tests. |
+| `list_mcp_primitives`        | List tools, resources, and/or prompts on the connected server                                                                     |
+| `get_mcp_server_stderr`      | View target server stderr output                                                                                                  |
+| `list_available_mcp_servers` | Discover other local MCP servers configured on the host machine                                                                   |
 
 ## REPL Mode Commands
 
 Once connected via `run-mcp <command>`, the following shorthand commands are available:
 
-| Command | Description |
-|---------|-------------|
-| `explore` | Open interactive fuzzy-search selector for tools, resources, and prompts |
-| `tools/list` | List all tools exposed by the target server |
-| `tools/describe <name>` | Show a tool's full input schema |
+| Command                              | Description                                                                                               |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------- |
+| `explore`                            | Open interactive fuzzy-search selector for tools, resources, and prompts                                  |
+| `tools/list`                         | List all tools exposed by the target server                                                               |
+| `tools/describe <name>`              | Show a tool's full input schema                                                                           |
 | `tools/call <name> [json] [--clear]` | Call a tool. Launch interactive wizard if no JSON provided. Use `--clear` to ignore remembered arguments. |
-| `tools/forget [name]` | Clear remembered interactive arguments for a tool, or all tools if no name provided. |
-| `status` | Show target server status (PID, uptime, connection) |
-| `help` | Show available commands |
-| `exit` / `quit` | Disconnect and exit |
+| `tools/forget [name]`                | Clear remembered interactive arguments for a tool, or all tools if no name provided.                      |
+| `status`                             | Show target server status (PID, uptime, connection)                                                       |
+| `help`                               | Show available commands                                                                                   |
+| `exit` / `quit`                      | Disconnect and exit                                                                                       |
 
 ### Examples
 
@@ -167,10 +196,21 @@ Once connected via `run-mcp <command>`, the following shorthand commands are ava
 
 # Arguments with spaces work fine
 > tools/call send_message {"text": "hello world", "channel": "general"}
+```
+
+### Direct Inline Tool Calls & Shorthand Arguments
+
+Instead of prefixing every tool call with `tools/call`, you can invoke any target server tool directly by name, and provide arguments in shorthand key-value form:
+
+```bash
+# Direct inline tool execution with HTTPie shorthand parameters
+> greet name=Bob count:=3
+```
 
 ### Interactive Wizard & Argument Memory
 
 If you invoke a tool without JSON arguments, `run-mcp` will guide you through an interactive scaffolding wizard:
+
 ```bash
 > tools/call send_message
 ✔ text (string) Message text to send: Hello World!
@@ -179,8 +219,8 @@ If you invoke a tool without JSON arguments, `run-mcp` will guide you through an
 ✔ Execute? Yes
   Calling send_message...
 ```
+
 `run-mcp` actively **remembers** your inputs across identical interactive calls, scaffolding defaults based on your last execution! Use `tools/forget` or `--clear` if you need a clean slate.
-```
 
 ### Script Mode
 
@@ -219,28 +259,28 @@ In proxy mode, `run-mcp` acts as an MCP server itself. Configure it as the comma
 
 The proxy dynamically mirrors the target server's capabilities. All MCP primitives that the target supports are forwarded transparently:
 
-| Primitive | Forwarded? |
-|-----------|------------|
-| **Tools** (`tools/list`, `tools/call`) | ✅ Always (with interception) |
-| **Resources** (`resources/list`, `resources/read`, `resources/templates/list`) | ✅ If target supports |
-| **Prompts** (`prompts/list`, `prompts/get`) | ✅ If target supports |
-| **Logging** (`logging/setLevel`) | ✅ If target supports |
-| **Completion** (`completion/complete`) | ✅ If target supports |
-| **Notifications** (list changes, logging) | ✅ Forwarded from target to agent |
-| **Tool annotations** (`readOnlyHint`, `destructiveHint`, etc.) | ✅ Preserved as-is |
-| **Pagination** (`nextCursor` / `cursor`) | ✅ Passed through |
+| Primitive                                                                      | Forwarded?                        |
+| ------------------------------------------------------------------------------ | --------------------------------- |
+| **Tools** (`tools/list`, `tools/call`)                                         | ✅ Always (with interception)     |
+| **Resources** (`resources/list`, `resources/read`, `resources/templates/list`) | ✅ If target supports             |
+| **Prompts** (`prompts/list`, `prompts/get`)                                    | ✅ If target supports             |
+| **Logging** (`logging/setLevel`)                                               | ✅ If target supports             |
+| **Completion** (`completion/complete`)                                         | ✅ If target supports             |
+| **Notifications** (list changes, logging)                                      | ✅ Forwarded from target to agent |
+| **Tool annotations** (`readOnlyHint`, `destructiveHint`, etc.)                 | ✅ Preserved as-is                |
+| **Pagination** (`nextCursor` / `cursor`)                                       | ✅ Passed through                 |
 
 ### What the proxy intercepts
 
 Tool call responses are processed through the interceptor pipeline. All other primitives pass through untouched.
 
-| Feature | Behavior |
-|---------|----------|
-| **Image extraction** | `type: "image"` responses with base64 data are saved to disk. Replaced with `[Image saved to /path/to/img.png (24KB)]` |
+| Feature              | Behavior                                                                                                                 |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| **Image extraction** | `type: "image"` responses with base64 data are saved to disk. Replaced with `[Image saved to /path/to/img.png (24KB)]`   |
 | **Audio extraction** | `type: "audio"` responses with base64 data are saved to disk. Replaced with `[Audio saved to /path/to/audio.wav (12KB)]` |
-| **Base64 detection** | Text responses that are entirely base64-encoded (1000+ chars) are also saved as images |
-| **Timeouts** | Tool calls are wrapped in a configurable timeout (default 60s, use `--timeout` to change) |
-| **Truncation** | Text responses exceeding the limit (default 50K chars, use `--max-text` to change) are truncated |
+| **Base64 detection** | Text responses that are entirely base64-encoded (1000+ chars) are also saved as images                                   |
+| **Timeouts**         | Tool calls are wrapped in a configurable timeout (default 60s, use `--timeout` to change)                                |
+| **Truncation**       | Text responses exceeding the limit (default 50K chars, use `--max-text` to change) are truncated                         |
 
 ## Architecture
 
@@ -270,12 +310,12 @@ Tool call responses are processed through the interceptor pipeline. All other pr
 
 ### Modules
 
-| Module | File | Responsibility |
-|--------|------|----------------|
-| **TargetManager** | `src/target-manager.ts` | Spawns the target MCP server, manages the MCP Client connection, forwards all MCP primitives (tools, resources, prompts, logging), captures stderr, tracks lifecycle |
-| **ResponseInterceptor** | `src/interceptor.ts` | Wraps tool calls with timeouts, extracts base64 images and audio to disk, truncates oversized text |
-| **REPLMode** | `src/repl.ts` | Interactive readline REPL with shorthand command parsing and script mode |
-| **ProxyMode** | `src/proxy.ts` | MCP Server that transparently forwards all MCP primitives to the target, with tool responses running through the interceptor |
+| Module                  | File                    | Responsibility                                                                                                                                                       |
+| ----------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **TargetManager**       | `src/target-manager.ts` | Spawns the target MCP server, manages the MCP Client connection, forwards all MCP primitives (tools, resources, prompts, logging), captures stderr, tracks lifecycle |
+| **ResponseInterceptor** | `src/interceptor.ts`    | Wraps tool calls with timeouts, extracts base64 images and audio to disk, truncates oversized text                                                                   |
+| **REPLMode**            | `src/repl.ts`           | Interactive readline REPL with shorthand command parsing and script mode                                                                                             |
+| **ProxyMode**           | `src/proxy.ts`          | MCP Server that transparently forwards all MCP primitives to the target, with tool responses running through the interceptor                                         |
 
 ## Development
 
