@@ -604,7 +604,7 @@ export async function startRepl(targetCommand: string[], opts: ReplOptions): Pro
         }
 
         const isErrorRes = res && typeof res === "object" && res.isError === true;
-        
+
         if (expectError && !isErrorRes) {
           console.error(pc.red(`✗ Expected an error but the command succeeded.`));
           await target.close();

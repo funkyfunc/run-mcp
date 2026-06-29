@@ -309,7 +309,7 @@ describe("script mode: variable extraction and error handling", () => {
     writeFileSync(
       scriptPath,
       `tools/call echo {"text": "first_value"}\ntools/call echo text=$LAST.content[0].text`,
-      "utf8"
+      "utf8",
     );
 
     const { stdout, exitCode } = await runCli(["-s", scriptPath, ...TARGET]);
@@ -331,11 +331,7 @@ describe("script mode: variable extraction and error handling", () => {
 
   it("exits with 0 when error is expected via @expect-error", async () => {
     const scriptPath = resolve(tmpdir(), `test-script-expect-error-${Date.now()}.txt`);
-    writeFileSync(
-      scriptPath,
-      `# @expect-error\ntools/call error_tool {}`,
-      "utf8"
-    );
+    writeFileSync(scriptPath, `# @expect-error\ntools/call error_tool {}`, "utf8");
 
     const { exitCode, stdout } = await runCli(["-s", scriptPath, ...TARGET]);
     unlinkSync(scriptPath);
@@ -349,7 +345,7 @@ describe("script mode: variable extraction and error handling", () => {
     writeFileSync(
       scriptPath,
       `# @expect-error\ntools/call echo {"text": "this succeeds but should fail"}`,
-      "utf8"
+      "utf8",
     );
 
     const { exitCode, stderr } = await runCli(["-s", scriptPath, ...TARGET]);

@@ -315,7 +315,7 @@ Tool call responses are processed through the interceptor pipeline. All other pr
 | **TargetManager**       | `src/target-manager.ts` | Spawns the target MCP server, manages the MCP Client connection, forwards all MCP primitives (tools, resources, prompts, logging), captures stderr, tracks lifecycle |
 | **ResponseInterceptor** | `src/interceptor.ts`    | Wraps tool calls with timeouts, extracts base64 images and audio to disk, truncates oversized text                                                                   |
 | **REPLMode**            | `src/repl.ts`           | Interactive readline REPL with shorthand command parsing and script mode                                                                                             |
-| **ProxyMode**           | `src/proxy.ts`          | MCP Server that transparently forwards all MCP primitives to the target, with tool responses running through the interceptor                                         |
+| **AgentServer**         | `src/server.ts`         | MCP Server that dynamically exposes primitives to agents and proxies target servers                                                  |
 
 ## Development
 

@@ -628,7 +628,8 @@ function resolveJsonPath(obj: any, path: string): any {
  * Supports $VAR, $VAR.prop, $VAR[0].prop, and $[0] (which defaults to $LAST[0]).
  */
 export function interpolateString(input: string, context: Record<string, any>): string {
-  const regex = /\$([a-zA-Z_][a-zA-Z0-9_]*|\[\d+\])?((?:\.[a-zA-Z0-9_]+|\[\d+\]|\["[^"]+"\]|\['[^']+'\])*)/g;
+  const regex =
+    /\$([a-zA-Z_][a-zA-Z0-9_]*|\[\d+\])?((?:\.[a-zA-Z0-9_]+|\[\d+\]|\["[^"]+"\]|\['[^']+'\])*)/g;
 
   return input.replace(regex, (match, root, path) => {
     let baseName = root;

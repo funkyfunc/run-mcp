@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import treeKill from "tree-kill";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -664,11 +665,13 @@ export class TargetManager extends EventEmitter {
   }
 
   /**
-   * Cleanly shut down the client connection and child process.
+   * Cleanly shut down the client connection and forcefully kill the child process tree.
    */
   async close(): Promise<void> {
     this._intentionalClose = true;
     this._clearStableTimer();
+
+    const pidToKill = this.childPid;
 
     if (this.client) {
       try {
@@ -686,6 +689,14 @@ export class TargetManager extends EventEmitter {
       }
       this.transport = null;
     }
+
+    // Forcefully clean up any orphaned grandchild processes
+    if (pidToKill) {
+      await new Promise<void>((resolve) => {
+        treeKill(pidToKill, "SIGKILL", () => resolve());
+      });
+    }
+
     this._connected = false;
     this.childPid = null;
   }

@@ -45,6 +45,7 @@
     "@modelcontextprotocol/sdk": "^1.12.1",
     "commander": "^13.1.0",
     "picocolors": "^1.1.1",
+    "tree-kill": "^1.2.2",
     "zod": "^3.24.3"
   },
   "devDependencies": {

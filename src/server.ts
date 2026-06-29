@@ -194,6 +194,39 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         })
         .catch(() => {});
     });
+
+    t.on("notification", (record: any) => {
+      mcpServer.server
+        .notification({
+          method: record.method,
+          params: record.params,
+        })
+        .catch(() => {});
+    });
+
+    t.on("sampling_request", async ({ request, respond, reject }) => {
+      try {
+        const result = await mcpServer.server.request(
+          { method: "sampling/createMessage", params: request },
+          z.any(),
+        );
+        respond(result);
+      } catch (err: any) {
+        reject(err);
+      }
+    });
+
+    t.on("elicitation_request", async ({ request, respond, reject }) => {
+      try {
+        const result = await mcpServer.server.request(
+          { method: "elicitation/create", params: request },
+          z.any(),
+        );
+        respond(result);
+      } catch (err: any) {
+        reject(err);
+      }
+    });
   }
 
   /** Take a snapshot of the current target's primitives. */
@@ -354,10 +387,22 @@ export async function startServer(opts: ServerOptions): Promise<void> {
     if (include.includes("tools")) {
       try {
         const { tools } = await target.listTools();
-        const displayTools = summary
+        let displayTools = summary
           ? tools.map((t) => ({ name: t.name, description: t.description }))
           : tools;
-        lines.push("", "--- Tools ---", JSON.stringify(displayTools, null, 2));
+        let jsonStr = JSON.stringify(displayTools, null, 2);
+        if (!summary && jsonStr.length > 20000) {
+          displayTools = tools.map((t) => ({ name: t.name, description: t.description }));
+          jsonStr = JSON.stringify(displayTools, null, 2);
+          lines.push(
+            "",
+            "--- Tools ---",
+            jsonStr,
+            "[Note: Full schemas omitted to protect context window. Use list_mcp_primitives with name='tool_name' to inspect schemas individually.]",
+          );
+        } else {
+          lines.push("", "--- Tools ---", jsonStr);
+        }
       } catch (err: any) {
         lines.push("", "--- Tools ---", `Error: ${err.message}`);
       }
@@ -366,14 +411,30 @@ export async function startServer(opts: ServerOptions): Promise<void> {
     if (include.includes("resources")) {
       try {
         const { resources } = await target.listResources();
-        const displayResources = summary
+        let displayResources = summary
           ? resources.map((r: any) => ({
               name: r.name,
               uri: r.uri,
               description: r.description,
             }))
           : resources;
-        lines.push("", "--- Resources ---", JSON.stringify(displayResources, null, 2));
+        let jsonStr = JSON.stringify(displayResources, null, 2);
+        if (!summary && jsonStr.length > 20000) {
+          displayResources = resources.map((r: any) => ({
+            name: r.name,
+            uri: r.uri,
+            description: r.description,
+          }));
+          jsonStr = JSON.stringify(displayResources, null, 2);
+          lines.push(
+            "",
+            "--- Resources ---",
+            jsonStr,
+            "[Note: Full schemas omitted to protect context window.]",
+          );
+        } else {
+          lines.push("", "--- Resources ---", jsonStr);
+        }
       } catch (err: any) {
         lines.push("", "--- Resources ---", `Error: ${err.message}`);
       }
