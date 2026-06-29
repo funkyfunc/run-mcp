@@ -22,6 +22,7 @@ import { TargetManager } from "./target-manager.js";
 
 /** All known REPL commands for typo suggestion and tab completion. */
 const KNOWN_COMMANDS = [
+  "menu",
   "explore",
   "interactive",
   "tools/list",
@@ -645,8 +646,8 @@ export async function startRepl(targetCommand: string[], opts: ReplOptions): Pro
     await target.close();
     process.exit(0);
   } else {
-    // Interactive mode: start the readline event loop
-    startReadlineLoop(target, interceptor);
+    // Interactive mode: start the main menu loop
+    mainMenuLoop(target, interceptor);
   }
 }
 
@@ -776,11 +777,16 @@ async function handleCommand(
       printShortHelp();
       return;
 
+    case "menu":
     case "explore":
     case "interactive":
-      await withSuspendedReadline(target, interceptor, async () => {
-        await cmdExplore(target, interceptor);
-      });
+      if (activeRl) {
+        globalPauseReadlineClose = true;
+        activeRl.close();
+        activeRl = null;
+        globalPauseReadlineClose = false;
+      }
+      mainMenuLoop(target, interceptor);
       return;
 
     case "tools/list":
@@ -2255,9 +2261,9 @@ async function pickInteractive(
   }
 }
 
-// ─── Explorer ─────────────────────────────────────────────────────────────────
+// ─── Interactive Menu Loop ──────────────────────────────────────────────────────
 
-async function cmdExplore(target: TargetManager, interceptor: ResponseInterceptor) {
+async function showMainMenu(target: TargetManager, interceptor: ResponseInterceptor): Promise<boolean> {
   const choices: { name: string; value: any; description: string }[] = [];
 
   const caps = target.getServerCapabilities() ?? {};
@@ -2305,29 +2311,34 @@ async function cmdExplore(target: TargetManager, interceptor: ResponseIntercepto
     }
   }
 
-  if (choices.length === 0) {
-    console.log(pc.yellow("No tools, resources, or prompts found."));
-    return;
-  }
+  // Add system commands
+  choices.push({
+    name: "⚙️  Check Server Status",
+    value: { type: "command", name: "status" },
+    description: "View connection status and server info",
+  });
+  choices.push({
+    name: "🔄 Reconnect Server",
+    value: { type: "command", name: "reconnect" },
+    description: "Restart the target MCP server",
+  });
+  choices.push({
+    name: "⌨️  Type a raw command",
+    value: { type: "raw" },
+    description: "Drop to the traditional REPL prompt (use 'menu' to return)",
+  });
+  choices.push({
+    name: "🚪 Exit",
+    value: { type: "command", name: "exit" },
+    description: "Close connection and exit",
+  });
 
-  // Non-TTY fallback: print a static numbered menu
-  if (!process.stdin.isTTY) {
-    console.log(pc.bold("\n  Server Capabilities\n"));
-    for (let i = 0; i < choices.length; i++) {
-      console.log(
-        `  ${pc.cyan(String(i + 1).padStart(2))}. ${choices[i].name}  ${pc.dim(choices[i].description)}`,
-      );
-    }
-    console.log();
-    console.log(
-      pc.dim("  Non-interactive mode — use specific commands instead (e.g., tools/call <name>)."),
-    );
-    return;
-  }
+  // Non-TTY fallback: shouldn't normally happen because mainMenuLoop handles isTTY
+  if (!process.stdin.isTTY) return false;
 
   try {
     const answer = (await search({
-      message: "Explore server capabilities:",
+      message: "Select an action (start typing to search):",
       source: async (term: string | undefined) => {
         if (!term) return choices;
         const lower = term.toLowerCase();
@@ -2344,10 +2355,49 @@ async function cmdExplore(target: TargetManager, interceptor: ResponseIntercepto
       await cmdResourcesRead(target, answer.uri);
     } else if (answer.type === "prompt") {
       await cmdPromptsGet(target, answer.name);
+    } else if (answer.type === "command") {
+      if (answer.name === "status") {
+        cmdStatus(target);
+      } else if (answer.name === "reconnect") {
+        await cmdReconnect(target);
+      } else if (answer.name === "exit") {
+        console.log(pc.dim("\nShutting down..."));
+        await target.close();
+        process.exit(0);
+      }
+    } else if (answer.type === "raw") {
+      return true; // Signal to enter raw prompt
     }
+    return false; // Remain in menu loop
   } catch (err: any) {
-    if (!isAbortError(err)) {
-      throw err;
+    if (isAbortError(err)) {
+      console.log(pc.dim("\nShutting down..."));
+      await target.close();
+      process.exit(0);
+    }
+    throw err;
+  }
+}
+
+async function mainMenuLoop(target: TargetManager, interceptor: ResponseInterceptor) {
+  if (isScriptMode || !process.stdin.isTTY) {
+    startReadlineLoop(target, interceptor);
+    return;
+  }
+
+  while (true) {
+    try {
+      const dropToRaw = await showMainMenu(target, interceptor);
+      if (dropToRaw) {
+        console.log(pc.dim("  Entering raw command mode. Type 'menu' to return."));
+        startReadlineLoop(target, interceptor);
+        break; // Exit the menu loop, readline takes over
+      }
+    } catch (err: any) {
+      console.error(pc.red(`Error in menu: ${err.message}`));
+      // Fallback to readline on fatal error
+      startReadlineLoop(target, interceptor);
+      break;
     }
   }
 }
