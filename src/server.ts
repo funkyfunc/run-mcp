@@ -1108,14 +1108,9 @@ export async function startServer(opts: ServerOptions): Promise<void> {
             }
             const elapsedMs = Date.now() - startMs;
 
-            // Append timing to text responses (only when metadata is NOT requested)
+            // We no longer append inline timing to text responses as it corrupts JSON outputs for LLMs.
+            // Timing is still available via include_metadata: true.
             const resultContent = (result as any).content;
-            if (!include_metadata && Array.isArray(resultContent) && resultContent.length > 0) {
-              const lastItem = resultContent[resultContent.length - 1];
-              if (lastItem.type === "text") {
-                lastItem.text += ` (${elapsedMs}ms)`;
-              }
-            }
 
             // Prepend metadata content item when requested
             if (include_metadata && Array.isArray(resultContent)) {

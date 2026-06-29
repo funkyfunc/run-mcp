@@ -191,7 +191,7 @@ describe("server: call_mcp_primitive — tools", () => {
       name: "call_mcp_primitive",
       arguments: { type: "tool", name: "echo", arguments: { text: "hello from primitive" } },
     });
-    expect(getText(result)).toMatch(/^hello from primitive \(\d+ms\)$/);
+    expect(getText(result)).toBe("hello from primitive");
   }, 15_000);
 
   it("intercepts screenshots", async () => {
@@ -248,7 +248,7 @@ describe("server: call_mcp_primitive — auto-connect", () => {
         },
       },
     });
-    expect(getText(result)).toMatch(/^auto-connected \(\d+ms\)$/);
+    expect(getText(result)).toBe("auto-connected");
   }, 15_000);
 
   it("disconnect_after tears down after call", async () => {
@@ -268,7 +268,7 @@ describe("server: call_mcp_primitive — auto-connect", () => {
         disconnect_after: true,
       },
     });
-    expect(getText(result)).toMatch(/^one-shot \(\d+ms\)$/);
+    expect(getText(result)).toBe("one-shot");
 
     // Verify disconnected — status should show not connected
     const status = await c.callTool({ name: "mcp_server_status", arguments: {} });
@@ -284,7 +284,7 @@ describe("server: call_mcp_primitive — auto-connect", () => {
       name: "call_mcp_primitive",
       arguments: { type: "tool", name: "echo", arguments: { text: "reuse" } },
     });
-    expect(getText(result)).toMatch(/^reuse \(\d+ms\)$/);
+    expect(getText(result)).toBe("reuse");
   }, 15_000);
 });
 
@@ -559,17 +559,6 @@ describe("server: call_mcp_primitive — schema validation", () => {
     expect(text).toContain("name");
   }, 15_000);
 
-  it("appends timing to successful tool call responses", async () => {
-    const c = await startRunMcpServer();
-    await connectToMockServer(c);
-
-    const result = await c.callTool({
-      name: "call_mcp_primitive",
-      arguments: { type: "tool", name: "echo", arguments: { text: "timing test" } },
-    });
-    const text = getText(result);
-    expect(text).toMatch(/timing test \(\d+ms\)/);
-  }, 15_000);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -649,8 +638,8 @@ describe("server: call_mcp_primitive — include_metadata", () => {
 
     const content = (result as any).content;
     expect(content.length).toBe(1);
-    // Should have inline timing instead of metadata
-    expect(content[0].text).toMatch(/no meta \(\d+ms\)/);
+    // Should be exact text since inline timing was removed
+    expect(content[0].text).toBe("no meta");
   }, 15_000);
 });
 
@@ -692,7 +681,7 @@ describe("server: agent experience improvements", () => {
         arguments: { text: "cached reconnect test" },
       },
     });
-    expect(getText(result)).toMatch(/cached reconnect test \(\d+ms\)/);
+    expect(getText(result)).toBe("cached reconnect test");
   }, 25_000);
 
   it("streams target stderr as logging notifications", async () => {
