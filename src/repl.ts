@@ -15,6 +15,7 @@ import {
   resolveAlias,
   scaffoldArgs,
   suggestCommand,
+  interpolateString,
 } from "./parsing.js";
 import type { ServerNotification } from "./target-manager.js";
 import { TargetManager } from "./target-manager.js";
@@ -577,28 +578,67 @@ export async function startRepl(targetCommand: string[], opts: ReplOptions): Pro
   if (isScriptMode) {
     // Script mode: read all lines, then execute sequentially
     const lines = await readScriptLines(opts.script!);
+    const scriptContext: Record<string, any> = {};
+    let expectError = false;
 
     for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
+      let trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) {
+        if (trimmed === "# @expect-error") {
+          expectError = true;
+        }
+        continue;
+      }
+
+      if (trimmed.endsWith("# @expect-error")) {
+        expectError = true;
+        trimmed = trimmed.replace(/\s*#\s*@expect-error$/, "");
+      }
+
+      const interpolated = interpolateString(trimmed, scriptContext);
 
       try {
-        await handleCommand(trimmed, target, interceptor);
-      } catch (err: any) {
-        if (err?.message?.includes("-32601") || err?.code === -32601) {
-          let msg = "Server does not support this feature (Method not found)";
-          if (trimmed.startsWith("prompts/")) msg = "This server does not have any prompts.";
-          else if (trimmed.startsWith("resources/"))
-            msg = "This server does not have any resources.";
-          else if (trimmed.startsWith("tools/")) msg = "This server does not have any tools.";
-          console.log(pc.yellow(`  ${msg}`));
-        } else {
-          console.error(pc.red(`✗ Error: ${err.message}`));
+        const res = await handleCommand(interpolated, target, interceptor);
+        if (res !== undefined) {
+          scriptContext.LAST = res;
         }
-        console.log(pc.dim("\nShutting down..."));
-        await target.close();
-        process.exit(1);
+
+        const isErrorRes = res && typeof res === "object" && res.isError === true;
+        
+        if (expectError && !isErrorRes) {
+          console.error(pc.red(`✗ Expected an error but the command succeeded.`));
+          await target.close();
+          process.exit(1);
+        }
+        if (!expectError && isErrorRes) {
+          console.error(pc.red(`✗ Command failed unexpectedly.`));
+          await target.close();
+          process.exit(1);
+        }
+        if (expectError && isErrorRes) {
+          console.log(pc.yellow(`  ✓ Expected error caught: tool returned isError: true`));
+        }
+      } catch (err: any) {
+        if (expectError) {
+          console.log(pc.yellow(`  ✓ Expected error caught: ${err.message}`));
+        } else {
+          if (err?.message?.includes("-32601") || err?.code === -32601) {
+            let msg = "Server does not support this feature (Method not found)";
+            if (trimmed.startsWith("prompts/")) msg = "This server does not have any prompts.";
+            else if (trimmed.startsWith("resources/"))
+              msg = "This server does not have any resources.";
+            else if (trimmed.startsWith("tools/")) msg = "This server does not have any tools.";
+            console.log(pc.yellow(`  ${msg}`));
+          } else {
+            console.error(pc.red(`✗ Error: ${err.message}`));
+          }
+          console.log(pc.dim("\nShutting down..."));
+          await target.close();
+          process.exit(1);
+        }
       }
+
+      expectError = false;
     }
 
     console.log(pc.dim("\nShutting down..."));
@@ -714,7 +754,7 @@ async function handleCommand(
   input: string,
   target: TargetManager,
   interceptor: ResponseInterceptor,
-): Promise<void> {
+): Promise<any> {
   // Expand aliases before parsing
   const expanded = resolveAlias(input);
   const effective = expanded ?? input;
@@ -752,8 +792,7 @@ async function handleCommand(
       return;
 
     case "tools/call":
-      await cmdToolsCall(target, interceptor, rest);
-      return;
+      return await cmdToolsCall(target, interceptor, rest);
 
     case "tools/scaffold":
       await cmdToolsScaffold(target, rest);
@@ -768,8 +807,7 @@ async function handleCommand(
       return;
 
     case "resources/read":
-      await cmdResourcesRead(target, rest, interceptor);
-      return;
+      return await cmdResourcesRead(target, rest, interceptor);
 
     case "resources/templates":
       await cmdResourcesTemplates(target);
@@ -780,8 +818,7 @@ async function handleCommand(
       return;
 
     case "prompts/get":
-      await cmdPromptsGet(target, rest, interceptor);
-      return;
+      return await cmdPromptsGet(target, rest, interceptor);
 
     case "timing":
       cmdTiming();
@@ -831,7 +868,7 @@ async function handleCommand(
     case "last":
       if (lastCommand) {
         console.log(pc.dim(`  Re-running: ${lastCommand}`));
-        await handleCommand(lastCommand, target, interceptor);
+        return await handleCommand(lastCommand, target, interceptor);
       } else {
         console.log(pc.yellow("No previous command to re-run."));
       }
@@ -852,8 +889,7 @@ async function handleCommand(
     default: {
       // If it matches a tool name, execute it directly as tools/call
       if (cachedToolNames.includes(cmd)) {
-        await cmdToolsCall(target, interceptor, input);
-        return;
+        return await cmdToolsCall(target, interceptor, input);
       }
 
       // Suggest the closest known command if it's a likely typo
@@ -868,7 +904,7 @@ async function handleCommand(
             });
             if (runIt) {
               const rebuiltCommand = rest ? `${suggestion} ${rest}` : suggestion;
-              await handleCommand(rebuiltCommand, target, interceptor);
+              return await handleCommand(rebuiltCommand, target, interceptor);
             }
           });
         } catch (err: any) {
@@ -971,7 +1007,7 @@ async function cmdToolsCall(
   target: TargetManager,
   interceptor: ResponseInterceptor,
   rest: string,
-): Promise<void> {
+): Promise<any> {
   // Check for --clear flag (ignore remembered interactive defaults)
   const clearPrevious = /\s--clear(\s|$)/.test(rest) || rest === "--clear";
   const cleanedRest = clearPrevious ? rest.replace(/\s*--clear/, "").trim() : rest;
@@ -1124,6 +1160,7 @@ async function cmdToolsCall(
   }
 
   console.log();
+  return result;
 }
 
 // ─── Interactive Argument Prompting ─────────────────────────────────────────
@@ -1456,7 +1493,7 @@ async function cmdResourcesRead(
   target: TargetManager,
   rest: string,
   interceptor?: ResponseInterceptor,
-): Promise<void> {
+): Promise<any> {
   const uri = rest.trim();
 
   // Change 5: Inline help hint
@@ -1518,6 +1555,7 @@ async function cmdResourcesRead(
   }
 
   console.log();
+  return result;
 }
 
 async function cmdResourcesTemplates(target: TargetManager): Promise<void> {
@@ -1576,7 +1614,7 @@ async function cmdPromptsGet(
   target: TargetManager,
   rest: string,
   interceptor?: ResponseInterceptor,
-): Promise<void> {
+): Promise<any> {
   const { toolName: promptName, jsonArgs } = parseCallArgs(rest);
 
   // Change 5: Inline help hint
@@ -1652,6 +1690,7 @@ async function cmdPromptsGet(
   }
 
   console.log();
+  return result;
 }
 
 // ─── Ping ───────────────────────────────────────────────────────────────────

@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { writeFileSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
@@ -299,4 +301,61 @@ describe("headless: persistent sessions", () => {
     const { exitCode: code3 } = await runCli(["close-session", "test-session-1"]);
     expect(code3).toBe(0);
   }, 30_000);
+});
+
+describe("script mode: variable extraction and error handling", () => {
+  it("extracts variables using $LAST", async () => {
+    const scriptPath = resolve(tmpdir(), `test-script-${Date.now()}.txt`);
+    writeFileSync(
+      scriptPath,
+      `tools/call echo {"text": "first_value"}\ntools/call echo text=$LAST.content[0].text`,
+      "utf8"
+    );
+
+    const { stdout, exitCode } = await runCli(["-s", scriptPath, ...TARGET]);
+    unlinkSync(scriptPath);
+
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("first_value");
+  });
+
+  it("exits with 1 when unexpected error occurs", async () => {
+    const scriptPath = resolve(tmpdir(), `test-script-error-${Date.now()}.txt`);
+    writeFileSync(scriptPath, `tools/call error_tool {}`, "utf8");
+
+    const { exitCode } = await runCli(["-s", scriptPath, ...TARGET]);
+    unlinkSync(scriptPath);
+
+    expect(exitCode).toBe(1);
+  });
+
+  it("exits with 0 when error is expected via @expect-error", async () => {
+    const scriptPath = resolve(tmpdir(), `test-script-expect-error-${Date.now()}.txt`);
+    writeFileSync(
+      scriptPath,
+      `# @expect-error\ntools/call error_tool {}`,
+      "utf8"
+    );
+
+    const { exitCode, stdout } = await runCli(["-s", scriptPath, ...TARGET]);
+    unlinkSync(scriptPath);
+
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("Expected error caught");
+  });
+
+  it("exits with 1 when expected error succeeds", async () => {
+    const scriptPath = resolve(tmpdir(), `test-script-expect-fail-${Date.now()}.txt`);
+    writeFileSync(
+      scriptPath,
+      `# @expect-error\ntools/call echo {"text": "this succeeds but should fail"}`,
+      "utf8"
+    );
+
+    const { exitCode, stderr } = await runCli(["-s", scriptPath, ...TARGET]);
+    unlinkSync(scriptPath);
+
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("Expected an error but the command succeeded");
+  });
 });

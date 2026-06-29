@@ -603,3 +603,59 @@ export function parseHttpieArgs(argsString: string): Record<string, unknown> {
 
   return result;
 }
+
+/**
+ * Resolves a simple dot or bracket notation path against an object.
+ */
+function resolveJsonPath(obj: any, path: string): any {
+  const parts = path
+    .replace(/\["([^"]+)"\]/g, ".$1")
+    .replace(/\['([^']+)'\]/g, ".$1")
+    .replace(/\[(\d+)\]/g, ".$1")
+    .split(".")
+    .filter(Boolean);
+
+  let current = obj;
+  for (const part of parts) {
+    if (current === undefined || current === null) return undefined;
+    current = current[part];
+  }
+  return current;
+}
+
+/**
+ * Interpolates variables in a string based on the given context.
+ * Supports $VAR, $VAR.prop, $VAR[0].prop, and $[0] (which defaults to $LAST[0]).
+ */
+export function interpolateString(input: string, context: Record<string, any>): string {
+  const regex = /\$([a-zA-Z_][a-zA-Z0-9_]*|\[\d+\])?((?:\.[a-zA-Z0-9_]+|\[\d+\]|\["[^"]+"\]|\['[^']+'\])*)/g;
+
+  return input.replace(regex, (match, root, path) => {
+    let baseName = root;
+    let fullPath = path || "";
+
+    if (baseName && baseName.startsWith("[")) {
+      fullPath = baseName + fullPath;
+      baseName = "LAST";
+    }
+
+    if (!baseName) {
+      baseName = "LAST";
+    }
+
+    if (!(baseName in context)) {
+      return match;
+    }
+
+    const value = resolveJsonPath(context[baseName], fullPath);
+
+    if (value === undefined) {
+      return match;
+    }
+
+    if (typeof value === "object") {
+      return JSON.stringify(value);
+    }
+    return String(value);
+  });
+}

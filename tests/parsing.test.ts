@@ -737,3 +737,51 @@ describe("parseHttpieArgs", () => {
     });
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// interpolateString
+// ═══════════════════════════════════════════════════════════════════════════
+
+import { interpolateString } from "../src/parsing.js";
+
+describe("interpolateString", () => {
+  const context = {
+    LAST: {
+      id: 123,
+      content: [{ text: "hello" }, { text: "world" }],
+    },
+    FOO: {
+      bar: "baz"
+    }
+  };
+
+  it("resolves $LAST.id", () => {
+    expect(interpolateString("tools/call test id=$LAST.id", context))
+      .toBe("tools/call test id=123");
+  });
+
+  it("resolves $LAST.content[0].text", () => {
+    expect(interpolateString("echo $LAST.content[0].text", context))
+      .toBe("echo hello");
+  });
+
+  it("resolves $[0].text as alias for $LAST[0].text", () => {
+    const ctx = { LAST: [{ text: "alias" }] };
+    expect(interpolateString("echo $[0].text", ctx))
+      .toBe("echo alias");
+  });
+
+  it("resolves multiple variables in one string", () => {
+    expect(interpolateString("echo $LAST.id $FOO.bar", context))
+      .toBe("echo 123 baz");
+  });
+
+  it("returns original match if path is invalid or undefined", () => {
+    expect(interpolateString("echo $LAST.invalid", context)).toBe("echo $LAST.invalid");
+    expect(interpolateString("echo $UNKNOWN", context)).toBe("echo $UNKNOWN");
+  });
+
+  it("stringifies objects to JSON", () => {
+    expect(interpolateString("echo $LAST.content[0]", context)).toBe('echo {"text":"hello"}');
+  });
+});

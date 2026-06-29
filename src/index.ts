@@ -575,11 +575,11 @@ program
     `
 Examples:
   $ run-mcp                                       # Test harness (agent mode)
-  $ run-mcp node my-server.js                     # Interactive testing (human REPL mode)
-  $ run-mcp node my-server.js -s test.txt         # Run a script in REPL mode
-  $ run-mcp npx -y some-mcp-server                # Test an npx server
+  $ run-mcp -- node my-server.js                  # Interactive testing (human REPL mode)
+  $ run-mcp -s test.txt -- node my-server.js      # Run a script in REPL mode
+  $ run-mcp -- npx -y some-mcp-server             # Test an npx server
   $ run-mcp --out-dir ./test-output               # Agent mode with options
-  $ run-mcp --out-dir ./screenshots node srv.js   # REPL mode with options
+  $ run-mcp --out-dir ./screenshots -- node srv.js # REPL mode with options
 
 Headless Commands (pipe-friendly, JSON output):
   $ run-mcp call echo '{"text":"hi"}' -- node my-server.js
