@@ -5,7 +5,7 @@ A smart proxy, interactive REPL, and live test harness for [Model Context Protoc
 `run-mcp` operates in two modes:
 
 1. **Agent MCP Server** (`run-mcp`) — An MCP server that exposes tools (`connect_to_mcp`, `call_mcp_tool`) so AI agents can dynamically connect to and test local MCP projects without hardcoding them in configuration files. This is the **default mode** when you run `npx -y run-mcp`.
-2. **Interactive REPL** (`run-mcp repl`) — A headless CLI for human developers to manually test and explore MCP servers using short, memorable commands (`tools/call`, `status`, etc.).
+2. **Interactive REPL** (Interactive mode) — A headless CLI for human developers to manually test and explore MCP servers using short, memorable commands (`tools/call`, `status`, etc.).
 
 ### Interception Rules (Agent Server & REPL)
 
@@ -234,7 +234,7 @@ tools/call screenshot {"save_path": "/tmp/test.png"}
 ```
 
 ```bash
-run-mcp repl node my-server.js --script commands.txt
+run-mcp -s commands.txt -- node my-server.js
 ```
 
 - Lines starting with `#` are treated as comments
@@ -330,7 +330,7 @@ npm run build
 npm run dev
 
 # Run directly
-node dist/index.js repl <target_command...>
+node dist/index.js -- <target_command...>
 ```
 
 ## License
