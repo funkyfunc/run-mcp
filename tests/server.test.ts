@@ -558,7 +558,6 @@ describe("server: call_mcp_primitive — schema validation", () => {
     expect(text).toContain('Tool "greet" requires:');
     expect(text).toContain("name");
   }, 15_000);
-
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -1167,6 +1167,31 @@ export async function startServer(opts: ServerOptions): Promise<void> {
           }
 
           case "prompt": {
+            // Best-effort pre-call validation for prompts
+            try {
+              const { prompts } = await target!.listPrompts();
+              const promptNames = prompts.map((p: any) => p.name);
+              const matchedPrompt = prompts.find((p: any) => p.name === name);
+
+              if (!matchedPrompt) {
+                const suggestion = suggestCommand(name, promptNames);
+                const hint = suggestion ? ` Did you mean "${suggestion}"?` : "";
+                return {
+                  content: [
+                    {
+                      type: "text" as const,
+                      text:
+                        `Prompt "${name}" not found.${hint}\n` +
+                        `Available prompts: ${promptNames.join(", ")}`,
+                    },
+                  ],
+                  isError: true,
+                };
+              }
+            } catch {
+              // Validation is best-effort
+            }
+
             const startMs = Date.now();
             const promptResult = (await interceptor.getPrompt(
               target!,

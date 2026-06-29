@@ -1066,23 +1066,36 @@ async function cmdToolsCall(
     // Change 4: Check for missing required args and show scaffold
     const { tools } = await target.listTools();
     const tool = tools.find((t) => t.name === toolName);
-    if (tool) {
-      const schema = tool.inputSchema as Record<string, unknown>;
-      const required = (schema.required as string[]) ?? [];
-      const missing = required.filter((r) => !(r in args));
 
-      if (missing.length > 0) {
-        console.log(pc.yellow(`\n  Missing required arguments: ${missing.join(", ")}`));
-        console.log();
-        const scaffolded = scaffoldArgs(schema);
-        console.log(pc.dim("  Try:"));
-        console.log(`    tools/call ${toolName} ${scaffolded}`);
-        console.log();
-        console.log(pc.dim("  Or run without args for interactive mode:"));
-        console.log(`    tools/call ${toolName}`);
-        console.log();
-        return;
+    if (!tool) {
+      console.log(pc.red(`\n  ✗ Tool "${toolName}" not found.`));
+      const toolNames = tools.map((t) => t.name);
+      const suggestion = suggestCommand(toolName, toolNames);
+      if (suggestion) {
+        console.log(pc.yellow(`  💡 Did you mean "${suggestion}"?`));
+      } else {
+        const preview = toolNames.slice(0, 6);
+        const more = toolNames.length > 6 ? `, ... (${toolNames.length} total)` : "";
+        console.log(pc.dim(`  Available tools: ${preview.join(", ")}${more}`));
       }
+      return { isError: true, content: [{ type: "text", text: `Tool not found: ${toolName}` }] };
+    }
+
+    const schema = tool.inputSchema as Record<string, unknown>;
+    const required = (schema.required as string[]) ?? [];
+    const missing = required.filter((r) => !(r in args));
+
+    if (missing.length > 0) {
+      console.log(pc.yellow(`\n  Missing required arguments: ${missing.join(", ")}`));
+      console.log();
+      const scaffolded = scaffoldArgs(schema);
+      console.log(pc.dim("  Try:"));
+      console.log(`    tools/call ${toolName} ${scaffolded}`);
+      console.log();
+      console.log(pc.dim("  Or run without args for interactive mode:"));
+      console.log(`    tools/call ${toolName}`);
+      console.log();
+      return;
     }
   } else {
     // Interactive tool calling — no JSON provided
@@ -1152,11 +1165,28 @@ async function cmdToolsCall(
   }
 
   if (isError) {
-    console.log(
-      pc.yellow(
-        `  💡 Tip: Check the tool arguments via 'tools/describe ${toolName}' \n          or view the raw server stderr above.`,
-      ),
-    );
+    const errText = Array.isArray(content)
+      ? content
+          .map((c) => (c as any).text || "")
+          .join(" ")
+          .toLowerCase()
+      : typeof content === "object"
+        ? ((content as any).text || "").toLowerCase()
+        : "";
+
+    if (
+      errText.includes("argument") ||
+      errText.includes("validation") ||
+      errText.includes("schema") ||
+      errText.includes("missing") ||
+      errText.includes("invalid")
+    ) {
+      console.log(
+        pc.yellow(
+          `  💡 Tip: Check the tool arguments via 'tools/describe ${toolName}' \n          or view the raw server stderr above.`,
+        ),
+      );
+    }
   }
 
   console.log();
@@ -1661,6 +1691,19 @@ async function cmdPromptsGet(
     }
   }
 
+  const { prompts } = await target.listPrompts();
+  const prompt = prompts.find((p) => p.name === promptName);
+  if (!prompt) {
+    console.log(pc.red(`\n  ✗ Prompt "${promptName}" not found.`));
+    const promptNames = prompts.map((p) => p.name);
+    const suggestion = suggestCommand(promptName, promptNames);
+    if (suggestion) {
+      console.log(pc.yellow(`  💡 Did you mean "${suggestion}"?`));
+    } else {
+      console.log(pc.dim(`  Available prompts: ${promptNames.join(", ")}`));
+    }
+    return { isError: true, content: [{ type: "text", text: `Prompt not found: ${promptName}` }] };
+  }
   const startTime = Date.now();
   const result = await target.getPrompt({ name: promptName, arguments: promptArgs });
   const elapsed = Date.now() - startTime;
