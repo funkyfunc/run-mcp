@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { exec } from "node:child_process";
 import type { TargetManager } from "./target-manager.js";
 
 /** Matches a large base64 blob in text content (1000+ chars of base64 alphabet). */
@@ -17,6 +18,7 @@ export interface InterceptorOptions {
   defaultTimeoutMs?: number;
   maxTextLength?: number;
   mediaThresholdKb?: number;
+  openMedia?: boolean;
 }
 
 /**
@@ -53,6 +55,7 @@ export class ResponseInterceptor {
   private readonly defaultTimeoutMs: number;
   private readonly maxTextLength: number;
   private readonly mediaThresholdKb: number;
+  private readonly openMedia: boolean;
   private fileCounter = 0;
 
   constructor(opts: InterceptorOptions = {}) {
@@ -60,6 +63,7 @@ export class ResponseInterceptor {
     this.defaultTimeoutMs = opts.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.maxTextLength = opts.maxTextLength ?? DEFAULT_MAX_TEXT_LENGTH;
     this.mediaThresholdKb = opts.mediaThresholdKb ?? 0;
+    this.openMedia = opts.openMedia ?? false;
   }
 
   /**
@@ -373,6 +377,13 @@ export class ResponseInterceptor {
 
     const buffer = Buffer.from(base64Data, "base64");
     await writeFile(filepath, buffer);
+
+    if (this.openMedia) {
+      const isMac = process.platform === "darwin";
+      const isWin = process.platform === "win32";
+      const cmd = isMac ? "open" : isWin ? "start" : "xdg-open";
+      exec(`${cmd} "${filepath}"`, () => {});
+    }
 
     const sizeKB = (buffer.length / 1024).toFixed(1);
     const label = mediaType === "audio" ? "Audio" : "Image";

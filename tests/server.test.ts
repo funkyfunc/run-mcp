@@ -80,7 +80,7 @@ function getText(result: any): string {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("server: tool discovery", () => {
-  it("exposes exactly 7 consolidated tools", async () => {
+  it("exposes exactly 9 consolidated tools", async () => {
     const c = await startRunMcpServer();
     const result = await c.listTools();
     const names = result.tools.map((t) => t.name);
@@ -92,7 +92,9 @@ describe("server: tool discovery", () => {
     expect(names).toContain("list_mcp_primitives");
     expect(names).toContain("get_mcp_server_stderr");
     expect(names).toContain("list_available_mcp_servers");
-    expect(names).toHaveLength(7);
+    expect(names).toContain("validate_mcp_server");
+    expect(names).toContain("search_all_local_mcp_servers");
+    expect(names).toHaveLength(9);
   }, 15_000);
 
   it("tools have descriptions", async () => {
@@ -779,5 +781,84 @@ describe("server: advanced features and protocol compliance", () => {
 
     const text = getText(result);
     expect(text).toContain("(truncated, 100 chars total)");
+  }, 20_000);
+
+  it("normalizes 'args' to 'arguments' in call_mcp_primitive", async () => {
+    const c = await startRunMcpServer();
+    await connectToMockServer(c);
+
+    const result = await c.callTool({
+      name: "call_mcp_primitive",
+      arguments: {
+        type: "tool",
+        name: "echo",
+        args: { text: "args normalization test" },
+      },
+    });
+
+    const text = getText(result);
+    expect(text).toBe("args normalization test");
+  }, 20_000);
+
+  it("returns structured meta field in call_mcp_primitive output when include_metadata is true", async () => {
+    const c = await startRunMcpServer();
+    await connectToMockServer(c);
+
+    const result = await c.callTool({
+      name: "call_mcp_primitive",
+      arguments: {
+        type: "tool",
+        name: "echo",
+        arguments: { text: "meta test" },
+        include_metadata: true,
+      },
+    });
+
+    expect(result.meta).toBeDefined();
+    expect((result.meta as any).latency_ms).toBeTypeOf("number");
+    expect((result.meta as any).content_items).toBe(1);
+  }, 20_000);
+
+  it("validates an MCP server successfully with validate_mcp_server", async () => {
+    const c = await startRunMcpServer();
+    const result = await c.callTool({
+      name: "validate_mcp_server",
+      arguments: {
+        command: "node",
+        args: ["--import", "tsx", "tests/fixtures/mock-server.ts"],
+      },
+    });
+
+    const text = getText(result);
+    expect(text).toContain("Validation Result: SUCCESS");
+    expect(text).toContain("mock-mcp-server");
+    expect(text).toContain("Tools Count: 9");
+  }, 25_000);
+
+  it("fails validation gracefully for invalid server command with validate_mcp_server", async () => {
+    const c = await startRunMcpServer();
+    const result = await c.callTool({
+      name: "validate_mcp_server",
+      arguments: {
+        command: "nonexistent-command-xyz",
+      },
+    });
+
+    const text = getText(result);
+    expect(text).toContain("Validation Result: FAILED");
+  }, 20_000);
+
+  it("executes search_all_local_mcp_servers cleanly", async () => {
+    const c = await startRunMcpServer();
+    const result = await c.callTool({
+      name: "search_all_local_mcp_servers",
+      arguments: {
+        query: "echo",
+        type: ["tools"],
+      },
+    });
+
+    const text = getText(result);
+    expect(text).toBeTypeOf("string");
   }, 20_000);
 });

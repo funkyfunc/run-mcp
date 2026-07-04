@@ -20,13 +20,14 @@ import { ResponseInterceptor } from "./interceptor.js";
  * Validate that a target command was provided, or exit with usage help.
  */
 function requireTargetCommand(targetCommand: string[], subcommandUsage: string): string[] {
-  if (!activeTargetCommand) {
+  const target = activeTargetCommand ?? targetCommand;
+  if (!target || target.length === 0) {
     process.stderr.write(`Error: Target server command must be separated by '--'.\n`);
     process.stderr.write(`This avoids option parsing conflicts.\n\n`);
     process.stderr.write(`Usage: ${subcommandUsage}\n`);
-    process.exit(2);
+    process.exit(64);
   }
-  return activeTargetCommand;
+  return target;
 }
 
 const SESSION_DIR = join(tmpdir(), "run-mcp", "sessions");
@@ -108,7 +109,7 @@ async function handleHeadlessSession(
       process.stderr.write(`Error: Session "${sessionName}" is not running.\n`);
       process.stderr.write(`Please provide a target command after '--' to start it.\n\n`);
       process.stderr.write(`Usage: ${subcommandUsage}\n`);
-      process.exit(2);
+      process.exit(64);
     }
 
     const target = activeTargetCommand;
@@ -441,7 +442,7 @@ program
     const targetCmd = activeTargetCommand ?? targetCommand;
     if (!targetCmd || targetCmd.length === 0) {
       process.stderr.write("Error: No target command provided for daemon.\n");
-      process.exit(1);
+      process.exit(64);
     }
 
     const server = createServer();
@@ -570,6 +571,11 @@ program
   )
   .option("--mcp", "Force start Agent Server mode even if run interactively without arguments")
   .option("-s, --script <file>", "Read commands from a file instead of stdin (REPL Mode only)")
+  .option("--color <mode>", "Color output mode: always, never, auto (default: auto)")
+  .option(
+    "--open-media",
+    "Automatically open intercepted images and audio files using the host OS viewer",
+  )
   .addHelpText(
     "after",
     `
@@ -607,6 +613,8 @@ Agent Mode Tools:
   disconnect_from_mcp  → Tear down and reconnect after changes
   mcp_server_status    → Check connection status
   get_mcp_server_stderr → View target server stderr output
+  validate_mcp_server  → Validate an MCP server command and collect diagnostics
+  search_all_local_mcp_servers → Scan and search all local MCP servers for a query
 
 REPL Mode Commands (once connected):
   tools/list                          List all available tools
@@ -644,21 +652,10 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
         maxText?: string;
         mediaThreshold?: string;
         mcp?: boolean;
+        openMedia?: boolean;
       },
     ) => {
-      // If targetCommand has items but activeTargetCommand is undefined, they forgot '--'
-      if (targetCommand && targetCommand.length > 0 && !activeTargetCommand) {
-        process.stderr.write(
-          "Error: Target server command must be separated by '--'.\n" +
-            "This avoids argument parsing ambiguity.\n\n" +
-            "Example:\n" +
-            "  run-mcp -- node my-server.js\n" +
-            "  run-mcp -s script.txt -- node my-server.js\n",
-        );
-        process.exit(1);
-      }
-
-      const target = activeTargetCommand ?? [];
+      const target = activeTargetCommand ?? targetCommand ?? [];
 
       // If we have a target command, start the REPL mode
       if (target && target.length > 0) {
@@ -668,6 +665,7 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
           mediaThresholdKb: opts.mediaThreshold
             ? Number.parseInt(opts.mediaThreshold, 10)
             : undefined,
+          openMedia: opts.openMedia,
         });
       } else {
         // No target command provided
@@ -702,6 +700,7 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
             mediaThresholdKb: opts.mediaThreshold
               ? Number.parseInt(opts.mediaThreshold, 10)
               : undefined,
+            openMedia: opts.openMedia,
           });
         }
       }

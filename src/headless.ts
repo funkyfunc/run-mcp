@@ -81,18 +81,19 @@ export async function runHeadless(
     const msg = err.message ?? String(err);
 
     // Detect connection errors and provide actionable messages
+    let exitCode: number;
     if (msg.includes("ENOENT") || msg.includes("spawn")) {
       process.stderr.write(
         `Error: command "${command}" not found. Check that it is installed and in your PATH.\n`,
       );
-    } else if (msg.includes("timed out")) {
-      process.stderr.write(`Error: ${msg}\n`);
+      exitCode = 66; // EX_NOINPUT
     } else {
       process.stderr.write(`Error: ${msg}\n`);
+      exitCode = 69; // EX_UNAVAILABLE
     }
 
     await target.close().catch(() => {});
-    process.exit(1);
+    process.exit(exitCode);
   }
 }
 
@@ -119,7 +120,7 @@ export async function executeOperation(
           } catch (err: any) {
             process.stderr.write(`Error: Invalid JSON arguments: ${err.message}\n`);
             process.stderr.write(`  Received: ${operation.args}\n`);
-            process.exit(2);
+            process.exit(65);
           }
         } else {
           parsedArgs = parseHttpieArgs(trimmed);
@@ -177,7 +178,7 @@ export async function executeOperation(
         process.stderr.write(
           `Error: Tool "${operation.tool}" not found.\n` + `Available tools: ${available}\n`,
         );
-        process.exit(1);
+        process.exit(64);
       }
       return { result: tool, hasError: false };
     }
@@ -192,7 +193,7 @@ export async function executeOperation(
           } catch (err: any) {
             process.stderr.write(`Error: Invalid JSON arguments: ${err.message}\n`);
             process.stderr.write(`  Received: ${operation.args}\n`);
-            process.exit(2);
+            process.exit(65);
           }
         } else {
           parsedArgs = parseHttpieArgs(trimmed) as Record<string, string>;

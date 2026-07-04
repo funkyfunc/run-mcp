@@ -4,7 +4,7 @@
  * Extracted into a separate module for testability.
  */
 
-import pc from "picocolors";
+import { colors as pc } from "./colors.js";
 
 /**
  * Split input into a command name and the rest of the arguments.

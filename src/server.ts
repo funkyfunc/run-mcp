@@ -957,6 +957,10 @@ export async function startServer(opts: ServerOptions): Promise<void> {
           .record(z.unknown())
           .optional()
           .describe("Arguments for the tool or prompt (not used for resources)"),
+        args: z
+          .record(z.unknown())
+          .optional()
+          .describe("Arguments for the tool or prompt (alias for 'arguments')"),
 
         // Auto-connect params (only needed if not already connected)
         auto_connect: z
@@ -1001,12 +1005,14 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       type: primitiveType,
       name,
       arguments: callArgs,
+      args: callArgsAlias,
       auto_connect,
       disconnect_after,
       timeout_ms,
       include_metadata,
       max_text_length,
     }) => {
+      const finalArgs = callArgs ?? callArgsAlias;
       // Ensure connection
       try {
         const connectError = await ensureConnected(
@@ -1064,7 +1070,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
               // Check required properties
               const schema = matchedTool.inputSchema as any;
               const requiredProps: string[] = schema?.required ?? [];
-              const providedKeys = Object.keys((callArgs as Record<string, unknown>) ?? {});
+              const providedKeys = Object.keys((finalArgs as Record<string, unknown>) ?? {});
               const missingProps = requiredProps.filter((p: string) => !providedKeys.includes(p));
 
               if (missingProps.length > 0) {
@@ -1074,7 +1080,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
                       type: "text" as const,
                       text:
                         `Tool "${name}" requires: ${missingProps.join(", ")}. ` +
-                        `Received: ${JSON.stringify(callArgs ?? {})}`,
+                        `Received: ${JSON.stringify(finalArgs ?? {})}`,
                     },
                   ],
                   isError: true,
@@ -1091,7 +1097,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
               const { result: toolResult, metadata } = await interceptor.callToolWithMetadata(
                 target!,
                 name,
-                (callArgs as Record<string, unknown>) ?? {},
+                (finalArgs as Record<string, unknown>) ?? {},
                 timeout_ms,
                 max_text_length,
               );
@@ -1101,7 +1107,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
               result = await interceptor.callTool(
                 target!,
                 name,
-                (callArgs as Record<string, unknown>) ?? {},
+                (finalArgs as Record<string, unknown>) ?? {},
                 timeout_ms,
                 max_text_length,
               );
@@ -1129,6 +1135,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
                 type: "text" as const,
                 text: `--- metadata ---\n${JSON.stringify(meta)}`,
               });
+              (result as any).meta = meta;
             }
 
             break;
@@ -1162,6 +1169,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
                 type: "text" as const,
                 text: `--- metadata ---\n${JSON.stringify(meta)}`,
               });
+              (result as any).meta = meta;
             }
             break;
           }
@@ -1197,7 +1205,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
               target!,
               {
                 name,
-                arguments: (callArgs as Record<string, string>) ?? {},
+                arguments: (finalArgs as Record<string, string>) ?? {},
               },
               timeout_ms,
               max_text_length,
@@ -1234,6 +1242,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
                 type: "text" as const,
                 text: `--- metadata ---\n${JSON.stringify(meta)}`,
               });
+              (result as any).meta = meta;
             }
             break;
           }
@@ -1294,6 +1303,246 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       return {
         content: [{ type: "text" as const, text: stderrLines.join("\n") }],
       };
+    },
+  );
+
+  mcpServer.registerTool(
+    "validate_mcp_server",
+    {
+      title: "Validate MCP Server",
+      description:
+        "Attempts to spawn the target MCP server, connect to it, check its tools, " +
+        "collect any stderr/errors, and shut it down cleanly. " +
+        "Returns pass/fail status and captured diagnostics.",
+      inputSchema: {
+        command: z.string().describe("Command to run (e.g. 'node', 'python')"),
+        args: z.array(z.string()).optional().describe("Arguments to pass"),
+        env: z.record(z.string()).optional().describe("Extra environment variables"),
+      },
+    },
+    async ({ command, args, env }) => {
+      const originalEnv: Record<string, string | undefined> = {};
+      if (env) {
+        for (const [key, value] of Object.entries(env)) {
+          originalEnv[key] = process.env[key];
+          process.env[key] = value;
+        }
+      }
+
+      const tempTarget = new TargetManager(command, args ?? []);
+      const stderrLines: string[] = [];
+      tempTarget.on("stderr", (text: string) => {
+        stderrLines.push(text);
+      });
+
+      try {
+        const connectPromise = tempTarget.connect();
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("Connection timed out after 5000ms")), 5000),
+        );
+
+        await Promise.race([connectPromise, timeoutPromise]);
+
+        const toolsResult = await tempTarget.listTools();
+        const caps = tempTarget.getServerCapabilities() ?? {};
+        const ver = tempTarget.getServerVersion();
+
+        await tempTarget.close();
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text:
+                `Validation Result: SUCCESS\n` +
+                `Server Name: ${ver?.name ?? "unknown"}\n` +
+                `Server Version: ${ver?.version ?? "unknown"}\n` +
+                `Tools Count: ${toolsResult.tools.length}\n` +
+                `Capabilities: ${Object.keys(caps).join(", ") || "none"}\n\n` +
+                `Captured Stderr:\n${stderrLines.join("\n") || "(none)"}`,
+            },
+          ],
+        };
+      } catch (err: any) {
+        await tempTarget.close().catch(() => {});
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text:
+                `Validation Result: FAILED\n` +
+                `Error: ${err.message}\n\n` +
+                `Captured Stderr:\n${stderrLines.join("\n") || "(none)"}`,
+            },
+          ],
+          isError: true,
+        };
+      } finally {
+        if (env) {
+          for (const key of Object.keys(env)) {
+            if (originalEnv[key] === undefined) {
+              delete process.env[key];
+            } else {
+              process.env[key] = originalEnv[key];
+            }
+          }
+        }
+      }
+    },
+  );
+
+  mcpServer.registerTool(
+    "search_all_local_mcp_servers",
+    {
+      title: "Search All Local MCP Servers",
+      description:
+        "Scans all configured/discovered local MCP servers, connects to them, " +
+        "and searches their tool names/descriptions or resource names/URIs for a query string.",
+      inputSchema: {
+        query: z.string().describe("Search query (case-insensitive substring match)"),
+        type: z
+          .array(z.enum(["tools", "resources", "prompts"]))
+          .optional()
+          .describe("Primitives to search. Defaults to ['tools']."),
+      },
+    },
+    async ({ query, type }) => {
+      const searchTypes = type ?? ["tools"];
+      const lowerQuery = query.toLowerCase();
+
+      try {
+        const servers = await discoverServers();
+        if (servers.length === 0) {
+          return {
+            content: [{ type: "text" as const, text: "No local MCP servers found to search." }],
+          };
+        }
+
+        const uniqueServers = new Map<string, any>();
+        for (const s of servers) {
+          const key = `${s.name}::${s.config.command}::${(s.config.args || []).join(" ")}`;
+          if (!uniqueServers.has(key)) {
+            uniqueServers.set(key, s);
+          } else if (s.source.includes("Project")) {
+            uniqueServers.set(key, s);
+          }
+        }
+
+        const matchResults: any[] = [];
+
+        for (const s of uniqueServers.values()) {
+          const originalEnv: Record<string, string | undefined> = {};
+          if (s.config.env) {
+            for (const [key, value] of Object.entries(s.config.env)) {
+              originalEnv[key] = process.env[key];
+              process.env[key] = value as string;
+            }
+          }
+
+          const tempTarget = new TargetManager(s.config.command, s.config.args || []);
+          try {
+            await Promise.race([
+              tempTarget.connect(),
+              new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error("Timeout")), 3000),
+              ),
+            ]);
+
+            const caps = tempTarget.getServerCapabilities() ?? {};
+
+            if (searchTypes.includes("tools") && caps.tools) {
+              const { tools } = await tempTarget.listTools();
+              for (const t of tools) {
+                if (
+                  t.name.toLowerCase().includes(lowerQuery) ||
+                  (t.description && t.description.toLowerCase().includes(lowerQuery))
+                ) {
+                  matchResults.push({
+                    server: s.name,
+                    primitive: "tool",
+                    name: t.name,
+                    description: t.description,
+                  });
+                }
+              }
+            }
+
+            if (searchTypes.includes("resources") && caps.resources) {
+              const { resources } = await tempTarget.listResources();
+              for (const r of resources as any[]) {
+                if (
+                  (r.name && r.name.toLowerCase().includes(lowerQuery)) ||
+                  r.uri.toLowerCase().includes(lowerQuery) ||
+                  (r.description && r.description.toLowerCase().includes(lowerQuery))
+                ) {
+                  matchResults.push({
+                    server: s.name,
+                    primitive: "resource",
+                    name: r.name || r.uri,
+                    uri: r.uri,
+                    description: r.description,
+                  });
+                }
+              }
+            }
+
+            if (searchTypes.includes("prompts") && caps.prompts) {
+              const { prompts } = await tempTarget.listPrompts();
+              for (const p of prompts) {
+                if (
+                  p.name.toLowerCase().includes(lowerQuery) ||
+                  (p.description && p.description.toLowerCase().includes(lowerQuery))
+                ) {
+                  matchResults.push({
+                    server: s.name,
+                    primitive: "prompt",
+                    name: p.name,
+                    description: p.description,
+                  });
+                }
+              }
+            }
+          } catch {
+            // Ignore individual server connection or query errors
+          } finally {
+            await tempTarget.close().catch(() => {});
+            if (s.config.env) {
+              for (const key of Object.keys(s.config.env)) {
+                if (originalEnv[key] === undefined) {
+                  delete process.env[key];
+                } else {
+                  process.env[key] = originalEnv[key];
+                }
+              }
+            }
+          }
+        }
+
+        if (matchResults.length === 0) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `No matches found for query "${query}".`,
+              },
+            ],
+          };
+        }
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Search results for "${query}":\n\n${JSON.stringify(matchResults, null, 2)}`,
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          content: [{ type: "text" as const, text: `Error searching servers: ${err.message}` }],
+          isError: true,
+        };
+      }
     },
   );
 

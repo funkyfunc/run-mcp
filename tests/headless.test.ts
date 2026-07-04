@@ -85,17 +85,17 @@ describe("headless: call", () => {
     expect(stderr.toLowerCase()).toContain("error");
   }, 15_000);
 
-  it("exits 2 with invalid JSON args", async () => {
+  it("exits 65 with invalid JSON args", async () => {
     const { stderr, exitCode } = await runCli(["call", "echo", "{bad json}", ...TARGET]);
 
-    expect(exitCode).toBe(2);
+    expect(exitCode).toBe(65);
     expect(stderr).toContain("Invalid JSON");
   }, 15_000);
 
-  it("exits 2 when no target command after --", async () => {
+  it("exits 64 when no target command after --", async () => {
     const { stderr, exitCode } = await runCli(["call", "echo"]);
 
-    expect(exitCode).toBe(2);
+    expect(exitCode).toBe(64);
     expect(stderr).toContain("separated by '--'");
   }, 15_000);
 
@@ -186,10 +186,10 @@ describe("headless: describe", () => {
     expect(tool).toHaveProperty("description");
   }, 15_000);
 
-  it("exits 1 for nonexistent tool", async () => {
+  it("exits 64 for nonexistent tool", async () => {
     const { stderr, exitCode } = await runCli(["describe", "nonexistent_tool", ...TARGET]);
 
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(64);
     expect(stderr).toContain("not found");
   }, 15_000);
 });
@@ -221,16 +221,16 @@ describe("headless: timeout", () => {
       ...TARGET,
     ]);
 
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(69);
     expect(stderr).toContain("timed out");
   }, 15_000);
 });
 
 describe("headless: connection error", () => {
-  it("exits 1 with actionable error for missing command", async () => {
+  it("exits 66 with actionable error for missing command", async () => {
     const { stderr, exitCode } = await runCli(["list-tools", "--", "nonexistent_binary_xyz_12345"]);
 
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(66);
     expect(stderr).toContain("not found");
   }, 15_000);
 });
@@ -354,4 +354,20 @@ describe("script mode: variable extraction and error handling", () => {
     expect(exitCode).toBe(1);
     expect(stderr).toContain("Expected an error but the command succeeded");
   });
+});
+
+describe("headless: separator relaxing", () => {
+  it("calls a tool successfully without the '--' double-dash separator", async () => {
+    const { stdout, exitCode } = await runCli([
+      "call",
+      "echo",
+      '{"text":"no double-dash test"}',
+      MOCK_SERVER_CMD,
+      ...MOCK_SERVER_ARGS,
+    ]);
+
+    expect(exitCode).toBe(0);
+    const result = JSON.parse(stdout);
+    expect(result[0].text).toBe("no double-dash test");
+  }, 15_000);
 });
