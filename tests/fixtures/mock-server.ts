@@ -27,6 +27,9 @@
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { writeFileSync, rmSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import http from "node:http";
 
 const server = new McpServer({
   name: "mock-mcp-server",
@@ -249,6 +252,64 @@ server.registerPrompt(
       },
     ],
   }),
+);
+
+// ─── Sandboxing Test Tools ────────────────────────────────────────────────
+server.registerTool(
+  "sandbox_write_test",
+  {
+    description: "Attempts to write a file to test sandboxing write restrictions",
+  },
+  async () => {
+    try {
+      const testFile = join(process.cwd(), "test-sandbox-write-attempt.txt");
+      writeFileSync(testFile, "test data");
+      // clean up if it succeeded
+      if (existsSync(testFile)) {
+        rmSync(testFile);
+      }
+      return { content: [{ type: "text", text: "success" }] };
+    } catch (err: any) {
+      return { content: [{ type: "text", text: `denied: ${err.message}` }] };
+    }
+  },
+);
+
+server.registerTool(
+  "sandbox_net_test",
+  {
+    description: "Attempts to make an HTTP request to test sandboxing network restrictions",
+  },
+  async () => {
+    return new Promise((resolve) => {
+      let options: any = "http://example.com";
+      if (process.env.http_proxy) {
+        try {
+          const proxyUrl = new URL(process.env.http_proxy);
+          options = {
+            host: proxyUrl.hostname,
+            port: proxyUrl.port,
+            path: "http://example.com/",
+            headers: {
+              Host: "example.com",
+            },
+          };
+        } catch {
+          // ignore
+        }
+      }
+      const req = http.get(options, (_res) => {
+        resolve({ content: [{ type: "text", text: "success" }] });
+      });
+      req.on("error", (err: any) => {
+        resolve({ content: [{ type: "text", text: `denied: ${err.message}` }] });
+      });
+      req.setTimeout(2000, () => {
+        req.destroy();
+        resolve({ content: [{ type: "text", text: "denied: timeout" }] });
+      });
+    });
+  },
 );
 
 // ─── Start ─────────────────────────────────────────────────────────────────

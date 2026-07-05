@@ -832,7 +832,7 @@ describe("server: advanced features and protocol compliance", () => {
     const text = getText(result);
     expect(text).toContain("Validation Result: SUCCESS");
     expect(text).toContain("mock-mcp-server");
-    expect(text).toContain("Tools Count: 9");
+    expect(text).toContain("Tools Count: 11");
   }, 25_000);
 
   it("fails validation gracefully for invalid server command with validate_mcp_server", async () => {
@@ -861,4 +861,19 @@ describe("server: advanced features and protocol compliance", () => {
     const text = getText(result);
     expect(text).toBeTypeOf("string");
   }, 20_000);
+
+  it("connects to target server with sandboxing enabled via connect_to_mcp", async () => {
+    const c = await startRunMcpServer();
+    const result = await c.callTool({
+      name: "connect_to_mcp",
+      arguments: {
+        command: MOCK_SERVER_CMD,
+        args: MOCK_SERVER_ARGS,
+        sandbox: "none",
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(getText(result)).toContain("Connected to MCP server");
+  }, 25_000);
 });

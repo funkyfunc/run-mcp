@@ -1,5 +1,11 @@
 import { EventEmitter } from "node:events";
+import { execSync } from "node:child_process";
+import { writeFileSync, rmSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import treeKill from "tree-kill";
+import { loadSettings, SandboxPolicy } from "./settings.js";
+import { NetworkAuditProxy } from "./proxy-audit.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -26,6 +32,7 @@ export interface TargetStatus {
   stderrLineCount: number;
   reconnectAttempts: number;
   maxReconnectAttempts: number;
+  sandbox: "auto" | "docker" | "native" | "audit" | "none";
 }
 
 /** Minimum uptime (ms) before a crash is considered "transient" and worth retrying. */
@@ -79,6 +86,16 @@ export interface Root {
  *   If it crashes within 5s of startup, it's considered a startup bug
  *   and no retry is attempted.
  */
+function isCommandAvailable(cmd: string): boolean {
+  try {
+    const checkCmd = process.platform === "win32" ? `where ${cmd}` : `command -v ${cmd}`;
+    execSync(checkCmd, { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export class TargetManager extends EventEmitter {
   private client: Client | null = null;
   private transport: Transport | null = null;
@@ -111,11 +128,44 @@ export class TargetManager extends EventEmitter {
   // Roots
   private _roots: Root[] = [];
 
+  private _proxy: NetworkAuditProxy | null = null;
+  private _proxyPort = 0;
+
+  private sandboxMode: "auto" | "docker" | "native" | "audit" | "none";
+  private _tempSbPath: string | null = null;
+  private _useWindowsMxc = false;
+  private sandboxOptions: {
+    allowRead?: string[];
+    allowWrite?: string[];
+    allowNet?: string[];
+    denyRead?: string[];
+    denyWrite?: string[];
+    denyNet?: string[];
+  };
+
   constructor(
     private readonly command: string,
     private readonly args: string[],
+    options: {
+      sandbox?: "auto" | "docker" | "native" | "audit" | "none";
+      allowRead?: string[];
+      allowWrite?: string[];
+      allowNet?: string[];
+      denyRead?: string[];
+      denyWrite?: string[];
+      denyNet?: string[];
+    } = {},
   ) {
     super();
+    this.sandboxMode = options.sandbox ?? "none";
+    this.sandboxOptions = {
+      allowRead: options.allowRead,
+      allowWrite: options.allowWrite,
+      allowNet: options.allowNet,
+      denyRead: options.denyRead,
+      denyWrite: options.denyWrite,
+      denyNet: options.denyNet,
+    };
   }
 
   /**
@@ -139,11 +189,37 @@ export class TargetManager extends EventEmitter {
         // eslint-disable-next-line @typescript-eslint/no-deprecated
         this.transport = new SSEClientTransport(new URL(this.command));
       } else {
+        const policy = new SandboxPolicy();
+        const fileSettings = loadSettings();
+        if (fileSettings.sandbox) {
+          policy.mergeConfig(fileSettings.sandbox, process.cwd());
+        }
+        policy.mergeCliOverrides(this.sandboxOptions);
+        policy.applyCredentialProtections();
+
+        // Start proxy if network allowed and sandbox active
+        if (
+          this.sandboxMode !== "none" &&
+          this.sandboxMode !== "audit" &&
+          policy.networkAllow.size > 0 &&
+          !policy.networkDeny.has("*")
+        ) {
+          this._proxy = new NetworkAuditProxy();
+          this._proxyPort = await this._proxy.start();
+        }
+
+        const { command: finalCommand, args: finalArgs } = await this._maybeWrapCommand(policy);
+
         const stdioTransport = new StdioClientTransport({
-          command: this.command,
-          args: this.args,
+          command: finalCommand,
+          args: finalArgs,
           stderr: "pipe",
+          env: this._getDefaultEnvironment(),
         });
+
+        if (this._useWindowsMxc) {
+          await this._applyWindowsMxcOverride(stdioTransport, finalCommand, finalArgs, policy);
+        }
 
         // Capture stderr from child process
         stdioTransport.stderr?.on("data", (chunk: Buffer) => {
@@ -156,6 +232,24 @@ export class TargetManager extends EventEmitter {
             if (this._stderrLines.length > TargetManager.MAX_STDERR_LINES) {
               this._stderrLines = this._stderrLines.slice(-TargetManager.MAX_STDERR_LINES);
             }
+
+            if (this.sandboxMode === "audit") {
+              const lowerText = text.toLowerCase();
+              if (
+                lowerText.includes("eperm") ||
+                lowerText.includes("eacces") ||
+                lowerText.includes("permission denied") ||
+                lowerText.includes("operation not permitted") ||
+                lowerText.includes("enotfound") ||
+                lowerText.includes("command not found") ||
+                lowerText.includes("cannot execute")
+              ) {
+                console.error(
+                  `\x1b[31m⚠️  [SANDBOX AUDIT] Blocked unauthorized side-effect: ${text}\x1b[0m`,
+                );
+              }
+            }
+
             this.emit("stderr", text);
           }
         });
@@ -661,6 +755,7 @@ export class TargetManager extends EventEmitter {
       stderrLineCount: this._stderrLineCount,
       reconnectAttempts: this._reconnectAttempts,
       maxReconnectAttempts: MAX_RECONNECT_ATTEMPTS,
+      sandbox: this.sandboxMode,
     };
   }
 
@@ -695,6 +790,27 @@ export class TargetManager extends EventEmitter {
       await new Promise<void>((resolve) => {
         treeKill(pidToKill, "SIGKILL", () => resolve());
       });
+    }
+
+    // Clean up temporary Seatbelt files
+    if (this._tempSbPath && existsSync(this._tempSbPath)) {
+      try {
+        rmSync(this._tempSbPath, { force: true });
+      } catch {
+        // ignore
+      }
+      this._tempSbPath = null;
+    }
+
+    // Shut down proxy if active
+    if (this._proxy) {
+      try {
+        await this._proxy.close();
+      } catch {
+        // ignore
+      }
+      this._proxy = null;
+      this._proxyPort = 0;
     }
 
     this._connected = false;
@@ -786,6 +902,299 @@ export class TargetManager extends EventEmitter {
   }
 
   // ─── Internal helpers ──────────────────────────────────────────────────────
+
+  private async _maybeWrapCommand(
+    policy: SandboxPolicy,
+  ): Promise<{ command: string; args: string[] }> {
+    let command = this.command;
+    let args = [...this.args];
+
+    let modeToUse = this.sandboxMode;
+    if (modeToUse === "auto") {
+      if (process.platform === "darwin") {
+        if (isCommandAvailable("sandbox-exec")) {
+          modeToUse = "native";
+        } else {
+          process.stderr.write("Warning: sandbox-exec is not available. Sandboxing disabled.\n");
+          modeToUse = "none";
+        }
+      } else if (process.platform === "linux") {
+        if (isCommandAvailable("bwrap")) {
+          modeToUse = "native";
+        } else {
+          process.stderr.write("Warning: bwrap is not available. Sandboxing disabled.\n");
+          modeToUse = "none";
+        }
+      } else if (process.platform === "win32") {
+        let hasMxc = false;
+        try {
+          const mxcModule = "@microsoft/mxc-sdk";
+          await import(mxcModule);
+          hasMxc = true;
+        } catch {
+          // not found
+        }
+        if (hasMxc) {
+          modeToUse = "native";
+        } else {
+          process.stderr.write(
+            "Warning: @microsoft/mxc-sdk is not available. Sandboxing disabled.\n",
+          );
+          modeToUse = "none";
+        }
+      } else {
+        process.stderr.write(
+          `Warning: Sandboxing not supported on platform "${process.platform}". Sandboxing disabled.\n`,
+        );
+        modeToUse = "none";
+      }
+    }
+
+    if (modeToUse === "docker") {
+      let image = "node:20";
+      if (command.includes("python")) {
+        image = "python:3";
+      }
+      const cwd = process.cwd();
+      args = [
+        "run",
+        "-i",
+        "--rm",
+        "--net=none",
+        "-v",
+        `${cwd}:/workspace`,
+        "-w",
+        "/workspace",
+        image,
+        command,
+        ...args,
+      ];
+      command = "docker";
+    } else if (modeToUse === "native" || modeToUse === "audit") {
+      const isAudit = modeToUse === "audit";
+
+      if (process.platform === "darwin") {
+        if (!isCommandAvailable("sandbox-exec")) {
+          throw new Error(
+            "sandbox-exec not found. Native sandboxing is not available on this macOS host.",
+          );
+        }
+        const cwd = process.cwd();
+        const tmp = tmpdir();
+        const nodeBinDir = join(process.execPath, "..");
+        const nodeInstallDir = join(nodeBinDir, "..");
+        const profile = policy.getSeatbeltProfile({
+          tmp,
+          cwd,
+          nodeBinDir,
+          nodeInstallDir,
+          audit: isAudit,
+        });
+        const tempSbPath = join(
+          tmp,
+          `run-mcp-sandbox-${Date.now()}-${Math.random().toString(36).slice(2)}.sb`,
+        );
+        writeFileSync(tempSbPath, profile, "utf8");
+        this._tempSbPath = tempSbPath;
+
+        args = ["-f", tempSbPath, command, ...args];
+        command = "sandbox-exec";
+      } else if (process.platform === "linux") {
+        if (!isCommandAvailable("bwrap")) {
+          throw new Error(
+            "bwrap not found. Native sandboxing is not available on this Linux host.",
+          );
+        }
+        const cwd = process.cwd();
+        const tmp = tmpdir();
+
+        const bwrapArgs = [
+          "--ro-bind",
+          "/usr",
+          "/usr",
+          "--ro-bind",
+          "/lib",
+          "/lib",
+          "--ro-bind-try",
+          "/lib64",
+          "/lib64",
+          "--ro-bind-try",
+          "/bin",
+          "/bin",
+          "--ro-bind-try",
+          "/sbin",
+          "/sbin",
+          "--ro-bind-try",
+          "/etc",
+          "/etc",
+          "--ro-bind",
+          cwd,
+          cwd,
+          "--dev",
+          "/dev",
+          "--proc",
+          "/proc",
+          "--unshare-pid",
+          "--unshare-user",
+          "--unshare-ipc",
+        ];
+
+        if (isAudit) {
+          bwrapArgs.push("--unshare-net");
+          bwrapArgs.push("--ro-bind", tmp, tmp);
+        } else {
+          bwrapArgs.push("--bind", tmp, tmp);
+
+          // Outbound network permission
+          if (policy.networkAllow.size === 0 || policy.networkDeny.has("*")) {
+            bwrapArgs.push("--unshare-net");
+          }
+
+          // Whitelisted file reads
+          for (const p of policy.fileReadAllow) {
+            if (existsSync(p)) {
+              bwrapArgs.push("--ro-bind", p, p);
+            }
+          }
+
+          // Whitelisted file writes
+          for (const p of policy.fileWriteAllow) {
+            if (existsSync(p)) {
+              bwrapArgs.push("--bind", p, p);
+            }
+          }
+        }
+
+        args = [...bwrapArgs, command, ...args];
+        command = "bwrap";
+      } else if (process.platform === "win32") {
+        let hasMxc = false;
+        try {
+          const mxcModule = "@microsoft/mxc-sdk";
+          await import(mxcModule);
+          hasMxc = true;
+        } catch {
+          // not found
+        }
+        if (!hasMxc) {
+          throw new Error(
+            "@microsoft/mxc-sdk not found. Native sandboxing is not available on this Windows host.",
+          );
+        }
+        this._useWindowsMxc = true;
+      } else {
+        throw new Error(`Native sandboxing not supported on platform "${process.platform}"`);
+      }
+    }
+
+    return { command, args };
+  }
+
+  private async _applyWindowsMxcOverride(
+    transport: any,
+    command: string,
+    args: string[],
+    policyObj: SandboxPolicy,
+  ): Promise<void> {
+    const mxcModule = "@microsoft/mxc-sdk";
+    const mxcSdk = await import(mxcModule);
+
+    const isAudit = this.sandboxMode === "audit";
+    const readPaths = isAudit
+      ? [process.cwd()]
+      : [process.cwd(), tmpdir(), ...Array.from(policyObj.fileReadAllow)];
+    const writePaths = isAudit ? [] : [tmpdir(), ...Array.from(policyObj.fileWriteAllow)];
+
+    const policy = {
+      filesystem: {
+        read: readPaths,
+        write: writePaths,
+      },
+      network: {
+        outbound: isAudit ? "block" : policyObj.networkAllow.size > 0 ? "allow" : "block",
+      },
+    };
+    const config = mxcSdk.createConfigFromPolicy(policy);
+
+    transport.start = async () => {
+      if (transport._process) {
+        throw new Error("StdioClientTransport already started!");
+      }
+      return new Promise<void>((resolve, reject) => {
+        try {
+          const env = {
+            ...this._getDefaultEnvironment(),
+            ...transport._serverParams.env,
+          };
+
+          transport._process = mxcSdk.spawnSandboxFromConfig(config, command, args, {
+            env,
+            stdio: ["pipe", "pipe", transport._serverParams.stderr ?? "inherit"],
+            cwd: transport._serverParams.cwd,
+          });
+
+          transport._process.on("error", (error: any) => {
+            reject(error);
+            transport.onerror?.(error);
+          });
+          transport._process.on("spawn", () => {
+            resolve();
+          });
+          transport._process.on("close", () => {
+            transport._process = undefined;
+            transport.onclose?.();
+          });
+          transport._process.stdin?.on("error", (error: any) => {
+            transport.onerror?.(error);
+          });
+          transport._process.stdout?.on("data", (chunk: any) => {
+            transport._readBuffer.append(chunk);
+            transport.processReadBuffer();
+          });
+          transport._process.stdout?.on("error", (error: any) => {
+            transport.onerror?.(error);
+          });
+          if (transport._stderrStream && transport._process.stderr) {
+            transport._process.stderr.pipe(transport._stderrStream);
+          }
+        } catch (err) {
+          reject(err);
+        }
+      });
+    };
+  }
+
+  private _getDefaultEnvironment(): Record<string, string> {
+    const env: Record<string, string> = {};
+    const safeVars =
+      process.platform === "win32"
+        ? [
+            "APPDATA",
+            "HOMEDRIVE",
+            "HOMEPATH",
+            "LOCALAPPDATA",
+            "PATH",
+            "TEMP",
+            "USERPROFILE",
+            "SYSTEMROOT",
+          ]
+        : ["HOME", "PATH", "SHELL", "USER"];
+    for (const key of safeVars) {
+      if (process.env[key]) {
+        env[key] = process.env[key]!;
+      }
+    }
+    if (this._proxyPort) {
+      const proxyUrl = `http://127.0.0.1:${this._proxyPort}`;
+      env["http_proxy"] = proxyUrl;
+      env["https_proxy"] = proxyUrl;
+      env["HTTP_PROXY"] = proxyUrl;
+      env["HTTPS_PROXY"] = proxyUrl;
+      env["all_proxy"] = proxyUrl;
+      env["ALL_PROXY"] = proxyUrl;
+    }
+    return env;
+  }
 
   private _assertConnected(): void {
     if (!this._connected || !this.client) {

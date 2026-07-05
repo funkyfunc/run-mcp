@@ -282,6 +282,81 @@ Tool call responses are processed through the interceptor pipeline. All other pr
 | **Timeouts**         | Tool calls are wrapped in a configurable timeout (default 60s, use `--timeout` to change)                                |
 | **Truncation**       | Text responses exceeding the limit (default 50K chars, use `--max-text` to change) are truncated                         |
 
+## Sandboxing & Outbound Data Exfiltration Protection
+
+`run-mcp` features a comprehensive multi-layered sandboxing engine designed to protect local systems and credentials from malicious or buggy MCP servers.
+
+### 🛡️ Sandboxing Modes
+
+You can restrict a target server's execution footprint using the `--sandbox` flag:
+
+- **`none`** (Default): No sandboxing. The target server runs with full user privileges.
+- **`auto`**: Automatically selects the most restrictive sandboxing system available on the host OS.
+- **`native`**: Uses OS-level native isolation:
+  - **macOS**: Utilizes the Seatbelt (App Sandbox) framework (`sandbox-exec`).
+  - **Linux**: Utilizes `bubblewrap` (`bwrap`) containerization.
+  - **Windows**: Utilizes `@microsoft/mxc-sdk` App Container sandboxing (requires the package to be present).
+- **`docker`**: Spawns the target command inside a fresh, network-disabled ephemeral Docker container (`node:20` or `python:3` depending on the command).
+- **`audit`**: Runs the server under a special non-enforcing native sandbox mode that permits operations but logs all network activity to the console.
+
+### 🌐 Outbound Network Proxy Auditing
+
+When a sandboxed server is granted outbound network access (e.g., using `--allow-net`), `run-mcp` automatically spawns a zero-dependency local **Network Audit Proxy**.
+- All outbound HTTP/HTTPS traffic is forced through the proxy using environment variables.
+- Target endpoints and protocols (including HTTPS `CONNECT` tunnels) are transparently logged to stderr in distinct cyan color:
+  ```
+  🌐 [NETWORK AUDIT] HTTP request to: http://example.com/api/v1/data
+  🌐 [NETWORK AUDIT] HTTPS connection established to: github.com
+  ```
+- Permits outbound traffic while providing complete visibility into where the server is sending data.
+
+### 🔑 Automatic Credential Protection (Deny-Wins)
+
+When outbound network capability is enabled, `run-mcp` automatically safeguards your local configuration files and private keys from exfiltration. 
+By default, the sandbox denies access to the following directories:
+- `~/.ssh` (SSH private keys and configs)
+- `~/.aws` (AWS credentials)
+- `~/.kube` (Kubernetes configurations)
+- `~/.config/gcloud` (Google Cloud SDK credentials)
+- `~/.netrc` and `~/.npmrc` (Authentication files)
+
+Access is strictly blocked using **Deny-Wins** precedence unless a folder is explicitly whitelisted.
+
+### ⚙️ Capabilities & Configuration
+
+You can configure sandbox rules on the command line or using structured JSON settings files.
+
+#### CLI Overrides
+
+Pass these flags after `run-mcp` and before the target command:
+- `--sandbox <mode>`: Set sandbox execution mode (`auto`, `native`, `docker`, `audit`, `none`).
+- `--allow-read <paths...>`: Allow reading specific host directories.
+- `--allow-write <paths...>`: Allow writing to specific host directories.
+- `--allow-net <domains...>`: Allow outbound network access to specific domains.
+- `--deny-read <paths...>`: Deny reading specific host directories.
+- `--deny-write <paths...>`: Deny writing to specific host directories.
+- `--deny-net <domains...>`: Deny outbound network access to specific domains.
+
+#### Configuration Scopes
+
+`run-mcp` resolves settings hierarchically, allowing both administrator enforcement and developer configuration:
+1. **Managed (Enterprise)**: System-wide read-only overrides (`/Library/Application Support/run-mcp/settings.json`, `C:\Program Files\run-mcp\settings.json`, `/etc/run-mcp/settings.json`).
+2. **User (Global)**: Personal defaults (`~/.gemini/antigravity-ide/settings.json` or equivalent).
+3. **Project**: Shared settings within a repository (`<workspace>/.run-mcp.json`).
+4. **Local**: Developer-specific project settings (`<workspace>/.run-mcp.local.json`).
+
+*Example Settings File (`.run-mcp.json`):*
+```json
+{
+  "sandbox": {
+    "mode": "native",
+    "allowRead": ["/usr/local/bin"],
+    "allowNet": ["*.api.github.com"],
+    "denyRead": ["~/.ssh"]
+  }
+}
+```
+
 ## Architecture
 
 ```

@@ -28,6 +28,13 @@ interface ReplOptions {
   outDir?: string;
   mediaThresholdKb?: number;
   openMedia?: boolean;
+  sandbox?: "auto" | "docker" | "native" | "audit" | "none";
+  allowRead?: string[];
+  allowWrite?: string[];
+  allowNet?: string[];
+  denyRead?: string[];
+  denyWrite?: string[];
+  denyNet?: string[];
 }
 
 function getPrompt(target: TargetManager): string {
@@ -131,7 +138,15 @@ export function startReadlineLoop(target: TargetManager, interceptor: ResponseIn
 
 export async function startRepl(targetCommand: string[], opts: ReplOptions): Promise<void> {
   const [command, ...args] = targetCommand;
-  const target = new TargetManager(command, args);
+  const target = new TargetManager(command, args, {
+    sandbox: opts.sandbox,
+    allowRead: opts.allowRead,
+    allowWrite: opts.allowWrite,
+    allowNet: opts.allowNet,
+    denyRead: opts.denyRead,
+    denyWrite: opts.denyWrite,
+    denyNet: opts.denyNet,
+  });
   const interceptor = new ResponseInterceptor({
     outDir: opts.outDir,
     mediaThresholdKb: opts.mediaThresholdKb,

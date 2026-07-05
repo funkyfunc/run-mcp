@@ -116,7 +116,12 @@ async function handleHeadlessSession(
 
     // Spawn the daemon process in background
     const binPath = resolve(import.meta.dirname, "./index.js");
-    const daemonProcess = spawn("node", [binPath, "daemon", sessionName, ...target], {
+    const daemonArgs = ["daemon", sessionName];
+    if (opts.sandbox) {
+      daemonArgs.push("--sandbox", opts.sandbox);
+    }
+    daemonArgs.push(...target);
+    const daemonProcess = spawn("node", [binPath, ...daemonArgs], {
       detached: true,
       stdio: "ignore",
     });
@@ -165,6 +170,13 @@ interface HeadlessOpts {
   showStderr?: boolean;
   mediaThreshold?: string;
   session?: string;
+  sandbox?: string;
+  allowRead?: string[];
+  allowWrite?: string[];
+  allowNet?: string[];
+  denyRead?: string[];
+  denyWrite?: string[];
+  denyNet?: string[];
 }
 
 function parseHeadlessOpts(opts: HeadlessOpts) {
@@ -174,6 +186,13 @@ function parseHeadlessOpts(opts: HeadlessOpts) {
     raw: opts.raw,
     showStderr: opts.showStderr,
     mediaThresholdKb: opts.mediaThreshold ? Number.parseInt(opts.mediaThreshold, 10) : undefined,
+    sandbox: opts.sandbox as "auto" | "docker" | "native" | "audit" | "none" | undefined,
+    allowRead: opts.allowRead,
+    allowWrite: opts.allowWrite,
+    allowNet: opts.allowNet,
+    denyRead: opts.denyRead,
+    denyWrite: opts.denyWrite,
+    denyNet: opts.denyNet,
   };
 }
 
@@ -209,6 +228,7 @@ program
   .option("--raw", "Print the full result object including metadata")
   .option("--show-stderr", "Stream target server stderr to process stderr")
   .option("--session <name>", "Persistent session name")
+  .option("--sandbox <mode>", "Sandbox execution mode: auto, docker, native, audit, none", "none")
   .allowUnknownOption()
   .action(
     async (
@@ -245,6 +265,7 @@ program
   .description("List all tools on a target MCP server as JSON")
   .option("--show-stderr", "Stream target server stderr to process stderr")
   .option("--session <name>", "Persistent session name")
+  .option("--sandbox <mode>", "Sandbox execution mode: auto, docker, native, audit, none", "none")
   .allowUnknownOption()
   .action(async (targetCommand: string[], opts: HeadlessOpts) => {
     const operation = { type: "list-tools" as const };
@@ -274,6 +295,7 @@ program
   .description("List all resources on a target MCP server as JSON")
   .option("--show-stderr", "Stream target server stderr to process stderr")
   .option("--session <name>", "Persistent session name")
+  .option("--sandbox <mode>", "Sandbox execution mode: auto, docker, native, audit, none", "none")
   .allowUnknownOption()
   .action(async (targetCommand: string[], opts: HeadlessOpts) => {
     const operation = { type: "list-resources" as const };
@@ -303,6 +325,7 @@ program
   .description("List all prompts on a target MCP server as JSON")
   .option("--show-stderr", "Stream target server stderr to process stderr")
   .option("--session <name>", "Persistent session name")
+  .option("--sandbox <mode>", "Sandbox execution mode: auto, docker, native, audit, none", "none")
   .allowUnknownOption()
   .action(async (targetCommand: string[], opts: HeadlessOpts) => {
     const operation = { type: "list-prompts" as const };
@@ -337,6 +360,7 @@ program
   )
   .option("--show-stderr", "Stream target server stderr to process stderr")
   .option("--session <name>", "Persistent session name")
+  .option("--sandbox <mode>", "Sandbox execution mode: auto, docker, native, audit, none", "none")
   .allowUnknownOption()
   .action(async (uri: string, targetCommand: string[], opts: HeadlessOpts) => {
     const operation = { type: "read" as const, uri };
@@ -367,6 +391,7 @@ program
   .description("Print a tool's full schema as JSON")
   .option("--show-stderr", "Stream target server stderr to process stderr")
   .option("--session <name>", "Persistent session name")
+  .option("--sandbox <mode>", "Sandbox execution mode: auto, docker, native, audit, none", "none")
   .allowUnknownOption()
   .action(async (tool: string, targetCommand: string[], opts: HeadlessOpts) => {
     const operation = { type: "describe" as const, tool };
@@ -402,6 +427,7 @@ program
   )
   .option("--show-stderr", "Stream target server stderr to process stderr")
   .option("--session <name>", "Persistent session name")
+  .option("--sandbox <mode>", "Sandbox execution mode: auto, docker, native, audit, none", "none")
   .allowUnknownOption()
   .action(
     async (
@@ -437,8 +463,9 @@ program
   .argument("<session_name>", "Session name")
   .argument("[target_command...]", "Target server command")
   .description("Start run-mcp in background session daemon mode")
+  .option("--sandbox <mode>", "Sandbox execution mode: auto, docker, native, audit, none", "none")
   .allowUnknownOption()
-  .action(async (sessionName: string, targetCommand: string[]) => {
+  .action(async (sessionName: string, targetCommand: string[], opts: { sandbox?: string }) => {
     const targetCmd = activeTargetCommand ?? targetCommand;
     if (!targetCmd || targetCmd.length === 0) {
       process.stderr.write("Error: No target command provided for daemon.\n");
@@ -450,7 +477,9 @@ program
       const addr = server.address();
       const port = (addr as any).port;
 
-      const target = new TargetManager(targetCmd[0], targetCmd.slice(1));
+      const target = new TargetManager(targetCmd[0], targetCmd.slice(1), {
+        sandbox: opts.sandbox as any,
+      });
       const interceptor = new ResponseInterceptor();
 
       try {
@@ -576,6 +605,7 @@ program
     "--open-media",
     "Automatically open intercepted images and audio files using the host OS viewer",
   )
+  .option("--sandbox <mode>", "Sandbox execution mode: auto, docker, native, audit, none", "none")
   .addHelpText(
     "after",
     `
@@ -653,6 +683,13 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
         mediaThreshold?: string;
         mcp?: boolean;
         openMedia?: boolean;
+        sandbox?: string;
+        allowRead?: string[];
+        allowWrite?: string[];
+        allowNet?: string[];
+        denyRead?: string[];
+        denyWrite?: string[];
+        denyNet?: string[];
       },
     ) => {
       const target = activeTargetCommand ?? targetCommand ?? [];
@@ -666,6 +703,13 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
             ? Number.parseInt(opts.mediaThreshold, 10)
             : undefined,
           openMedia: opts.openMedia,
+          sandbox: opts.sandbox as any,
+          allowRead: opts.allowRead,
+          allowWrite: opts.allowWrite,
+          allowNet: opts.allowNet,
+          denyRead: opts.denyRead,
+          denyWrite: opts.denyWrite,
+          denyNet: opts.denyNet,
         });
       } else {
         // No target command provided
@@ -678,6 +722,13 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
             mediaThresholdKb: opts.mediaThreshold
               ? Number.parseInt(opts.mediaThreshold, 10)
               : undefined,
+            sandbox: opts.sandbox as any,
+            allowRead: opts.allowRead,
+            allowWrite: opts.allowWrite,
+            allowNet: opts.allowNet,
+            denyRead: opts.denyRead,
+            denyWrite: opts.denyWrite,
+            denyNet: opts.denyNet,
           });
         } else {
           // Human is running it in a terminal without arguments -> pick a config
@@ -701,10 +752,33 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
               ? Number.parseInt(opts.mediaThreshold, 10)
               : undefined,
             openMedia: opts.openMedia,
+            sandbox: opts.sandbox as any,
+            allowRead: opts.allowRead,
+            allowWrite: opts.allowWrite,
+            allowNet: opts.allowNet,
+            denyRead: opts.denyRead,
+            denyWrite: opts.denyWrite,
+            denyNet: opts.denyNet,
           });
         }
       }
     },
   );
+
+// Dynamically add allow/deny options to all commands that support --sandbox
+for (const cmd of [program, ...program.commands]) {
+  if (cmd.options.some((o: any) => o.long === "--sandbox")) {
+    cmd
+      .option("--allow-read <paths...>", "Paths to allow reading under the sandbox")
+      .option("--allow-write <paths...>", "Paths to allow writing under the sandbox")
+      .option(
+        "--allow-net <domains...>",
+        "Network domains to allow connecting to under the sandbox",
+      )
+      .option("--deny-read <paths...>", "Paths to deny reading under the sandbox")
+      .option("--deny-write <paths...>", "Paths to deny writing under the sandbox")
+      .option("--deny-net <domains...>", "Network domains to deny connecting to under the sandbox");
+  }
+}
 
 program.parse(argvToParse);

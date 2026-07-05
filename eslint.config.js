@@ -12,6 +12,9 @@ export default tseslint.config(
   ...tseslint.configs.recommended,
   prettierConfig,
   {
+    ignores: ["dist/**", "tests/fixtures/dist/**", "node_modules/**"],
+  },
+  {
     languageOptions: {
       parserOptions: {
         project: "./tsconfig.json",

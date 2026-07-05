@@ -1,6 +1,8 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { TargetManager } from "../src/target-manager.js";
 import { MOCK_SERVER_ARGS, MOCK_SERVER_CMD } from "./helpers.js";
+
+process.env.TSX_DISABLE_CACHE = "1";
 
 /**
  * Integration tests for TargetManager using the mock MCP server.
@@ -261,4 +263,174 @@ describe("auto-reconnect", () => {
     // (connect itself throws, so _maybeReconnect never fires)
     expect(events).toEqual([]);
   }, 10_000);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Sandboxing
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("sandboxing", () => {
+  it("runs the mock server without sandboxing and allows file write and network", async () => {
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS, { sandbox: "none" });
+    await target.connect();
+
+    const writeRes = await target.callTool("sandbox_write_test", {});
+    expect((writeRes as any).content[0].text).toBe("success");
+
+    const netRes = await target.callTool("sandbox_net_test", {});
+    expect((netRes as any).content[0].text).toBe("success");
+  }, 15_000);
+
+  it("runs the mock server with native sandboxing and blocks write and network", async () => {
+    let checkCmd = "";
+    if (process.platform === "darwin") checkCmd = "sandbox-exec";
+    else if (process.platform === "linux") checkCmd = "bwrap";
+
+    // Skip if we can't test native sandboxing natively on this host
+    if (checkCmd) {
+      try {
+        const checkCmdStr = `command -v ${checkCmd}`;
+        const { execSync } = await import("node:child_process");
+        execSync(checkCmdStr, { stdio: "ignore" });
+      } catch {
+        // Sandboxing tool not installed, skip test
+        return;
+      }
+    } else {
+      // Windows requires @microsoft/mxc-sdk, skip if not available
+      try {
+        const mxcModule = "@microsoft/mxc-sdk";
+        await import(mxcModule);
+      } catch {
+        return;
+      }
+    }
+
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS, { sandbox: "native" });
+    await target.connect();
+
+    const writeRes = await target.callTool("sandbox_write_test", {});
+    expect((writeRes as any).content[0].text).toContain("denied");
+
+    const netRes = await target.callTool("sandbox_net_test", {});
+    expect((netRes as any).content[0].text).toContain("denied");
+  }, 20_000);
+
+  it("runs the mock server with native sandboxing and whitelisted capabilities", async () => {
+    let checkCmd = "";
+    if (process.platform === "darwin") checkCmd = "sandbox-exec";
+    else if (process.platform === "linux") checkCmd = "bwrap";
+
+    // Skip if we can't test native sandboxing natively on this host
+    if (checkCmd) {
+      try {
+        const checkCmdStr = `command -v ${checkCmd}`;
+        const { execSync } = await import("node:child_process");
+        execSync(checkCmdStr, { stdio: "ignore" });
+      } catch {
+        return;
+      }
+    } else {
+      try {
+        const mxcModule = "@microsoft/mxc-sdk";
+        await import(mxcModule);
+      } catch {
+        return;
+      }
+    }
+
+    // Spawn with cwd write whitelisted and example.com network whitelisted
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS, {
+      sandbox: "native",
+      allowWrite: [process.cwd()],
+      allowNet: ["example.com"],
+    });
+    await target.connect();
+
+    const writeRes = await target.callTool("sandbox_write_test", {});
+    expect((writeRes as any).content[0].text).toBe("success");
+
+    const netRes = await target.callTool("sandbox_net_test", {});
+    expect((netRes as any).content[0].text).toBe("success");
+  }, 20_000);
+
+  it("runs the mock server with audit sandboxing and ignores whitelisted capability overrides", async () => {
+    let checkCmd = "";
+    if (process.platform === "darwin") checkCmd = "sandbox-exec";
+    else if (process.platform === "linux") checkCmd = "bwrap";
+
+    // Skip if we can't test native sandboxing natively on this host
+    if (checkCmd) {
+      try {
+        const checkCmdStr = `command -v ${checkCmd}`;
+        const { execSync } = await import("node:child_process");
+        execSync(checkCmdStr, { stdio: "ignore" });
+      } catch {
+        return;
+      }
+    } else {
+      try {
+        const mxcModule = "@microsoft/mxc-sdk";
+        await import(mxcModule);
+      } catch {
+        return;
+      }
+    }
+
+    // Spawn with audit mode. Even with allowed exceptions, it should block everything!
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS, {
+      sandbox: "audit",
+      allowWrite: [process.cwd()],
+      allowNet: ["example.com"],
+    });
+    await target.connect();
+
+    const writeRes = await target.callTool("sandbox_write_test", {});
+    expect((writeRes as any).content[0].text).toContain("denied");
+
+    const netRes = await target.callTool("sandbox_net_test", {});
+    expect((netRes as any).content[0].text).toContain("denied");
+  }, 20_000);
+
+  it("runs the mock server with native sandboxing and network allowed, proxying and logging network traffic", async () => {
+    let checkCmd = "";
+    if (process.platform === "darwin") checkCmd = "sandbox-exec";
+    else if (process.platform === "linux") checkCmd = "bwrap";
+
+    // Skip if we can't test native sandboxing natively on this host
+    if (checkCmd) {
+      try {
+        const checkCmdStr = `command -v ${checkCmd}`;
+        const { execSync } = await import("node:child_process");
+        execSync(checkCmdStr, { stdio: "ignore" });
+      } catch {
+        return;
+      }
+    } else {
+      try {
+        const mxcModule = "@microsoft/mxc-sdk";
+        await import(mxcModule);
+      } catch {
+        return;
+      }
+    }
+
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    // Spawn with native sandboxing and whitelisted network
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS, {
+      sandbox: "native",
+      allowNet: ["example.com"],
+    });
+    await target.connect();
+
+    const netRes = await target.callTool("sandbox_net_test", {});
+    expect((netRes as any).content[0].text).toBe("success");
+
+    // Verify proxy logging intercepted the HTTP call to example.com
+    const calls = consoleSpy.mock.calls.map((c: any) => c[0]);
+    expect(calls.some((c: string) => c.includes("[NETWORK AUDIT] HTTP request to:"))).toBe(true);
+
+    consoleSpy.mockRestore();
+  }, 20_000);
 });

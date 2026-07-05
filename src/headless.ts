@@ -25,6 +25,13 @@ export interface HeadlessOptions {
   timeoutMs?: number;
   raw?: boolean;
   showStderr?: boolean;
+  sandbox?: "auto" | "docker" | "native" | "audit" | "none";
+  allowRead?: string[];
+  allowWrite?: string[];
+  allowNet?: string[];
+  denyRead?: string[];
+  denyWrite?: string[];
+  denyNet?: string[];
 }
 
 export type HeadlessOperation =
@@ -48,7 +55,15 @@ export async function runHeadless(
   opts: HeadlessOptions = {},
 ): Promise<void> {
   const [command, ...args] = targetCommand;
-  const target = new TargetManager(command, args);
+  const target = new TargetManager(command, args, {
+    sandbox: opts.sandbox,
+    allowRead: opts.allowRead,
+    allowWrite: opts.allowWrite,
+    allowNet: opts.allowNet,
+    denyRead: opts.denyRead,
+    denyWrite: opts.denyWrite,
+    denyNet: opts.denyNet,
+  });
   const interceptor = new ResponseInterceptor({
     outDir: opts.outDir,
     defaultTimeoutMs: opts.timeoutMs ?? DEFAULT_HEADLESS_TIMEOUT_MS,

@@ -12,6 +12,13 @@ export interface ServerOptions {
   timeoutMs?: number;
   maxTextLength?: number;
   mediaThresholdKb?: number;
+  sandbox?: "auto" | "docker" | "native" | "audit" | "none";
+  allowRead?: string[];
+  allowWrite?: string[];
+  allowNet?: string[];
+  denyRead?: string[];
+  denyWrite?: string[];
+  denyNet?: string[];
 }
 
 // ─── Snapshot types for reconnect diffing ──────────────────────────────────
@@ -365,7 +372,15 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       }
     }
 
-    target = new TargetManager(cmdToUse, argsToUse ?? []);
+    target = new TargetManager(cmdToUse, argsToUse ?? [], {
+      sandbox: opts.sandbox,
+      allowRead: opts.allowRead,
+      allowWrite: opts.allowWrite,
+      allowNet: opts.allowNet,
+      denyRead: opts.denyRead,
+      denyWrite: opts.denyWrite,
+      denyNet: opts.denyNet,
+    });
     setupTargetListeners(target);
     try {
       await target.connect();
@@ -506,9 +521,13 @@ export async function startServer(opts: ServerOptions): Promise<void> {
           .describe(
             "If true, returns only the name and description of each primitive (omitting full schemas) when included to save tokens.",
           ),
+        sandbox: z
+          .enum(["auto", "docker", "native", "audit", "none"])
+          .optional()
+          .describe("Sandbox mode to use for this server"),
       },
     },
-    async ({ command, args, env, include, summary }) => {
+    async ({ command, args, env, include, summary, sandbox }) => {
       if (target?.connected) {
         return {
           content: [
@@ -535,7 +554,15 @@ export async function startServer(opts: ServerOptions): Promise<void> {
           }
         }
 
-        target = new TargetManager(command, args ?? []);
+        target = new TargetManager(command, args ?? [], {
+          sandbox: sandbox ?? opts.sandbox,
+          allowRead: opts.allowRead,
+          allowWrite: opts.allowWrite,
+          allowNet: opts.allowNet,
+          denyRead: opts.denyRead,
+          denyWrite: opts.denyWrite,
+          denyNet: opts.denyNet,
+        });
         setupTargetListeners(target);
         try {
           await target.connect();
@@ -1329,7 +1356,15 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         }
       }
 
-      const tempTarget = new TargetManager(command, args ?? []);
+      const tempTarget = new TargetManager(command, args ?? [], {
+        sandbox: opts.sandbox,
+        allowRead: opts.allowRead,
+        allowWrite: opts.allowWrite,
+        allowNet: opts.allowNet,
+        denyRead: opts.denyRead,
+        denyWrite: opts.denyWrite,
+        denyNet: opts.denyNet,
+      });
       const stderrLines: string[] = [];
       tempTarget.on("stderr", (text: string) => {
         stderrLines.push(text);
@@ -1439,7 +1474,15 @@ export async function startServer(opts: ServerOptions): Promise<void> {
             }
           }
 
-          const tempTarget = new TargetManager(s.config.command, s.config.args || []);
+          const tempTarget = new TargetManager(s.config.command, s.config.args || [], {
+            sandbox: opts.sandbox,
+            allowRead: opts.allowRead,
+            allowWrite: opts.allowWrite,
+            allowNet: opts.allowNet,
+            denyRead: opts.denyRead,
+            denyWrite: opts.denyWrite,
+            denyNet: opts.denyNet,
+          });
           try {
             await Promise.race([
               tempTarget.connect(),
