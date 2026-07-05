@@ -60,18 +60,27 @@ You'll see an interactive prompt:
 
 run-mcp [options] [target_command...]
 
-Options:
-  -V, --version                Show version number
-  -o, --out-dir <path>         Directory to save intercepted images and audio
-  -t, --timeout <ms>           Default tool call timeout in milliseconds (default: 300000) (Agent Mode only)
-  --max-text <chars>           Max text response length before truncation (default: 50000) (Agent Mode only)
-  -m, --media-threshold <kb>   Media size threshold in KB to save to disk (0 to always save, -1 to keep inline)
-  --mcp                        Force start Agent Server mode even if run interactively without arguments
-  -s, --script <file>          Read commands from a file instead of stdin (REPL Mode only)
-  --color <mode>               Color output mode: always, never, auto (default: auto)
-  --open-media                 Automatically open intercepted files using the host OS viewer
-  --sandbox <mode>             Sandbox execution mode: auto, docker, native, audit, none (default: none)
-  -h, --help                   Display help for command
+<!-- OPTIONS_START -->
+| Option | Description |
+| :--- | :--- |
+| `-V, --version` | output the version number |
+| `-o, --out-dir <path>` | Directory to save intercepted images and audio |
+| `-t, --timeout <ms>` | Default tool call timeout in milliseconds (default: 300000) (Agent Mode only) |
+| `--max-text <chars>` | Max text response length before truncation (default: 50000) (Agent Mode only) |
+| `-m, --media-threshold <kb>` | Media size threshold in KB to save to disk (0 to always save, -1 to keep inline) |
+| `--mcp` | Force start Agent Server mode even if run interactively without arguments |
+| `-s, --script <file>` | Read commands from a file instead of stdin (REPL Mode only) |
+| `--color <mode>` | Color output mode: always, never, auto (default: auto) |
+| `--open-media` | Automatically open intercepted images and audio files using the host OS viewer |
+| `--sandbox <mode>` | Sandbox execution mode: auto, docker, native, audit, none (default: "none") |
+| `--allow-read <paths...>` | Paths to allow reading under the sandbox |
+| `--allow-write <paths...>` | Paths to allow writing under the sandbox |
+| `--allow-net <domains...>` | Network domains to allow connecting to under the sandbox |
+| `--deny-read <paths...>` | Paths to deny reading under the sandbox |
+| `--deny-write <paths...>` | Paths to deny writing under the sandbox |
+| `--deny-net <domains...>` | Network domains to deny connecting to under the sandbox |
+| `-h, --help` | display help for command |
+<!-- OPTIONS_END -->
 
 Examples:
   $ run-mcp                                       # Test harness (agent mode)
@@ -131,14 +140,17 @@ run-mcp close-session main
 
 ### Available Headless Subcommands
 
-- `call <tool> [json_or_shorthand_args]`
-- `list-tools`
-- `list-resources`
-- `list-prompts`
-- `read <uri>`
-- `describe <tool>`
-- `get-prompt <name> [json_or_shorthand_args]`
+<!-- SUBCOMMANDS_START -->
+- `call [options] <tool> [json_args] [target_command...]`
+- `list-tools [options] [target_command...]`
+- `list-resources [options] [target_command...]`
+- `list-prompts [options] [target_command...]`
+- `read [options] <uri> [target_command...]`
+- `describe [options] <tool> [target_command...]`
+- `get-prompt [options] <name> [json_args] [target_command...]`
+- `daemon [options] <session_name> [target_command...]`
 - `close-session <session_name>`
+<!-- SUBCOMMANDS_END -->
 
 Use `run-mcp <subcommand> --help` for specific command options.
 
@@ -166,50 +178,49 @@ Add `run-mcp` to your agent's MCP configuration using `npx`:
 
 Then use these tools from your agent:
 
-| Tool                           | Description                                                                                                                       |
-| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| `connect_to_mcp`               | Spawn and connect to a local MCP server. Use `include` to get tools/resources/prompts inline. Shows a diff on reconnect.          |
-| `disconnect_from_mcp`          | Tear down the connection                                                                                                          |
-| `mcp_server_status`            | Check connection status                                                                                                           |
-| `call_mcp_primitive`           | Call a tool, read a resource, or get a prompt. Auto-connects if not already connected. Use `disconnect_after` for one-shot tests. |
-| `list_mcp_primitives`          | List tools, resources, and/or prompts on the connected server                                                                     |
-| `get_mcp_server_stderr`        | View target server stderr output                                                                                                  |
-| `list_available_mcp_servers`   | Discover other local MCP servers configured on the host machine                                                                   |
-| `validate_mcp_server`          | Validate an MCP server command, collect diagnostics, and test connections                                                         |
-| `search_all_local_mcp_servers` | Scan all local configuration files, connect to discovered servers, and search their tools, resources, and prompts for a query     |
+<!-- AGENT_TOOLS_START -->
+| Tool | Description |
+| :--- | :--- |
+| `connect_to_mcp` | Spawn and connect (use include to get tools/resources/prompts) |
+| `call_mcp_primitive` | Call a tool, read a resource, or get a prompt (auto-connects) |
+| `list_mcp_primitives` | List tools, resources, and/or prompts |
+| `disconnect_from_mcp` | Tear down and reconnect after changes |
+| `mcp_server_status` | Check connection status |
+| `get_mcp_server_stderr` | View target server stderr output |
+| `validate_mcp_server` | Validate an MCP server command and collect diagnostics |
+| `search_all_local_mcp_servers` | Scan and search all local MCP servers for a query |
+<!-- AGENT_TOOLS_END -->
 
 ## REPL Mode Commands
 
 Once connected via `run-mcp <command>`, the following shorthand commands are available:
 
-| Command                              | Description                                                                                               |
-| ------------------------------------ | --------------------------------------------------------------------------------------------------------- |
-| `explore`                            | Open interactive fuzzy-search selector for tools, resources, and prompts                                  |
-| `tools/list`                         | List all tools exposed by the target server                                                               |
-| `tools/describe <name>`              | Show a tool's full input schema                                                                           |
-| `tools/call <name> [json] [--clear]` | Call a tool. Launch interactive wizard if no JSON provided. Use `--clear` to ignore remembered arguments. |
-| `tools/scaffold <name>`              | Generate argument template for a tool                                                                     |
-| `tools/forget [name]`                | Clear remembered interactive arguments for a tool, or all tools if no name provided.                      |
-| `resources/list`                     | List all resources exposed by the target server                                                           |
-| `resources/read <uri>`               | Read a resource by URI                                                                                    |
-| `resources/templates`                | List all resource templates                                                                               |
-| `resources/subscribe <uri>`          | Subscribe to resource changes                                                                             |
-| `resources/unsubscribe <uri>`        | Unsubscribe from resource changes                                                                         |
-| `prompts/list`                       | List all prompts exposed by the target server                                                             |
-| `prompts/get <name> [json_args]`     | Get a prompt with arguments                                                                               |
-| `ping`                               | Verify target server connection and show round-trip time                                                  |
-| `log-level <level>`                  | Set server logging verbosity                                                                              |
-| `timing`                             | Show tool call performance and duration statistics                                                        |
-| `history`                            | Show or clear request/response history                                                                    |
-| `notifications`                      | Show or clear server notifications and logs                                                               |
-| `roots/list`                         | Show configured client roots                                                                              |
-| `roots/add <uri> [name]`             | Add a root directory                                                                                      |
-| `roots/remove <uri>`                 | Remove a root directory                                                                                   |
-| `reconnect`                          | Disconnect and reconnect to the target server                                                             |
-| `status`                             | Show target server status (PID, uptime, connection)                                                       |
-| `!!` / `last`                        | Re-run the last command                                                                                   |
-| `help`                               | Show available commands                                                                                   |
-| `exit` / `quit`                      | Disconnect and exit                                                                                       |
+<!-- REPL_COMMANDS_START -->
+| Command | Description |
+| :--- | :--- |
+| `tools/list` | List all available tools |
+| `tools/describe <name>` | Show a tool's input schema |
+| `tools/call <name> [json] [opts]` | Call a tool (interactive if no json) |
+| `tools/scaffold <name>` | Generate argument template for a tool |
+| `resources/list` | List all available resources |
+| `resources/read <uri>` | Read a resource by URI |
+| `resources/templates` | List resource templates |
+| `resources/subscribe <uri>` | Subscribe to resource changes |
+| `resources/unsubscribe <uri>` | Unsubscribe from resource changes |
+| `prompts/list` | List all available prompts |
+| `prompts/get <name> [json_args]` | Get a prompt with arguments |
+| `ping` | Verify connection, show round-trip time |
+| `log-level <level>` | Set server logging verbosity |
+| `history [count|clear]` | Show request/response history |
+| `notifications [count|clear]` | Show server notifications |
+| `roots/list` | Show configured client roots |
+| `roots/add <uri> [name]` | Add a root directory |
+| `roots/remove <uri>` | Remove a root directory |
+| `!! / last` | Re-run the last command |
+| `reconnect` | Disconnect and reconnect |
+| `timing` | Show tool call performance stats |
+| `status` | Show target server status |
+<!-- REPL_COMMANDS_END -->
 
 ### Examples
 

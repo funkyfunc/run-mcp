@@ -29,7 +29,7 @@
     "run-mcp": "dist/index.js"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && node scripts/update-readme-help.js",
     "build:fixtures": "tsup tests/fixtures/mock-server.ts tests/fixtures/vulnerable-stdio-server.ts --format esm --target node18 --out-dir tests/fixtures/dist",
     "dev": "tsup --watch",
     "start": "node dist/index.js",
