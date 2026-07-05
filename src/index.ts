@@ -606,6 +606,10 @@ program
     "Automatically open intercepted images and audio files using the host OS viewer",
   )
   .option("--sandbox <mode>", "Sandbox execution mode: auto, docker, native, audit, none", "none")
+  .option(
+    "--scan",
+    "Scan the current workspace and parent directories for any JSON files containing mcpServers",
+  )
   .addHelpText(
     "after",
     `
@@ -690,6 +694,7 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
         denyRead?: string[];
         denyWrite?: string[];
         denyNet?: string[];
+        scan?: boolean;
       },
     ) => {
       const target = activeTargetCommand ?? targetCommand ?? [];
@@ -729,10 +734,11 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
             denyRead: opts.denyRead,
             denyWrite: opts.denyWrite,
             denyNet: opts.denyNet,
+            scan: opts.scan,
           });
         } else {
           // Human is running it in a terminal without arguments -> pick a config
-          const selected = await pickDiscoveredServer();
+          const selected = await pickDiscoveredServer({ scan: opts.scan });
 
           if (!selected) {
             // User aborted or no configs found

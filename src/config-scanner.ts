@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -73,13 +73,17 @@ function getConfigPaths(): { source: string; file: string }[] {
     { source: "Claude Code (Global)", file: path.join(home, ".claude.json") },
     { source: "Claude Code (Project)", file: path.join(cwd, ".mcp.json") },
     { source: "Antigravity", file: path.join(home, ".gemini", "antigravity", "mcp_config.json") },
+    {
+      source: "Gemini App (Global)",
+      file: path.join(home, ".gemini", "config", "mcp_config.json"),
+    },
   ];
 }
 
 /**
  * Parses JSON configs and extracts mcpServers.
  */
-export async function discoverServers(): Promise<DiscoveredServer[]> {
+export async function discoverServers(options?: { scan?: boolean }): Promise<DiscoveredServer[]> {
   const servers: DiscoveredServer[] = [];
   const paths = getConfigPaths();
 
@@ -113,14 +117,70 @@ export async function discoverServers(): Promise<DiscoveredServer[]> {
     }
   }
 
+  // Dynamic scanning: walk up from process.cwd() and search for any JSON files containing "mcpServers"
+  if (options?.scan) {
+    try {
+      let currentDir = process.cwd();
+      const visited = new Set<string>();
+      while (currentDir && !visited.has(currentDir)) {
+        visited.add(currentDir);
+
+        if (existsSync(currentDir)) {
+          const files = await readdir(currentDir, { withFileTypes: true });
+          for (const file of files) {
+            if (file.isFile() && file.name.endsWith(".json")) {
+              // Ignore common heavy / unrelated configuration files to be fast and safe
+              if (
+                file.name === "package-lock.json" ||
+                file.name === "package.json" ||
+                file.name === "tsconfig.json"
+              ) {
+                continue;
+              }
+
+              const filePath = path.join(currentDir, file.name);
+              try {
+                const content = await readFile(filePath, "utf8");
+                if (content.includes("mcpServers")) {
+                  const json = JSON.parse(content);
+                  if (json.mcpServers && typeof json.mcpServers === "object") {
+                    for (const [name, config] of Object.entries(json.mcpServers)) {
+                      if (config && typeof config === "object" && (config as any).command) {
+                        servers.push({
+                          name,
+                          config: config as any,
+                          source: `Local Workspace (${file.name})`,
+                        });
+                      }
+                    }
+                  }
+                }
+              } catch {
+                // Ignore individual parsing/reading errors
+              }
+            }
+          }
+        }
+
+        const parent = path.dirname(currentDir);
+        if (parent === currentDir) break;
+        currentDir = parent;
+      }
+    } catch {
+      // Ignore overall readdir/path issues
+    }
+  }
+
   return servers;
 }
 
 /**
  * Shows an interactive picker using inquirer.
  */
-export async function pickDiscoveredServer(): Promise<DiscoveredServer | null> {
-  const servers = await discoverServers();
+export async function pickDiscoveredServer(options?: {
+  scan?: boolean;
+}): Promise<DiscoveredServer | null> {
+  const servers = await discoverServers(options);
 
   if (servers.length === 0) {
     return null;
@@ -133,8 +193,8 @@ export async function pickDiscoveredServer(): Promise<DiscoveredServer | null> {
     if (!uniqueServers.has(key)) {
       uniqueServers.set(key, s);
     } else {
-      // Favor Project configs over global by overwriting if source includes 'Project'
-      if (s.source.includes("Project")) {
+      // Favor Project/Local Workspace configs over global by overwriting if source includes 'Project' or 'Local Workspace'
+      if (s.source.includes("Project") || s.source.includes("Local Workspace")) {
         uniqueServers.set(key, s);
       }
     }

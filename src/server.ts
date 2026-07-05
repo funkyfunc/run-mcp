@@ -19,6 +19,7 @@ export interface ServerOptions {
   denyRead?: string[];
   denyWrite?: string[];
   denyNet?: string[];
+  scan?: boolean;
 }
 
 // ─── Snapshot types for reconnect diffing ──────────────────────────────────
@@ -920,7 +921,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
     },
     async () => {
       try {
-        const servers = await discoverServers();
+        const servers = await discoverServers({ scan: opts.scan });
 
         if (servers.length === 0) {
           return {
@@ -1446,7 +1447,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       const lowerQuery = query.toLowerCase();
 
       try {
-        const servers = await discoverServers();
+        const servers = await discoverServers({ scan: opts.scan });
         if (servers.length === 0) {
           return {
             content: [{ type: "text" as const, text: "No local MCP servers found to search." }],

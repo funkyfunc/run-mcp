@@ -73,6 +73,7 @@ run-mcp [options] [target_command...]
 | `--color <mode>` | Color output mode: always, never, auto (default: auto) |
 | `--open-media` | Automatically open intercepted images and audio files using the host OS viewer |
 | `--sandbox <mode>` | Sandbox execution mode: auto, docker, native, audit, none (default: "none") |
+| `--scan` | Scan the current workspace and parent directories for any JSON files containing mcpServers |
 | `--allow-read <paths...>` | Paths to allow reading under the sandbox |
 | `--allow-write <paths...>` | Paths to allow writing under the sandbox |
 | `--allow-net <domains...>` | Network domains to allow connecting to under the sandbox |
