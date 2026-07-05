@@ -74,6 +74,7 @@ run-mcp [options] [target_command...]
 | `--open-media` | Automatically open intercepted images and audio files using the host OS viewer |
 | `--sandbox <mode>` | Sandbox execution mode: auto, docker, native, audit, none (default: "none") |
 | `--scan` | Scan the current workspace and parent directories for any JSON files containing mcpServers |
+| `-w, --watch` | Watch the current directory for file changes and auto-reconnect (REPL Mode only) |
 | `--allow-read <paths...>` | Paths to allow reading under the sandbox |
 | `--allow-write <paths...>` | Paths to allow writing under the sandbox |
 | `--allow-net <domains...>` | Network domains to allow connecting to under the sandbox |
@@ -90,6 +91,22 @@ Examples:
   $ run-mcp -- npx -y some-mcp-server             # Test an npx server
   $ run-mcp --out-dir ./test-output               # Agent mode with options
   $ run-mcp --out-dir ./screenshots -- node srv.js # REPL mode with options
+
+## Watch Mode
+
+When developing an MCP server, use `--watch` (or `-w`) to automatically reconnect whenever your source files change. This eliminates the manual `reconnect` step from your edit-test loop:
+
+```bash
+run-mcp -w -- node my-server.js
+```
+
+On each file change, `run-mcp` will:
+1. Detect the changed files (debounced to 500ms to batch rapid saves)
+2. Disconnect from the current server process
+3. Reconnect to a fresh instance
+4. Show a diff of what primitives changed (tools added/removed/modified, resources, prompts)
+
+Common directories like `node_modules`, `.git`, `dist`, and `build` are automatically ignored.
 
 ## Headless Mode (Single-Shot CI/CD)
 
@@ -404,37 +421,43 @@ Pass these flags after `run-mcp` and before the target command:
 ## Architecture
 
 ```
-┌─────────────────────┐         ┌─────────────────────┐
-│                     │  stdio  │                     │
-│   AI Agent / REPL   │◄───────►│     run-mcp         │
-│                     │         │                     │
-└─────────────────────┘         │  ┌───────────────┐  │
-                                │  │  Interceptor   │  │
-                                │  │  • Timeouts    │  │
-                                │  │  • Image Save  │  │
-                                │  │  • Truncation  │  │
-                                │  └───────┬───────┘  │
-                                │          │          │
-                                │  ┌───────▼───────┐  │
-                                │  │ TargetManager  │  │
-                                │  │ (MCP Client)   │  │
-                                │  └───────┬───────┘  │
-                                └──────────┼──────────┘
-                                           │ stdio
-                                ┌──────────▼──────────┐
-                                │  Target MCP Server   │
-                                │  (child process)     │
-                                └─────────────────────┘
+┌─────────────────────┐         ┌──────────────────────────────────┐
+│                     │  stdio  │           run-mcp                │
+│   AI Agent / REPL   │◄───────►│                                  │
+│                     │         │  ┌────────────────────────────┐  │
+└─────────────────────┘         │  │   ResponseInterceptor      │  │
+                                │  │   • Timeouts               │  │
+                                │  │   • Image / Audio Save     │  │
+                                │  │   • Base64 Detection       │  │
+                                │  │   • Truncation             │  │
+                                │  └─────────────┬──────────────┘  │
+                                │                │                 │
+                                │  ┌─────────────▼──────────────┐  │
+                                │  │      TargetManager         │  │
+                                │  │  (MCP Client + Sandbox)    │  │
+                                │  └─────────────┬──────────────┘  │
+                                └────────────────┼─────────────────┘
+                                                 │ stdio / SSE
+                                ┌────────────────▼─────────────────┐
+                                │       Target MCP Server          │
+                                │  (child process or remote HTTP)  │
+                                └──────────────────────────────────┘
 ```
 
 ### Modules
 
-| Module                  | File                    | Responsibility                                                                                                                                                       |
-| ----------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **TargetManager**       | `src/target-manager.ts` | Spawns the target MCP server, manages the MCP Client connection, forwards all MCP primitives (tools, resources, prompts, logging), captures stderr, tracks lifecycle |
-| **ResponseInterceptor** | `src/interceptor.ts`    | Wraps tool calls with timeouts, extracts base64 images and audio to disk, truncates oversized text                                                                   |
-| **REPLMode**            | `src/repl.ts`           | Interactive readline REPL with shorthand command parsing and script mode                                                                                             |
-| **AgentServer**         | `src/server.ts`         | MCP Server that dynamically exposes primitives to agents and proxies target servers                                                  |
+| Module                  | File(s)                 | Responsibility                                                                                                                                                          |
+| ----------------------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **CLI Entry**           | `src/index.ts`          | Commander-based CLI with unified root command, headless subcommands (`call`, `list-tools`, etc.), session/daemon management, and option parsing                          |
+| **TargetManager**       | `src/target-manager.ts` | Spawns the target MCP server, manages MCP Client connection (stdio/SSE), sandbox enforcement (Seatbelt, bwrap, Docker, MXC), auto-reconnect, captures stderr           |
+| **ResponseInterceptor** | `src/interceptor.ts`    | Wraps tool calls with timeouts, extracts base64 images and audio to disk, detects raw base64 text blobs, truncates oversized responses                                  |
+| **REPL**                | `src/repl/`             | Interactive readline REPL with shorthand commands, tab completion, interactive wizards, explore menu, command history, and script mode                                   |
+| **Agent Server**        | `src/server.ts`         | MCP Server exposing tools (`connect_to_mcp`, `call_mcp_primitive`, etc.) so agents can dynamically connect to, inspect, and test local MCP servers                      |
+| **Headless**            | `src/headless.ts`       | Single-shot executor for CLI subcommands — connect, execute one operation, output JSON to stdout, exit                                                                  |
+| **Config Scanner**      | `src/config-scanner.ts` | Discovers MCP server configurations across VS Code, Cursor, Claude Desktop, Windsurf, Copilot, Gemini CLI, and local workspace files                                   |
+| **Settings**            | `src/settings.ts`       | Hierarchical sandbox policy loader (managed → user → project → local) with `SandboxPolicy` class for file/network permission evaluation and Seatbelt profile generation |
+| **Parsing**             | `src/parsing.ts`        | Pure functions: command line splitting, argument parsing, JSON formatting, HTTPie-style args, Levenshtein distance, typo suggestions                                    |
+| **Proxy Audit**         | `src/proxy-audit.ts`    | HTTP proxy for `--sandbox audit` mode that logs outbound network connections from sandboxed server processes                                                             |
 
 ## Development
 

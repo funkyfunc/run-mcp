@@ -3,8 +3,10 @@ import { createInterface } from "node:readline";
 import { colors as pc } from "../colors.js";
 import { ResponseInterceptor } from "../interceptor.js";
 import { groupToolsByPrefix, interpolateString } from "../parsing.js";
+import { type Snapshot, computeSnapshotDiff, takeSnapshot } from "../snapshot.js";
 import type { ServerNotification } from "../target-manager.js";
 import { TargetManager } from "../target-manager.js";
+import { FileWatcher } from "../watcher.js";
 import {
   activeRl,
   setActiveRl,
@@ -28,6 +30,7 @@ interface ReplOptions {
   outDir?: string;
   mediaThresholdKb?: number;
   openMedia?: boolean;
+  watch?: boolean;
   sandbox?: "auto" | "docker" | "native" | "audit" | "none";
   allowRead?: string[];
   allowWrite?: string[];
@@ -315,6 +318,78 @@ export async function startRepl(targetCommand: string[], opts: ReplOptions): Pro
         rejectFn(new Error("No interactive terminal available for elicitation"));
       }
     });
+  }
+
+  // ─── Watch mode ──────────────────────────────────────────────────────────
+
+  let watchSnapshot: Snapshot | null = null;
+
+  if (opts.watch && !isScriptMode) {
+    const watchPath = process.cwd();
+    const watcher = new FileWatcher(watchPath);
+
+    // Take initial snapshot for diffing
+    watchSnapshot = await takeSnapshot(target);
+
+    watcher.on("change", async ({ files }: { files: string[] }) => {
+      const displayFiles =
+        files.length <= 3
+          ? files.join(", ")
+          : `${files.slice(0, 3).join(", ")} (+${files.length - 3} more)`;
+
+      console.log();
+      console.log(pc.cyan(`  ⟳ File change detected: ${displayFiles}`));
+      console.log(pc.dim("    Reconnecting..."));
+
+      try {
+        await target.close();
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        await target.connect();
+        const s = target.getStatus();
+        console.log(pc.green(`  ✓ Reconnected (PID: ${s.pid})`));
+
+        // Compute and display diff
+        const newSnapshot = await takeSnapshot(target);
+        if (watchSnapshot) {
+          const diffLines = computeSnapshotDiff(watchSnapshot, newSnapshot);
+          if (diffLines.length > 0) {
+            for (const line of diffLines) {
+              console.log(pc.dim(`  ${line}`));
+            }
+          }
+        }
+        watchSnapshot = newSnapshot;
+
+        // Refresh tab completion caches
+        await refreshCaches(target);
+
+        // Re-prompt if readline is active
+        if (activeRl) {
+          activeRl.setPrompt(getPrompt(target));
+          activeRl.prompt();
+        }
+      } catch (err: any) {
+        console.error(pc.red(`  ✗ Reconnect failed: ${err.message}`));
+        console.log(pc.dim("    Fix the issue and save again, or use 'reconnect' manually."));
+        if (activeRl) {
+          activeRl.setPrompt(getPrompt(target));
+          activeRl.prompt();
+        }
+      }
+    });
+
+    watcher.on("error", (err: Error) => {
+      console.error(pc.yellow(`  ⚠ Watch error: ${err.message}`));
+    });
+
+    watcher.start();
+    console.log(pc.dim(`  👁 Watching ${watchPath} for changes`));
+
+    // Clean up watcher on process exit
+    const cleanup = () => watcher.stop();
+    process.on("exit", cleanup);
+    process.on("SIGINT", cleanup);
+    process.on("SIGTERM", cleanup);
   }
 
   // ─── Startup: gather counts + show banner ─────────────────────────────────

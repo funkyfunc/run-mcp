@@ -211,250 +211,139 @@ if (dashDashIndex !== -1) {
 
 program.enablePositionalOptions();
 
-// ─── Subcommand: call ─────────────────────────────────────────────────────────
+// ─── Headless subcommand registration helper ─────────────────────────────────
 
-program
-  .command("call")
-  .argument("<tool>", "Tool name to call")
-  .argument("[json_args]", "JSON arguments for the tool")
-  .argument("[target_command...]", "Target server command (after --)")
-  .description("Call a tool on a target MCP server and print the result as JSON")
-  .option("-o, --out-dir <path>", "Output directory for saved media")
-  .option("-t, --timeout <ms>", "Timeout in milliseconds (default: 30000)")
-  .option(
-    "-m, --media-threshold <kb>",
-    "Media size threshold in KB to save to disk (0 to always save, -1 to keep inline)",
-  )
-  .option("--raw", "Print the full result object including metadata")
-  .option("--show-stderr", "Stream target server stderr to process stderr")
-  .option("--session <name>", "Persistent session name")
-  .option("--sandbox <mode>", "Sandbox execution mode: auto, docker, native, audit, none", "none")
-  .allowUnknownOption()
-  .action(
-    async (
-      tool: string,
-      jsonArgs: string | undefined,
-      targetCommand: string[],
-      opts: HeadlessOpts,
-    ) => {
-      const operation = { type: "call" as const, tool, args: jsonArgs };
-      const parsedOpts = parseHeadlessOpts(opts);
-      if (opts.session) {
-        await handleHeadlessSession(
-          opts.session,
-          targetCommand,
-          operation,
-          parsedOpts,
-          "run-mcp call <tool> [json_args] -- <server_command...>",
-        );
-      } else {
-        const target = requireTargetCommand(
-          activeTargetCommand ?? targetCommand,
-          "run-mcp call <tool> [json_args] -- <server_command...>",
-        );
-        await runHeadless(target, operation, parsedOpts);
-      }
-    },
-  );
+interface HeadlessCommandConfig {
+  name: string;
+  description: string;
+  args: Array<{ name: string; required: boolean; description: string }>;
+  extraOptions?: Array<{ flags: string; description: string }>;
+  buildOperation: (...positionalArgs: any[]) => any;
+  usageHint: string;
+}
 
-// ─── Subcommand: list-tools ───────────────────────────────────────────────────
+function registerHeadlessCommand(config: HeadlessCommandConfig) {
+  const cmd = program.command(config.name).description(config.description);
 
-program
-  .command("list-tools")
-  .argument("[target_command...]", "Target server command (after --)")
-  .description("List all tools on a target MCP server as JSON")
-  .option("--show-stderr", "Stream target server stderr to process stderr")
-  .option("--session <name>", "Persistent session name")
-  .option("--sandbox <mode>", "Sandbox execution mode: auto, docker, native, audit, none", "none")
-  .allowUnknownOption()
-  .action(async (targetCommand: string[], opts: HeadlessOpts) => {
-    const operation = { type: "list-tools" as const };
+  for (const arg of config.args) {
+    const wrapped = arg.required ? `<${arg.name}>` : `[${arg.name}]`;
+    cmd.argument(wrapped, arg.description);
+  }
+  cmd.argument("[target_command...]", "Target server command (after --)");
+
+  // Shared options for all headless commands
+  cmd
+    .option("-o, --out-dir <path>", "Output directory for saved media")
+    .option("-t, --timeout <ms>", "Timeout in milliseconds (default: 30000)")
+    .option(
+      "-m, --media-threshold <kb>",
+      "Media size threshold in KB to save to disk (0 to always save, -1 to keep inline)",
+    )
+    .option("--show-stderr", "Stream target server stderr to process stderr")
+    .option("--session <name>", "Persistent session name")
+    .option("--sandbox <mode>", "Sandbox execution mode: auto, docker, native, audit, none", "none")
+    .allowUnknownOption();
+
+  // Command-specific options
+  for (const opt of config.extraOptions ?? []) {
+    cmd.option(opt.flags, opt.description);
+  }
+
+  cmd.action(async (...actionArgs: any[]) => {
+    // Commander passes positional args first, then opts, then the Command object
+    // For N defined args + [target_command...], we get N+1 positional + opts + cmd
+    const positionalCount = config.args.length;
+    const positionalArgs = actionArgs.slice(0, positionalCount);
+    const targetCommand: string[] = actionArgs[positionalCount];
+    const opts: HeadlessOpts = actionArgs[positionalCount + 1];
+
+    const operation = config.buildOperation(...positionalArgs);
     const parsedOpts = parseHeadlessOpts(opts);
+    const usageStr = `run-mcp ${config.usageHint}`;
+
     if (opts.session) {
-      await handleHeadlessSession(
-        opts.session,
-        targetCommand,
-        operation,
-        parsedOpts,
-        "run-mcp list-tools -- <server_command...>",
-      );
+      await handleHeadlessSession(opts.session, targetCommand, operation, parsedOpts, usageStr);
     } else {
-      const target = requireTargetCommand(
-        activeTargetCommand ?? targetCommand,
-        "run-mcp list-tools -- <server_command...>",
-      );
+      const target = requireTargetCommand(activeTargetCommand ?? targetCommand, usageStr);
       await runHeadless(target, operation, parsedOpts);
     }
   });
+}
 
-// ─── Subcommand: list-resources ───────────────────────────────────────────────
+// ─── Headless subcommands ─────────────────────────────────────────────────────
 
-program
-  .command("list-resources")
-  .argument("[target_command...]", "Target server command (after --)")
-  .description("List all resources on a target MCP server as JSON")
-  .option("--show-stderr", "Stream target server stderr to process stderr")
-  .option("--session <name>", "Persistent session name")
-  .option("--sandbox <mode>", "Sandbox execution mode: auto, docker, native, audit, none", "none")
-  .allowUnknownOption()
-  .action(async (targetCommand: string[], opts: HeadlessOpts) => {
-    const operation = { type: "list-resources" as const };
-    const parsedOpts = parseHeadlessOpts(opts);
-    if (opts.session) {
-      await handleHeadlessSession(
-        opts.session,
-        targetCommand,
-        operation,
-        parsedOpts,
-        "run-mcp list-resources -- <server_command...>",
-      );
-    } else {
-      const target = requireTargetCommand(
-        activeTargetCommand ?? targetCommand,
-        "run-mcp list-resources -- <server_command...>",
-      );
-      await runHeadless(target, operation, parsedOpts);
-    }
-  });
+registerHeadlessCommand({
+  name: "call",
+  description: "Call a tool on a target MCP server and print the result as JSON",
+  args: [
+    { name: "tool", required: true, description: "Tool name to call" },
+    { name: "json_args", required: false, description: "JSON arguments for the tool" },
+  ],
+  extraOptions: [
+    { flags: "--raw", description: "Print the full result object including metadata" },
+  ],
+  buildOperation: (tool: string, jsonArgs?: string) => ({
+    type: "call" as const,
+    tool,
+    args: jsonArgs,
+  }),
+  usageHint: "call <tool> [json_args] -- <server_command...>",
+});
 
-// ─── Subcommand: list-prompts ─────────────────────────────────────────────────
+registerHeadlessCommand({
+  name: "list-tools",
+  description: "List all tools on a target MCP server as JSON",
+  args: [],
+  buildOperation: () => ({ type: "list-tools" as const }),
+  usageHint: "list-tools -- <server_command...>",
+});
 
-program
-  .command("list-prompts")
-  .argument("[target_command...]", "Target server command (after --)")
-  .description("List all prompts on a target MCP server as JSON")
-  .option("--show-stderr", "Stream target server stderr to process stderr")
-  .option("--session <name>", "Persistent session name")
-  .option("--sandbox <mode>", "Sandbox execution mode: auto, docker, native, audit, none", "none")
-  .allowUnknownOption()
-  .action(async (targetCommand: string[], opts: HeadlessOpts) => {
-    const operation = { type: "list-prompts" as const };
-    const parsedOpts = parseHeadlessOpts(opts);
-    if (opts.session) {
-      await handleHeadlessSession(
-        opts.session,
-        targetCommand,
-        operation,
-        parsedOpts,
-        "run-mcp list-prompts -- <server_command...>",
-      );
-    } else {
-      const target = requireTargetCommand(
-        activeTargetCommand ?? targetCommand,
-        "run-mcp list-prompts -- <server_command...>",
-      );
-      await runHeadless(target, operation, parsedOpts);
-    }
-  });
+registerHeadlessCommand({
+  name: "list-resources",
+  description: "List all resources on a target MCP server as JSON",
+  args: [],
+  buildOperation: () => ({ type: "list-resources" as const }),
+  usageHint: "list-resources -- <server_command...>",
+});
 
-// ─── Subcommand: read ─────────────────────────────────────────────────────────
+registerHeadlessCommand({
+  name: "list-prompts",
+  description: "List all prompts on a target MCP server as JSON",
+  args: [],
+  buildOperation: () => ({ type: "list-prompts" as const }),
+  usageHint: "list-prompts -- <server_command...>",
+});
 
-program
-  .command("read")
-  .argument("<uri>", "Resource URI to read")
-  .argument("[target_command...]", "Target server command (after --)")
-  .description("Read a resource by URI from a target MCP server")
-  .option(
-    "-m, --media-threshold <kb>",
-    "Media size threshold in KB to save to disk (0 to always save, -1 to keep inline)",
-  )
-  .option("--show-stderr", "Stream target server stderr to process stderr")
-  .option("--session <name>", "Persistent session name")
-  .option("--sandbox <mode>", "Sandbox execution mode: auto, docker, native, audit, none", "none")
-  .allowUnknownOption()
-  .action(async (uri: string, targetCommand: string[], opts: HeadlessOpts) => {
-    const operation = { type: "read" as const, uri };
-    const parsedOpts = parseHeadlessOpts(opts);
-    if (opts.session) {
-      await handleHeadlessSession(
-        opts.session,
-        targetCommand,
-        operation,
-        parsedOpts,
-        "run-mcp read <uri> -- <server_command...>",
-      );
-    } else {
-      const target = requireTargetCommand(
-        activeTargetCommand ?? targetCommand,
-        "run-mcp read <uri> -- <server_command...>",
-      );
-      await runHeadless(target, operation, parsedOpts);
-    }
-  });
+registerHeadlessCommand({
+  name: "read",
+  description: "Read a resource by URI from a target MCP server",
+  args: [{ name: "uri", required: true, description: "Resource URI to read" }],
+  buildOperation: (uri: string) => ({ type: "read" as const, uri }),
+  usageHint: "read <uri> -- <server_command...>",
+});
 
-// ─── Subcommand: describe ─────────────────────────────────────────────────────
+registerHeadlessCommand({
+  name: "describe",
+  description: "Print a tool's full schema as JSON",
+  args: [{ name: "tool", required: true, description: "Tool name to describe" }],
+  buildOperation: (tool: string) => ({ type: "describe" as const, tool }),
+  usageHint: "describe <tool> -- <server_command...>",
+});
 
-program
-  .command("describe")
-  .argument("<tool>", "Tool name to describe")
-  .argument("[target_command...]", "Target server command (after --)")
-  .description("Print a tool's full schema as JSON")
-  .option("--show-stderr", "Stream target server stderr to process stderr")
-  .option("--session <name>", "Persistent session name")
-  .option("--sandbox <mode>", "Sandbox execution mode: auto, docker, native, audit, none", "none")
-  .allowUnknownOption()
-  .action(async (tool: string, targetCommand: string[], opts: HeadlessOpts) => {
-    const operation = { type: "describe" as const, tool };
-    const parsedOpts = parseHeadlessOpts(opts);
-    if (opts.session) {
-      await handleHeadlessSession(
-        opts.session,
-        targetCommand,
-        operation,
-        parsedOpts,
-        "run-mcp describe <tool> -- <server_command...>",
-      );
-    } else {
-      const target = requireTargetCommand(
-        activeTargetCommand ?? targetCommand,
-        "run-mcp describe <tool> -- <server_command...>",
-      );
-      await runHeadless(target, operation, parsedOpts);
-    }
-  });
-
-// ─── Subcommand: get-prompt ───────────────────────────────────────────────────
-
-program
-  .command("get-prompt")
-  .argument("<name>", "Prompt name")
-  .argument("[json_args]", "JSON arguments for the prompt")
-  .argument("[target_command...]", "Target server command (after --)")
-  .description("Get a prompt with optional arguments from a target MCP server")
-  .option(
-    "-m, --media-threshold <kb>",
-    "Media size threshold in KB to save to disk (0 to always save, -1 to keep inline)",
-  )
-  .option("--show-stderr", "Stream target server stderr to process stderr")
-  .option("--session <name>", "Persistent session name")
-  .option("--sandbox <mode>", "Sandbox execution mode: auto, docker, native, audit, none", "none")
-  .allowUnknownOption()
-  .action(
-    async (
-      name: string,
-      jsonArgs: string | undefined,
-      targetCommand: string[],
-      opts: HeadlessOpts,
-    ) => {
-      const operation = { type: "get-prompt" as const, name, args: jsonArgs };
-      const parsedOpts = parseHeadlessOpts(opts);
-      if (opts.session) {
-        await handleHeadlessSession(
-          opts.session,
-          targetCommand,
-          operation,
-          parsedOpts,
-          "run-mcp get-prompt <name> [json_args] -- <server_command...>",
-        );
-      } else {
-        const target = requireTargetCommand(
-          activeTargetCommand ?? targetCommand,
-          "run-mcp get-prompt <name> [json_args] -- <server_command...>",
-        );
-        await runHeadless(target, operation, parsedOpts);
-      }
-    },
-  );
+registerHeadlessCommand({
+  name: "get-prompt",
+  description: "Get a prompt with optional arguments from a target MCP server",
+  args: [
+    { name: "name", required: true, description: "Prompt name" },
+    { name: "json_args", required: false, description: "JSON arguments for the prompt" },
+  ],
+  buildOperation: (name: string, jsonArgs?: string) => ({
+    type: "get-prompt" as const,
+    name,
+    args: jsonArgs,
+  }),
+  usageHint: "get-prompt <name> [json_args] -- <server_command...>",
+});
 
 // ─── Subcommand: daemon ───────────────────────────────────────────────────────
 
@@ -610,12 +499,17 @@ program
     "--scan",
     "Scan the current workspace and parent directories for any JSON files containing mcpServers",
   )
+  .option(
+    "-w, --watch",
+    "Watch the current directory for file changes and auto-reconnect (REPL Mode only)",
+  )
   .addHelpText(
     "after",
     `
 Examples:
   $ run-mcp                                       # Test harness (agent mode)
   $ run-mcp -- node my-server.js                  # Interactive testing (human REPL mode)
+  $ run-mcp -w -- node my-server.js               # Watch mode: auto-reconnect on file changes
   $ run-mcp -s test.txt -- node my-server.js      # Run a script in REPL mode
   $ run-mcp -- npx -y some-mcp-server             # Test an npx server
   $ run-mcp --out-dir ./test-output               # Agent mode with options
@@ -687,6 +581,7 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
         mediaThreshold?: string;
         mcp?: boolean;
         openMedia?: boolean;
+        watch?: boolean;
         sandbox?: string;
         allowRead?: string[];
         allowWrite?: string[];
@@ -708,6 +603,7 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
             ? Number.parseInt(opts.mediaThreshold, 10)
             : undefined,
           openMedia: opts.openMedia,
+          watch: opts.watch,
           sandbox: opts.sandbox as any,
           allowRead: opts.allowRead,
           allowWrite: opts.allowWrite,
@@ -758,6 +654,7 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
               ? Number.parseInt(opts.mediaThreshold, 10)
               : undefined,
             openMedia: opts.openMedia,
+            watch: opts.watch,
             sandbox: opts.sandbox as any,
             allowRead: opts.allowRead,
             allowWrite: opts.allowWrite,

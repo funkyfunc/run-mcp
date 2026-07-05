@@ -1,10 +1,14 @@
-import { createHash } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { discoverServers } from "./config-scanner.js";
 import { type InterceptionMetadata, ResponseInterceptor } from "./interceptor.js";
 import { suggestCommand } from "./parsing.js";
+import {
+  type Snapshot,
+  computeSnapshotDiff,
+  takeSnapshot as takeSnapshotFromTarget,
+} from "./snapshot.js";
 import { TargetManager } from "./target-manager.js";
 
 export interface ServerOptions {
@@ -20,119 +24,6 @@ export interface ServerOptions {
   denyWrite?: string[];
   denyNet?: string[];
   scan?: boolean;
-}
-
-// ─── Snapshot types for reconnect diffing ──────────────────────────────────
-
-interface ToolSnapshot {
-  name: string;
-  hash: string;
-}
-
-interface ResourceSnapshot {
-  uri: string;
-  name: string;
-}
-
-interface PromptSnapshot {
-  name: string;
-  hash: string;
-}
-
-interface Snapshot {
-  tools?: ToolSnapshot[];
-  resources?: ResourceSnapshot[];
-  resourceTemplates?: { uriTemplate: string; name: string }[];
-  prompts?: PromptSnapshot[];
-}
-
-interface DiffEntry {
-  added: string[];
-  removed: string[];
-  modified: string[];
-}
-
-/**
- * Hash a tool/prompt definition for change detection.
- * Includes description + schema so we detect both schema and doc changes.
- */
-function hashDefinition(obj: Record<string, unknown>): string {
-  return createHash("md5").update(JSON.stringify(obj)).digest("hex").slice(0, 12);
-}
-
-/**
- * Compute a diff between two lists of named+hashed items.
- */
-function computeDiff(
-  prev: { name: string; hash: string }[],
-  curr: { name: string; hash: string }[],
-): DiffEntry {
-  const prevMap = new Map(prev.map((p) => [p.name, p.hash]));
-  const currMap = new Map(curr.map((c) => [c.name, c.hash]));
-
-  const added: string[] = [];
-  const removed: string[] = [];
-  const modified: string[] = [];
-
-  for (const [name, hash] of currMap) {
-    if (!prevMap.has(name)) {
-      added.push(name);
-    } else if (prevMap.get(name) !== hash) {
-      modified.push(name);
-    }
-  }
-  for (const name of prevMap.keys()) {
-    if (!currMap.has(name)) {
-      removed.push(name);
-    }
-  }
-
-  return { added, removed, modified };
-}
-
-/**
- * Compute a diff between two resource lists (no hash — just presence).
- */
-function computeResourceDiff(prev: ResourceSnapshot[], curr: ResourceSnapshot[]): DiffEntry {
-  const prevUris = new Set(prev.map((r) => r.uri));
-  const currUris = new Set(curr.map((r) => r.uri));
-
-  const added = [...currUris].filter((u) => !prevUris.has(u));
-  const removed = [...prevUris].filter((u) => !currUris.has(u));
-
-  return { added, removed, modified: [] };
-}
-
-/**
- * Compute a diff between two resource template lists (no hash — just presence).
- */
-function computeResourceTemplateDiff(
-  prev: { uriTemplate: string; name: string }[],
-  curr: { uriTemplate: string; name: string }[],
-): DiffEntry {
-  const prevUris = new Set(prev.map((t) => t.uriTemplate));
-  const currUris = new Set(curr.map((t) => t.uriTemplate));
-
-  const added = [...currUris].filter((u) => !prevUris.has(u));
-  const removed = [...prevUris].filter((u) => !currUris.has(u));
-
-  return { added, removed, modified: [] };
-}
-
-/**
- * Format a diff entry as a human-readable summary line.
- */
-function formatDiffLine(label: string, diff: DiffEntry): string {
-  const parts: string[] = [];
-  if (diff.added.length > 0) parts.push(`+${diff.added.length} added`);
-  if (diff.modified.length > 0) parts.push(`~${diff.modified.length} modified`);
-  if (diff.removed.length > 0) parts.push(`-${diff.removed.length} removed`);
-
-  if (parts.length === 0) return `  ${label}: unchanged`;
-
-  const details = parts.join(", ");
-  const names = [...diff.added, ...diff.modified, ...diff.removed];
-  return `  ${label}: ${details} (${names.join(", ")})`;
 }
 
 /**
@@ -239,103 +130,14 @@ export async function startServer(opts: ServerOptions): Promise<void> {
 
   /** Take a snapshot of the current target's primitives. */
   async function takeSnapshot(): Promise<Snapshot> {
-    if (!target?.connected) return {};
-
-    const snap: Snapshot = {};
-    const caps = target.getServerCapabilities() ?? {};
-
-    if (caps.tools) {
-      try {
-        const { tools } = await target.listTools();
-        snap.tools = tools.map((t) => ({
-          name: t.name,
-          hash: hashDefinition({
-            description: t.description,
-            inputSchema: t.inputSchema,
-          }),
-        }));
-      } catch {
-        /* ignore */
-      }
-    }
-
-    if (caps.resources) {
-      try {
-        const { resources } = await target.listResources();
-        snap.resources = resources.map((r) => ({
-          uri: (r as any).uri,
-          name: (r as any).name ?? "",
-        }));
-      } catch {
-        /* ignore */
-      }
-      try {
-        const { resourceTemplates } = await target.listResourceTemplates();
-        snap.resourceTemplates = resourceTemplates.map((t) => ({
-          uriTemplate: t.uriTemplate,
-          name: t.name ?? "",
-        }));
-      } catch {
-        /* ignore */
-      }
-    }
-
-    if (caps.prompts) {
-      try {
-        const { prompts } = await target.listPrompts();
-        snap.prompts = prompts.map((p) => ({
-          name: p.name,
-          hash: hashDefinition({ description: p.description }),
-        }));
-      } catch {
-        /* ignore */
-      }
-    }
-
-    return snap;
+    if (!target) return {};
+    return takeSnapshotFromTarget(target);
   }
 
   /** Compute diff between previousSnapshot and current, formatted as text lines. */
-  function computeSnapshotDiff(current: Snapshot): string[] {
+  function diffSnapshot(current: Snapshot): string[] {
     if (!previousSnapshot) return [];
-
-    const lines: string[] = ["", "Changes since last connection:"];
-
-    if (current.tools && previousSnapshot.tools) {
-      lines.push(formatDiffLine("Tools", computeDiff(previousSnapshot.tools, current.tools)));
-    }
-    if (current.resources && previousSnapshot.resources) {
-      lines.push(
-        formatDiffLine(
-          "Resources",
-          computeResourceDiff(previousSnapshot.resources, current.resources),
-        ),
-      );
-    }
-    if (current.resourceTemplates && previousSnapshot.resourceTemplates) {
-      lines.push(
-        formatDiffLine(
-          "Resource Templates",
-          computeResourceTemplateDiff(
-            previousSnapshot.resourceTemplates,
-            current.resourceTemplates,
-          ),
-        ),
-      );
-    }
-    if (current.prompts && previousSnapshot.prompts) {
-      lines.push(formatDiffLine("Prompts", computeDiff(previousSnapshot.prompts, current.prompts)));
-    }
-
-    // If only "unchanged" entries, simplify
-    const hasChanges = lines.some(
-      (l) => l.includes("+") || l.includes("~") || l.includes("-removed"),
-    );
-    if (!hasChanges) {
-      return ["", "Changes since last connection: none"];
-    }
-
-    return lines;
+    return computeSnapshotDiff(previousSnapshot, current);
   }
 
   /** Auto-connect to a target server if not already connected. */
@@ -608,7 +410,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
 
         // Compute diff if we have a previous snapshot and include was requested
         if (previousSnapshot && include && include.length > 0) {
-          lines.push(...computeSnapshotDiff(currentSnapshot));
+          lines.push(...diffSnapshot(currentSnapshot));
         }
 
         // Update snapshot
