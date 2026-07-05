@@ -363,7 +363,7 @@ The package is designed to work with `npx run-mcp`:
 
 2. **Don't add per-instance process listeners.** Use the static `TargetManager._instances` pattern to avoid `MaxListenersExceeded` warnings during testing.
 
-3. **Don't use `passThroughOptions()` on subcommands.** Because of how Commander resolves variadic positional arguments with options, subcommands (like `call`, `read`) use a variadic `[target_command...]` argument and require a `--` separator on the CLI. The default REPL command uses `passThroughOptions()`.
+3. **Don't use `passThroughOptions()` on subcommands.** Because of how Commander resolves variadic positional arguments with options, subcommands (like `call`, `read`) use a variadic `[target_command...]` argument. They require a `--` separator on the CLI if the target command itself contains flags or options (to prevent Commander from parsing them as options for `run-mcp`), but the separator is optional if the target command has no options. The default REPL command uses `passThroughOptions()`.
 
 4. **Don't run tests in parallel.** Integration tests spawn child processes on stdio. Parallel execution causes conflicts.
 

@@ -81,12 +81,20 @@ Examples:
 
 For CI/CD pipelines, shell scripts, or parsing via `jq`, `run-mcp` exposes a suite of headless subcommands that pipe clean JSON to stdout and isolate standard errors and progress updates to stderr.
 
-### ⚠️ Strictly Required Double-Dash `--`
+### ⚠️ Double-Dash `--` Separator
 
-To prevent argument parsing conflicts between `run-mcp` and the target server, **you must always separate the target command with a double-dash `--`**. This applies to both default REPL launching and all headless subcommands.
+To prevent argument parsing conflicts between `run-mcp` and the target server, you should separate the target command with a double-dash `--` when the target command itself contains flags or options.
 
-- **Correct**: `run-mcp list-tools -- node my-server.js`
-- **Incorrect**: `run-mcp list-tools node my-server.js` (will exit with a coaching error)
+* **Required when the target command has options/flags:**
+  ```bash
+  run-mcp list-tools -- node my-server.js --verbose
+  ```
+  *(Must use `--` so `--verbose` is passed to your server, not parsed as an option for `run-mcp`.)*
+* **Optional when the target command has no options/flags:**
+  ```bash
+  run-mcp list-tools node my-server.js
+  ```
+  *(Runs successfully without `--`.)*
 
 ### ⚡ HTTPie-Style Shorthand Arguments
 
