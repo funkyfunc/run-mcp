@@ -188,17 +188,23 @@ Once connected via `run-mcp <command>`, the following shorthand commands are ava
 | `tools/list`                         | List all tools exposed by the target server                                                               |
 | `tools/describe <name>`              | Show a tool's full input schema                                                                           |
 | `tools/call <name> [json] [--clear]` | Call a tool. Launch interactive wizard if no JSON provided. Use `--clear` to ignore remembered arguments. |
+| `tools/scaffold <name>`              | Generate argument template for a tool                                                                     |
 | `tools/forget [name]`                | Clear remembered interactive arguments for a tool, or all tools if no name provided.                      |
 | `resources/list`                     | List all resources exposed by the target server                                                           |
 | `resources/read <uri>`               | Read a resource by URI                                                                                    |
 | `resources/templates`                | List all resource templates                                                                               |
+| `resources/subscribe <uri>`          | Subscribe to resource changes                                                                             |
+| `resources/unsubscribe <uri>`        | Unsubscribe from resource changes                                                                         |
 | `prompts/list`                       | List all prompts exposed by the target server                                                             |
 | `prompts/get <name> [json_args]`     | Get a prompt with arguments                                                                               |
 | `ping`                               | Verify target server connection and show round-trip time                                                  |
+| `log-level <level>`                  | Set server logging verbosity                                                                              |
 | `timing`                             | Show tool call performance and duration statistics                                                        |
 | `history`                            | Show or clear request/response history                                                                    |
 | `notifications`                      | Show or clear server notifications and logs                                                               |
 | `roots/list`                         | Show configured client roots                                                                              |
+| `roots/add <uri> [name]`             | Add a root directory                                                                                      |
+| `roots/remove <uri>`                 | Remove a root directory                                                                                   |
 | `reconnect`                          | Disconnect and reconnect to the target server                                                             |
 | `status`                             | Show target server status (PID, uptime, connection)                                                       |
 | `!!` / `last`                        | Re-run the last command                                                                                   |
