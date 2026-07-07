@@ -835,6 +835,24 @@ describe("server: advanced features and protocol compliance", () => {
     expect(text).toContain("Tools Count: 11");
   }, 25_000);
 
+  it("supports deep protocol validation via validate_mcp_server", async () => {
+    const c = await startRunMcpServer();
+    const result = await c.callTool({
+      name: "validate_mcp_server",
+      arguments: {
+        command: "node",
+        args: ["--import", "tsx", "tests/fixtures/mock-server.ts"],
+        deep: true,
+      },
+    });
+
+    const text = getText(result);
+    expect(text).toContain("Validation Result: PASS");
+    expect(text).toContain("[PASS] handshake_connection");
+    expect(text).toContain("[PASS] server_capabilities");
+    expect(text).toContain("[PASS] tools_capability");
+  }, 25_000);
+
   it("fails validation gracefully for invalid server command with validate_mcp_server", async () => {
     const c = await startRunMcpServer();
     const result = await c.callTool({

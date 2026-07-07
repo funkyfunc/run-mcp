@@ -10,6 +10,7 @@ import {
   takeSnapshot as takeSnapshotFromTarget,
 } from "./snapshot.js";
 import { TargetManager } from "./target-manager.js";
+import { validateProtocol } from "./validator.js";
 
 export interface ServerOptions {
   outDir?: string;
@@ -1148,9 +1149,43 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         command: z.string().describe("Command to run (e.g. 'node', 'python')"),
         args: z.array(z.string()).optional().describe("Arguments to pass"),
         env: z.record(z.string()).optional().describe("Extra environment variables"),
+        deep: z
+          .boolean()
+          .optional()
+          .describe("If true, performs deep protocol and schema compliance checks"),
       },
     },
-    async ({ command, args, env }) => {
+    async ({ command, args, env, deep }) => {
+      if (deep) {
+        try {
+          const report = await validateProtocol(command, args ?? [], env);
+          const checksSummary = report.checks
+            .map((c) => `[${c.status}] ${c.name}: ${c.message || "(no message)"}`)
+            .join("\n");
+
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text:
+                  `Validation Result: ${report.status}\n\n` + `Checks Summary:\n${checksSummary}`,
+              },
+            ],
+            isError: report.status === "FAIL",
+          };
+        } catch (err: any) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Validation Result: FAILED\nError: ${err.message}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      }
+
       const originalEnv: Record<string, string | undefined> = {};
       if (env) {
         for (const [key, value] of Object.entries(env)) {

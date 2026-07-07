@@ -10,6 +10,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { z } from "zod";
 import {
   CreateMessageRequestSchema,
   ElicitRequestSchema,
@@ -603,6 +604,18 @@ export class TargetManager extends EventEmitter {
     const result = await this.client!.setLoggingLevel(level as any);
     this.recordResponse();
     this._addHistory(`logging/setLevel ${level}`, { level }, result, Date.now() - start);
+    return result;
+  }
+
+  /**
+   * Send a raw JSON-RPC request to the target MCP server bypassing client-side validation.
+   */
+  async requestRaw(method: string, params?: Record<string, unknown>): Promise<any> {
+    this._assertConnected();
+    const start = Date.now();
+    const result = await this.client!.request({ method, params }, z.any());
+    this.recordResponse();
+    this._addHistory(method, params, result, Date.now() - start);
     return result;
   }
 

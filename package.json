@@ -39,12 +39,15 @@
     "format": "prettier --write \"src/**/*.{ts,js,json}\" \"tests/**/*.{ts,js,json}\" \"*.{ts,js,json}\"",
     "pretest": "tsup && npm run build:fixtures",
     "test": "vitest run",
+    "update-schema": "node scripts/update-schema.js",
     "prepublishOnly": "tsup",
     "prepare": "simple-git-hooks"
   },
   "dependencies": {
     "@inquirer/prompts": "^8.3.2",
     "@modelcontextprotocol/sdk": "^1.12.1",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "commander": "^13.1.0",
     "picocolors": "^1.1.1",
     "tree-kill": "^1.2.2",

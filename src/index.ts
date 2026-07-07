@@ -13,6 +13,7 @@ import { startRepl } from "./repl.js";
 import { startServer } from "./server.js";
 import { TargetManager } from "./target-manager.js";
 import { ResponseInterceptor } from "./interceptor.js";
+import { validateProtocol } from "./validator.js";
 
 // ─── Headless subcommand helper ───────────────────────────────────────────────
 
@@ -461,6 +462,101 @@ program
       }
     }
   });
+
+// ─── Subcommand: validate ────────────────────────────────────────────────────
+
+program
+  .command("validate")
+  .description("Validate an MCP server command and perform diagnostics")
+  .argument("[target_command...]", "Target server command")
+  .option("--deep", "Perform deep protocol and schema compliance checks")
+  .option("--json", "Format output as JSON")
+  .option("--sandbox <mode>", "Sandbox execution mode: auto, docker, native, audit, none", "none")
+  .allowUnknownOption()
+  .action(
+    async (targetCommand: string[], opts: { deep?: boolean; json?: boolean; sandbox?: string }) => {
+      const target = activeTargetCommand ?? targetCommand ?? [];
+      if (target.length === 0) {
+        process.stderr.write("Error: Target server command must be provided.\n");
+        process.exit(64);
+      }
+
+      try {
+        if (opts.deep) {
+          const report = await validateProtocol(target[0], target.slice(1));
+          if (opts.json) {
+            process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+          } else {
+            console.log(
+              `Validation Result: ${report.status === "PASS" ? "\x1b[32mSUCCESS\x1b[0m" : report.status === "WARN" ? "\x1b[33mWARNING\x1b[0m" : "\x1b[31mFAILED\x1b[0m"}\n`,
+            );
+            for (const check of report.checks) {
+              const statusStr =
+                check.status === "PASS"
+                  ? "\x1b[32mPASS\x1b[0m"
+                  : check.status === "WARN"
+                    ? "\x1b[33mWARN\x1b[0m"
+                    : "\x1b[31mFAIL\x1b[0m";
+              console.log(`  [${statusStr}] ${check.name}: ${check.message || ""}`);
+            }
+          }
+          process.exit(report.status === "FAIL" ? 1 : 0);
+        } else {
+          const report = await validateProtocol(target[0], target.slice(1));
+
+          const handshake = report.checks.find((c) => c.name === "handshake_connection");
+          const metadata = report.checks.find((c) => c.name === "implementation_metadata");
+          const tools = report.checks.find((c) => c.name === "tools_capability");
+          const caps = report.checks.find((c) => c.name === "server_capabilities");
+
+          if (report.status === "FAIL") {
+            if (opts.json) {
+              process.stdout.write(
+                JSON.stringify(
+                  { success: false, error: handshake?.message || "Validation failed" },
+                  null,
+                  2,
+                ) + "\n",
+              );
+            } else {
+              console.error(`\x1b[31mValidation Result: FAILED\x1b[0m`);
+              console.error(`Error: ${handshake?.message || "Unknown error"}`);
+            }
+            process.exit(1);
+          }
+
+          if (opts.json) {
+            process.stdout.write(
+              JSON.stringify(
+                {
+                  success: true,
+                  serverName: metadata?.message?.match(/"([^"]+)"/)?.[1] || "unknown",
+                  capabilities: caps?.message || "none",
+                },
+                null,
+                2,
+              ) + "\n",
+            );
+          } else {
+            console.log(`\x1b[32mValidation Result: SUCCESS\x1b[0m`);
+            console.log(`  ${metadata?.message || "Implementation metadata OK."}`);
+            console.log(`  ${caps?.message || "Capabilities OK."}`);
+            console.log(`  ${tools?.message || "Tools OK."}`);
+          }
+          process.exit(0);
+        }
+      } catch (err: any) {
+        if (opts.json) {
+          process.stdout.write(
+            JSON.stringify({ success: false, error: err.message }, null, 2) + "\n",
+          );
+        } else {
+          console.error(`\x1b[31mError: ${err.message}\x1b[0m`);
+        }
+        process.exit(1);
+      }
+    },
+  );
 
 // ─── Default: REPL or Agent Server ───────────────────────────────────────────
 
