@@ -619,6 +619,7 @@ Headless Commands (pipe-friendly, JSON output):
   $ run-mcp read docs://readme -- node my-server.js
   $ run-mcp describe echo -- node my-server.js
   $ run-mcp get-prompt greeting '{"name":"Ada"}' -- node my-server.js
+  $ run-mcp validate --deep -- node my-server.js
 
 Agent Mode Configuration (mcp.json):
   {

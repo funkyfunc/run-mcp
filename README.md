@@ -168,6 +168,7 @@ run-mcp close-session main
 - `get-prompt [options] <name> [json_args] [target_command...]`
 - `daemon [options] <session_name> [target_command...]`
 - `close-session <session_name>`
+- `validate [options] [target_command...]`
 <!-- SUBCOMMANDS_END -->
 
 Use `run-mcp <subcommand> --help` for specific command options.
