@@ -27,7 +27,7 @@
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { writeFileSync, rmSync, existsSync } from "node:fs";
+import { writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import http from "node:http";
 
@@ -269,6 +269,22 @@ server.registerTool(
         rmSync(testFile);
       }
       return { content: [{ type: "text", text: "success" }] };
+    } catch (err: any) {
+      return { content: [{ type: "text", text: `denied: ${err.message}` }] };
+    }
+  },
+);
+
+server.registerTool(
+  "sandbox_read_test",
+  {
+    description: "Attempts to read a file to test sandboxing read restrictions",
+    inputSchema: { path: z.string() },
+  },
+  async ({ path }) => {
+    try {
+      const content = readFileSync(path, "utf8");
+      return { content: [{ type: "text", text: content }] };
     } catch (err: any) {
       return { content: [{ type: "text", text: `denied: ${err.message}` }] };
     }

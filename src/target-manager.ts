@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { execSync } from "node:child_process";
-import { writeFileSync, rmSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { writeFileSync, rmSync, existsSync, mkdirSync, statSync } from "node:fs";
+import { join, relative, resolve, posix } from "node:path";
 import { tmpdir } from "node:os";
 import treeKill from "tree-kill";
 import { loadSettings, SandboxPolicy } from "./settings.js";
@@ -134,6 +134,7 @@ export class TargetManager extends EventEmitter {
 
   private sandboxMode: "auto" | "docker" | "native" | "audit" | "none";
   private _tempSbPath: string | null = null;
+  private _tempDockerPaths: string[] = [];
   private _useWindowsMxc = false;
   private sandboxOptions: {
     allowRead?: string[];
@@ -815,6 +816,18 @@ export class TargetManager extends EventEmitter {
       this._tempSbPath = null;
     }
 
+    // Clean up temporary Docker files/directories
+    for (const p of this._tempDockerPaths) {
+      if (existsSync(p)) {
+        try {
+          rmSync(p, { recursive: true, force: true });
+        } catch {
+          // ignore
+        }
+      }
+    }
+    this._tempDockerPaths = [];
+
     // Shut down proxy if active
     if (this._proxy) {
       try {
@@ -969,7 +982,7 @@ export class TargetManager extends EventEmitter {
         image = "python:3";
       }
       const cwd = process.cwd();
-      args = [
+      const dockerArgs = [
         "run",
         "-i",
         "--rm",
@@ -978,10 +991,57 @@ export class TargetManager extends EventEmitter {
         `${cwd}:/workspace`,
         "-w",
         "/workspace",
-        image,
-        command,
-        ...args,
       ];
+
+      // Translate fileReadDeny/fileWriteDeny into Docker mount masking
+      const deniedPaths = new Set([...policy.fileReadDeny, ...policy.fileWriteDeny]);
+      if (deniedPaths.size > 0) {
+        const absCwd = resolve(cwd);
+        const sep = process.platform === "win32" ? "\\" : "/";
+        let emptyDir: string | null = null;
+        let emptyFile: string | null = null;
+
+        for (const p of deniedPaths) {
+          const absP = resolve(p);
+          if (absP === absCwd || absP.startsWith(absCwd + sep)) {
+            const rel = relative(absCwd, absP);
+            const containerPath = posix.join("/workspace", rel.replace(/\\/g, "/"));
+
+            let isDir = false;
+            if (existsSync(absP)) {
+              try {
+                isDir = statSync(absP).isDirectory();
+              } catch {
+                // ignore
+              }
+            }
+
+            if (isDir) {
+              if (!emptyDir) {
+                emptyDir = join(
+                  tmpdir(),
+                  `run-mcp-empty-dir-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                );
+                mkdirSync(emptyDir, { recursive: true });
+                this._tempDockerPaths.push(emptyDir);
+              }
+              dockerArgs.push("-v", `${emptyDir}:${containerPath}:ro`);
+            } else {
+              if (!emptyFile) {
+                emptyFile = join(
+                  tmpdir(),
+                  `run-mcp-empty-file-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                );
+                writeFileSync(emptyFile, "", "utf8");
+                this._tempDockerPaths.push(emptyFile);
+              }
+              dockerArgs.push("-v", `${emptyFile}:${containerPath}:ro`);
+            }
+          }
+        }
+      }
+
+      args = [...dockerArgs, image, command, ...args];
       command = "docker";
     } else if (modeToUse === "native" || modeToUse === "audit") {
       const isAudit = modeToUse === "audit";
@@ -1078,6 +1138,23 @@ export class TargetManager extends EventEmitter {
           }
         }
 
+        // Apply Bubblewrap deny rules (masking)
+        const deniedPaths = new Set([...policy.fileReadDeny, ...policy.fileWriteDeny]);
+        for (const p of deniedPaths) {
+          if (existsSync(p)) {
+            try {
+              const stats = statSync(p);
+              if (stats.isDirectory()) {
+                bwrapArgs.push("--tmpfs", p);
+              } else {
+                bwrapArgs.push("--ro-bind", "/dev/null", p);
+              }
+            } catch {
+              // ignore
+            }
+          }
+        }
+
         args = [...bwrapArgs, command, ...args];
         command = "bwrap";
       } else if (process.platform === "win32") {
@@ -1117,6 +1194,12 @@ export class TargetManager extends EventEmitter {
       ? [process.cwd()]
       : [process.cwd(), tmpdir(), ...Array.from(policyObj.fileReadAllow)];
     const writePaths = isAudit ? [] : [tmpdir(), ...Array.from(policyObj.fileWriteAllow)];
+
+    if (policyObj.fileReadDeny.size > 0 || policyObj.fileWriteDeny.size > 0) {
+      process.stderr.write(
+        "Warning: The Windows MXC sandbox does not support granular file deny rules. Denied paths may still be accessible if they are inside allowed directories.\n",
+      );
+    }
 
     const policy = {
       filesystem: {

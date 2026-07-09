@@ -1,6 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TargetManager } from "../src/target-manager.js";
 import { MOCK_SERVER_ARGS, MOCK_SERVER_CMD } from "./helpers.js";
+import { SandboxPolicy } from "../src/settings.js";
+import { join } from "node:path";
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...original,
+    execSync: (cmd: string, options?: any) => {
+      if (typeof cmd === "string" && cmd.includes("bwrap")) {
+        return Buffer.from("/usr/bin/bwrap");
+      }
+      return original.execSync(cmd, options);
+    },
+  };
+});
 
 process.env.TSX_DISABLE_CACHE = "1";
 
@@ -433,4 +448,77 @@ describe("sandboxing", () => {
 
     consoleSpy.mockRestore();
   }, 20_000);
+});
+
+describe("sandbox deny masking argument generation", () => {
+  it("generates correct docker arguments for fileReadDeny / fileWriteDeny within workspace", async () => {
+    const fs = await import("node:fs");
+    const secretFile = join(process.cwd(), "test-canary-secret.txt");
+    const secretDir = join(process.cwd(), "test-canary-secrets-dir");
+
+    if (!fs.existsSync(secretFile)) fs.writeFileSync(secretFile, "secret");
+    if (!fs.existsSync(secretDir)) fs.mkdirSync(secretDir, { recursive: true });
+
+    try {
+      const policy = new SandboxPolicy();
+      policy.fileReadDeny.add(secretFile);
+      policy.fileReadDeny.add(secretDir);
+
+      const tm = new TargetManager("node", ["server.js"], {
+        sandbox: "docker",
+      });
+
+      const { command, args } = await (tm as any)._maybeWrapCommand(policy);
+
+      expect(command).toBe("docker");
+      expect(args).toContain("run");
+      expect(args).toContain("-v");
+
+      const expectedFilePart = ":/workspace/test-canary-secret.txt:ro";
+      const expectedDirPart = ":/workspace/test-canary-secrets-dir:ro";
+
+      expect(args.some((arg: string) => arg.endsWith(expectedFilePart))).toBe(true);
+      expect(args.some((arg: string) => arg.endsWith(expectedDirPart))).toBe(true);
+
+      await tm.close();
+    } finally {
+      if (fs.existsSync(secretFile)) fs.rmSync(secretFile);
+      if (fs.existsSync(secretDir)) fs.rmSync(secretDir, { recursive: true });
+    }
+  });
+
+  it("generates correct bwrap arguments for fileReadDeny / fileWriteDeny", async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "linux" });
+
+    try {
+      const policy = new SandboxPolicy();
+      const secretFile = join(process.cwd(), "test-canary-secret.txt");
+      const fs = await import("node:fs");
+      if (!fs.existsSync(secretFile)) fs.writeFileSync(secretFile, "secret");
+
+      policy.fileReadDeny.add(secretFile);
+
+      const tm = new TargetManager("node", ["server.js"], {
+        sandbox: "native",
+      });
+
+      const { command, args } = await (tm as any)._maybeWrapCommand(policy);
+
+      expect(command).toBe("bwrap");
+      let foundDevNullBind = false;
+      for (let i = 0; i < args.length; i++) {
+        if (args[i] === "--ro-bind" && args[i + 1] === "/dev/null" && args[i + 2] === secretFile) {
+          foundDevNullBind = true;
+          break;
+        }
+      }
+      expect(foundDevNullBind).toBe(true);
+
+      if (fs.existsSync(secretFile)) fs.rmSync(secretFile);
+      await tm.close();
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform });
+    }
+  });
 });
