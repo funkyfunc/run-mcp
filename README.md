@@ -384,6 +384,12 @@ By default, the sandbox denies access to the following directories:
 
 Access is strictly blocked using **Deny-Wins** precedence unless a folder is explicitly whitelisted.
 
+> [!NOTE]
+> **Platform Support for Deny Rules**:
+> - **macOS (`native` / Seatbelt)**: Deny rules are natively enforced at the OS kernel level.
+> - **Docker & Linux (`native` / Bubblewrap)**: Deny rules within the workspace are enforced by masking directories/files (overlaying empty files or tmpfs mounts).
+> - **Windows (`native` / MXC)**: The `@microsoft/mxc-sdk` is strictly allowlist-based and does not support exclusions within allowed paths; a warning is printed to `stderr` if deny rules are configured.
+
 ### ⚙️ Capabilities & Configuration
 
 You can configure sandbox rules on the command line or using structured JSON settings files.
