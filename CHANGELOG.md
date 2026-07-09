@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.5] - 2026-07-08
+
+### Fixed
+
+- Updated `README.md` to document platform support and limitations for sandbox deny rules.
+
+## [1.7.4] - 2026-07-08
+
+### Fixed
+
+- **Security Patch**: Resolved file deny-read/write bypass (`RUNMCP-SANDBOX-DENY-BYPASS-001`) in Docker and Linux Bubblewrap sandboxes. Applied volume mount masking (`-v emptyFile:target:ro`) for Docker and overlay mounts (`--tmpfs` / `--ro-bind /dev/null`) for Bubblewrap.
+- Added warnings to process stderr when deny rules are used in the Windows MXC sandbox backend (since exclusions are not supported by the underlying SDK).
+
+## [1.7.3] - 2026-07-07
+
+### Added
+
+- **Deep Protocol Compliance Validator**: Validate third-party MCP servers against protocol conformance using `--validate` command.
+
+## [1.7.2] - 2026-07-05
+
+### Added
+
+- **REPL Watch Mode**: Added `--watch` flag to restart target MCP server when source files change.
+- Refactored CLI subcommands and extracted `snapshot.ts` utility.
+
 ## [1.7.1] - 2026-07-04
 
 ### Added
