@@ -6,14 +6,15 @@ Welcome! If you are an AI agent (or a human new to the codebase) looking to cont
 
 These principles define the soul of the project. Every feature, error message, and code change should reinforce them. If a change conflicts with any of these, rethink the approach.
 
-### 1. Two Audiences, One Pipeline
+### 1. Three Interfaces, One Pipeline
 
-`run-mcp` serves **two distinct users** through the same interception pipeline:
+`run-mcp` exposes **three distinct interfaces** through the same `TargetManager` → `ResponseInterceptor` pipeline:
 
-- **Humans** (REPL mode) — developers who want to quickly test and explore an MCP server without writing client code.
-- **AI agents** (MCP mode) — LLMs building MCP servers that need to dynamically test them without config changes.
+- **Interactive REPL** (`run-mcp -- node server.js`) — Human developers exploring and testing an MCP server with shorthand commands.
+- **Headless CLI** (`run-mcp call`, `run-mcp list-tools`, etc.) — Single-shot subcommands for CI/CD pipelines, shell scripts, and `jq` workflows. Outputs clean JSON to stdout.
+- **Agent MCP Server** (`run-mcp` with no args, or `--mcp`) — An MCP server itself, exposing tools like `connect_to_mcp` and `call_mcp_primitive` so AI agents can dynamically test local MCP servers without config changes.
 
-Both modes share the same `TargetManager` → `ResponseInterceptor` pipeline. The differences are in the input interface (readline vs. MCP tools).
+All three share the same interception pipeline. The differences are in the input interface (readline vs. CLI args vs. MCP tools) and output format (human-readable vs. JSON vs. MCP responses).
 
 ### 2. Transparent by Default, Protective When Needed
 
@@ -37,7 +38,7 @@ When adding new error paths, **always include an actionable suggestion.** Never 
 
 ### 4. Zero Configuration
 
-A user should be able to wrap any MCP server with `run-mcp proxy node my-server.js` and have it work immediately. No config files, no environment variables required, no initialization step. Sensible defaults (60s timeout, 50KB truncation, `/tmp/run-mcp` for images) cover 90% of use cases. Flags exist for the other 10%.
+A user should be able to wrap any MCP server with `run-mcp -- node my-server.js` and have it work immediately. No config files, no environment variables required, no initialization step. Sensible defaults (5-minute timeout, 50KB truncation, `/tmp/run-mcp` for images) cover 90% of use cases. Flags exist for the other 10%.
 
 ### 5. Composable CLI
 
@@ -54,44 +55,46 @@ Users (especially agents) mistype things. The REPL uses Levenshtein distance mat
 
 ## 🏗️ Architecture
 
-The system has a simple layered architecture where every tool call flows through the same pipeline:
+All three interfaces feed into the same interception pipeline. See `README.md` for the full architecture diagram.
 
 ```
-┌─────────────────────┐         ┌─────────────────────┐
-│                     │  stdio  │                     │
-│   AI Agent / REPL   │◄───────►│     run-mcp         │
-│                     │         │                     │
-└─────────────────────┘         │  ┌───────────────┐  │
-                                │  │  Interceptor   │  │
-                                │  │  • Timeouts    │  │
-                                │  │  • Image Save  │  │
-                                │  │  • Audio Save  │  │
-                                │  │  • Truncation  │  │
-                                │  └───────┬───────┘  │
-                                │          │          │
-                                │  ┌───────▼───────┐  │
-                                │  │ TargetManager  │  │
-                                │  │ (MCP Client)   │  │
-                                │  └───────┬───────┘  │
-                                └──────────┼──────────┘
-                                           │ stdio
-                                ┌──────────▼──────────┐
-                                │  Target MCP Server   │
-                                │  (child process)     │
-                                └─────────────────────┘
+  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+  │  REPL (human)│  │ Headless CLI │  │ Agent MCP Srv│
+  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘
+         │                 │                 │
+         └────────┬────────┴────────┬────────┘
+                  │                 │
+           ┌──────▼──────┐  ┌──────▼──────┐
+           │ Interceptor │  │ TargetManager│
+           │ (timeouts,  │──│ (MCP Client, │
+           │  media save,│  │  sandbox,    │
+           │  truncation)│  │  reconnect)  │
+           └─────────────┘  └──────┬──────┘
+                                   │ stdio / SSE
+                            ┌──────▼──────┐
+                            │ Target MCP  │
+                            │   Server    │
+                            └─────────────┘
 ```
 
 ### Source Modules
 
-| Module                  | File                    | Responsibility                                                                                                                                                                                                                                                                                                                                                            |
-| ----------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **CLI Entry**           | `src/index.ts`          | Commander-based CLI with a unified root command. Parses options and delegates to `server.ts` (0 positional args) or `repl.ts` (1+ positional args).                                                                                                                                                                                                                       |
-| **TargetManager**       | `src/target-manager.ts` | Spawns the target MCP server as a child process, wraps it in an MCP `Client`, exposes the full MCP protocol surface (tools, resources, prompts, logging, completion), captures stderr, tracks process lifecycle. Handles auto-reconnect with loop protection (5s min-uptime guard, 3-retry cap, 60s stability reset).                                                     |
-| **ResponseInterceptor** | `src/interceptor.ts`    | Middleware layer that wraps `callTool` with `Promise.race` timeouts, extracts base64 images and audio to disk, detects raw base64 text blobs via regex heuristic, and truncates oversized text responses. Configurable via `InterceptorOptions` (timeout, max text length, output directory).                                                                             |
-| **REPL**                | `src/repl.ts`           | Interactive readline interface. Parses shorthand commands (`tools/list`, `tools/call <name> <json>`), supports script mode (`--script`), streams server stderr in dim text, supports interactive wizard scaffolding + arg memory, and suggests corrections for typos.                                                                                                     |
-| **Server**              | `src/server.ts`         | MCP Server exposing 7 consolidated tools (`connect_to_mcp`, `call_mcp_primitive`, `list_available_mcp_servers`, etc.) so agents can dynamically connect to, inspect, and test local MCP servers without config changes. `call_mcp_primitive` auto-connects if needed and supports tools, resources, and prompts in a single tool. Uses `registerTool()` with Zod schemas. |
-| **Parsing**             | `src/parsing.ts`        | Pure functions extracted for testability: command line splitting, `tools/call` argument parsing, JSON formatting, Levenshtein distance, and typo suggestion.                                                                                                                                                                                                              |
-| **Config Scanner**      | `src/config-scanner.ts` | Hunts for configured MCP server JSONs across global and project paths (VS Code, Copilot, Cursor, Gemini, Claude Desktop, etc.). Powers the `list_available_mcp_servers` agent tool and the headless `<run-mcp>` auto-discovery menu.                                                                                                                                      |
+| Module                  | File(s)                 | Responsibility |
+| ----------------------- | ----------------------- | -------------- |
+| **CLI Entry**           | `src/index.ts`          | Commander-based CLI. Routes to REPL (target command provided), headless subcommands (`call`, `list-tools`, etc.), or Agent Server (no args / `--mcp`). Registers headless subcommands via `registerHeadlessCommand()`. |
+| **TargetManager**       | `src/target-manager.ts` | Spawns the target MCP server, manages MCP Client connection (stdio/SSE), sandbox enforcement (Seatbelt, bwrap, Docker, MXC), auto-reconnect with loop protection, captures stderr, tracks process lifecycle. |
+| **ResponseInterceptor** | `src/interceptor.ts`    | Wraps `callTool` with `Promise.race` timeouts, extracts base64 images/audio to disk, detects raw base64 text blobs, truncates oversized responses. Configurable via `InterceptorOptions`. |
+| **REPL**                | `src/repl/`             | Interactive readline interface across 7 files: `commands.ts` (command routing), `completer.ts` (tab completion), `history.ts` (persistent history), `index.ts` (entry point), `state.ts` (shared state + `KNOWN_COMMANDS`), `ui.ts` (formatting/output), `wizard.ts` (interactive arg scaffolding). `src/repl.ts` is a re-export barrel. |
+| **Agent Server**        | `src/server.ts`         | MCP Server exposing 9 tools (`connect_to_mcp`, `call_mcp_primitive`, `list_mcp_primitives`, `disconnect_from_mcp`, `mcp_server_status`, `get_mcp_server_stderr`, `list_available_mcp_servers`, `validate_mcp_server`, `search_all_local_mcp_servers`) for dynamic MCP server testing. Uses `registerTool()` with Zod schemas. |
+| **Headless**            | `src/headless.ts`       | Single-shot executor for CLI subcommands. Connect → execute one operation → output JSON to stdout → exit. All status/progress to stderr for pipe-clean output. |
+| **Settings**            | `src/settings.ts`       | Hierarchical sandbox policy loader (managed → user → project → local scopes). `SandboxPolicy` class for file/network permission evaluation, path resolution (`~`, `$HOME`), and Seatbelt profile generation. |
+| **Validator**           | `src/validator.ts`      | Protocol compliance validator (`run-mcp validate`). Validates handshake, capabilities, tool schemas, resources, and prompts against the MCP JSON Schema. |
+| **Snapshot**            | `src/snapshot.ts`       | Reconnect diffing: takes snapshots of tools/resources/prompts and computes what was added/removed/modified between connections. |
+| **Watcher**             | `src/watcher.ts`        | File watcher for `--watch` mode. Debounced `fs.watch` with automatic ignore patterns (node_modules, .git, dist, etc.). |
+| **Parsing**             | `src/parsing.ts`        | Pure functions: command line splitting, argument parsing, JSON formatting, HTTPie-style args (`key=val`, `key:=json`), Levenshtein distance, typo suggestions. |
+| **Config Scanner**      | `src/config-scanner.ts` | Discovers MCP server configurations across VS Code, Cursor, Claude Desktop, Windsurf, Copilot, Gemini CLI, and local workspace files. Powers `list_available_mcp_servers` and the interactive picker. |
+| **Proxy Audit**         | `src/proxy-audit.ts`    | HTTP/HTTPS proxy for `--sandbox audit` mode. Logs outbound network connections from sandboxed server processes to stderr. |
+| **Colors**              | `src/colors.ts`         | Color constants and helpers using `picocolors` for consistent terminal styling across REPL and headless output. |
 
 ### Auto-Reconnect Logic (TargetManager)
 
@@ -193,22 +196,32 @@ This prevents `MaxListenersExceeded` warnings when tests create many instances �
 
 ### Adding a New REPL Command
 
-1. **Add the command name** to `KNOWN_COMMANDS` in `src/repl.ts` (so typo suggestion works).
-2. **Add a `case` branch** in `handleCommand()` routing to a new `cmdFoo()` function.
+1. **Add the command name** to `KNOWN_COMMANDS` in `src/repl/state.ts` (so typo suggestion and tab completion work).
+2. **Add a `case` branch** in `handleCommand()` in `src/repl/commands.ts`, routing to a new `cmdFoo()` function.
 3. **Implement `cmdFoo()`** following the existing pattern (validate input, call target, format output).
-4. **Update `printHelp()`** with the new command.
+4. **Update `printHelp()`** in `src/repl/ui.ts` with the new command.
 5. **Add the command** to the `--help` examples in `src/index.ts`.
+
+### Adding a New Headless Subcommand
+
+Headless subcommands use the `registerHeadlessCommand()` pattern in `src/index.ts`:
+
+1. **Call `registerHeadlessCommand()`** with a config object specifying `name`, `description`, `args`, and a `buildOperation` function that returns the operation type.
+2. **Add the operation type** to `HeadlessOperation` in `src/headless.ts` and handle it in `executeOperation()`.
+3. **Add tests** in `tests/headless.test.ts`.
+
+All headless subcommands automatically get shared options (`--out-dir`, `--timeout`, `--session`, `--sandbox`) and the `[target_command...]` variadic argument.
 
 ### Adding a New Interceptor Behavior
 
 1. **Add a new `_processItem()` branch** in `src/interceptor.ts` (or a new method if complex).
-2. **Add tests** in `tests/interceptor.test.ts` — this file has 18 tests covering all interception paths.
+2. **Add tests** in `tests/interceptor.test.ts`.
 3. **Make it configurable** via `InterceptorOptions` if the behavior should be tunable.
 
 ### Adding a New CLI Flag
 
 1. **Add the option** to the relevant commander subcommand in `src/index.ts`.
-2. **Thread the value** through to the module that needs it (repl.ts, proxy.ts, or interceptor.ts).
+2. **Thread the value** through to the module that needs it (`repl/`, `server.ts`, `headless.ts`, or `interceptor.ts`).
 3. Be mindful of argument parsing: the default REPL mode uses `passThroughOptions()`, but headless subcommands use the POSIX `--` separator to cleanly split CLI flags from the target command.
 
 ---
@@ -217,14 +230,17 @@ This prevents `MaxListenersExceeded` warnings when tests create many instances �
 
 ### Test Structure
 
-| File                           | Tests   | What it covers                                                                                                                                            |
-| ------------------------------ | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `tests/parsing.test.ts`        | 30      | Pure parsing functions, JSON formatting, Levenshtein distance, typo suggestions                                                                           |
-| `tests/interceptor.test.ts`    | 18      | Image extraction, audio extraction, base64 detection, truncation, timeout behavior (mocked, no child processes)                                           |
-| `tests/target-manager.test.ts` | 19      | Full integration: spawns the mock server, tests connect/disconnect/listTools/callTool/auto-reconnect                                                      |
-| `tests/e2e.test.ts`            | 6       | End-to-end: TargetManager + ResponseInterceptor against the mock server                                                                                   |
-| `tests/server.test.ts`         | 29      | MCP mode: consolidated tool surface (call_mcp_primitive, list_mcp_primitives), auto-connect, disconnect_after, include flags, reconnect diff, diagnostics |
-| **Total**                      | **102** |                                                                                                                                                           |
+| File                           | What it covers                                                                                                                        |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `tests/parsing.test.ts`        | Pure parsing functions, JSON formatting, HTTPie-style args, Levenshtein distance, typo suggestions                                    |
+| `tests/interceptor.test.ts`    | Image extraction, audio extraction, base64 detection, truncation, timeout behavior (mocked, no child processes)                       |
+| `tests/target-manager.test.ts` | Full integration: spawns the mock server, tests connect/disconnect/listTools/callTool/auto-reconnect/sandbox                          |
+| `tests/e2e.test.ts`            | End-to-end: TargetManager + ResponseInterceptor against the mock server                                                               |
+| `tests/server.test.ts`         | Agent MCP Server: tool surface (call_mcp_primitive, list_mcp_primitives), auto-connect, disconnect_after, reconnect diff, diagnostics |
+| `tests/headless.test.ts`       | Headless CLI subcommands: call, list-tools, list-resources, describe, sessions                                                        |
+| `tests/settings.test.ts`       | Hierarchical settings loading, sandbox policy merging, path resolution                                                                |
+| `tests/proxy-audit.test.ts`    | Network audit proxy HTTP/HTTPS logging                                                                                                |
+| `tests/validator.test.ts`      | Protocol compliance validation against mock server                                                                                    |
 
 ### Running Tests
 
@@ -314,7 +330,10 @@ The mock server uses the **non-deprecated** `McpServer.registerTool()` API. Test
 - **Pure logic** → add to `tests/parsing.test.ts` (fast, no I/O)
 - **Interception** → add to `tests/interceptor.test.ts` (mocked, no child processes)
 - **Integration** → add to `tests/target-manager.test.ts` or `tests/e2e.test.ts` (spawns mock server)
-- **MCP mode protocol coverage** → add to `tests/server.test.ts` (spawns full MCP mode pipeline)
+- **Agent Server protocol** → add to `tests/server.test.ts` (spawns full MCP mode pipeline)
+- **Headless CLI subcommands** → add to `tests/headless.test.ts`
+- **Sandbox / settings** → add to `tests/settings.test.ts`
+- **Protocol validation** → add to `tests/validator.test.ts`
 - **If you add a new tool/resource/prompt to the mock server**, add test coverage in the appropriate test file
 
 ---
@@ -336,7 +355,7 @@ npm test             # pretest (build) + vitest run
 ### Before Committing
 
 1. `npm run lint:fix` — fix formatting and lint issues
-2. `npm test` — ensure all 102 tests pass
+2. `npm test` — ensure all tests pass
 3. `npm run typecheck` — catch type errors not covered by tsup
 
 ### npx Compatibility
@@ -367,4 +386,4 @@ The package is designed to work with `npx run-mcp`:
 
 4. **Don't run tests in parallel.** Integration tests spawn child processes on stdio. Parallel execution causes conflicts.
 
-5. **Don't compile test fixtures separately.** Tests use `tsx` to run `tests/fixtures/mock-server.ts` directly. There is no `tests/tsconfig.json`.
+5. **Test fixtures use `tsx` in integration tests but also have a `build:fixtures` script.** Unit and integration tests run `tests/fixtures/mock-server.ts` via `tsx` directly (no compilation step). The `npm run build:fixtures` script exists for the `pretest` hook to compile fixtures needed by specific test files (e.g., `vulnerable-stdio-server.ts`). Don't remove either approach.

@@ -2,10 +2,11 @@
 
 A smart proxy, interactive REPL, and live test harness for [Model Context Protocol](https://modelcontextprotocol.io) (MCP) servers.
 
-`run-mcp` operates in two modes:
+`run-mcp` provides three interfaces for interacting with MCP servers:
 
 1. **Agent MCP Server** (`run-mcp`) — An MCP server that exposes tools (`connect_to_mcp`, `call_mcp_tool`) so AI agents can dynamically connect to and test local MCP projects without hardcoding them in configuration files. This is the **default mode** when you run `npx -y run-mcp`.
-2. **Interactive REPL** (Interactive mode) — A headless CLI for human developers to manually test and explore MCP servers using short, memorable commands (`tools/call`, `status`, etc.).
+2. **Interactive REPL** (`run-mcp -- node server.js`) — A human-friendly CLI for developers to manually test and explore MCP servers using short, memorable commands (`tools/call`, `status`, etc.).
+3. **Headless CLI** (`run-mcp call`, `run-mcp list-tools`, etc.) — Single-shot subcommands that output clean JSON to stdout for CI/CD pipelines, shell scripts, and `jq` workflows.
 
 ### Interception Rules (Agent Server & REPL)
 
@@ -341,7 +342,7 @@ Tool call responses are processed through the interceptor pipeline. All other pr
 | **Image extraction** | `type: "image"` responses with base64 data are saved to disk. Replaced with `[Image saved to /path/to/img.png (24KB)]`   |
 | **Audio extraction** | `type: "audio"` responses with base64 data are saved to disk. Replaced with `[Audio saved to /path/to/audio.wav (12KB)]` |
 | **Base64 detection** | Text responses that are entirely base64-encoded (1000+ chars) are also saved as images                                   |
-| **Timeouts**         | Tool calls are wrapped in a configurable timeout (default 60s, use `--timeout` to change)                                |
+| **Timeouts**         | Tool calls are wrapped in a configurable timeout (default 5 minutes, use `--timeout` to change)                          |
 | **Truncation**       | Text responses exceeding the limit (default 50K chars, use `--max-text` to change) are truncated                         |
 
 ## Sandboxing & Outbound Data Exfiltration Protection
@@ -427,44 +428,7 @@ Pass these flags after `run-mcp` and before the target command:
 
 ## Architecture
 
-```
-┌─────────────────────┐         ┌──────────────────────────────────┐
-│                     │  stdio  │           run-mcp                │
-│   AI Agent / REPL   │◄───────►│                                  │
-│                     │         │  ┌────────────────────────────┐  │
-└─────────────────────┘         │  │   ResponseInterceptor      │  │
-                                │  │   • Timeouts               │  │
-                                │  │   • Image / Audio Save     │  │
-                                │  │   • Base64 Detection       │  │
-                                │  │   • Truncation             │  │
-                                │  └─────────────┬──────────────┘  │
-                                │                │                 │
-                                │  ┌─────────────▼──────────────┐  │
-                                │  │      TargetManager         │  │
-                                │  │  (MCP Client + Sandbox)    │  │
-                                │  └─────────────┬──────────────┘  │
-                                └────────────────┼─────────────────┘
-                                                 │ stdio / SSE
-                                ┌────────────────▼─────────────────┐
-                                │       Target MCP Server          │
-                                │  (child process or remote HTTP)  │
-                                └──────────────────────────────────┘
-```
-
-### Modules
-
-| Module                  | File(s)                 | Responsibility                                                                                                                                                          |
-| ----------------------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **CLI Entry**           | `src/index.ts`          | Commander-based CLI with unified root command, headless subcommands (`call`, `list-tools`, etc.), session/daemon management, and option parsing                          |
-| **TargetManager**       | `src/target-manager.ts` | Spawns the target MCP server, manages MCP Client connection (stdio/SSE), sandbox enforcement (Seatbelt, bwrap, Docker, MXC), auto-reconnect, captures stderr           |
-| **ResponseInterceptor** | `src/interceptor.ts`    | Wraps tool calls with timeouts, extracts base64 images and audio to disk, detects raw base64 text blobs, truncates oversized responses                                  |
-| **REPL**                | `src/repl/`             | Interactive readline REPL with shorthand commands, tab completion, interactive wizards, explore menu, command history, and script mode                                   |
-| **Agent Server**        | `src/server.ts`         | MCP Server exposing tools (`connect_to_mcp`, `call_mcp_primitive`, etc.) so agents can dynamically connect to, inspect, and test local MCP servers                      |
-| **Headless**            | `src/headless.ts`       | Single-shot executor for CLI subcommands — connect, execute one operation, output JSON to stdout, exit                                                                  |
-| **Config Scanner**      | `src/config-scanner.ts` | Discovers MCP server configurations across VS Code, Cursor, Claude Desktop, Windsurf, Copilot, Gemini CLI, and local workspace files                                   |
-| **Settings**            | `src/settings.ts`       | Hierarchical sandbox policy loader (managed → user → project → local) with `SandboxPolicy` class for file/network permission evaluation and Seatbelt profile generation |
-| **Parsing**             | `src/parsing.ts`        | Pure functions: command line splitting, argument parsing, JSON formatting, HTTPie-style args, Levenshtein distance, typo suggestions                                    |
-| **Proxy Audit**         | `src/proxy-audit.ts`    | HTTP proxy for `--sandbox audit` mode that logs outbound network connections from sandboxed server processes                                                             |
+For the detailed system architecture diagram and source module directory map, please refer to [AGENTS.md](file:///Users/stompinggrounds/Development/run-mcp/AGENTS.md).
 
 ## Development
 
