@@ -2,7 +2,13 @@ import { describe, it, expect } from "vitest";
 import { resolve, join } from "node:path";
 import { homedir } from "node:os";
 import { writeFileSync, mkdirSync, rmSync } from "node:fs";
-import { resolvePath, matchDomain, SandboxPolicy, loadSettings } from "../src/settings.js";
+import {
+  resolvePath,
+  matchDomain,
+  SandboxPolicy,
+  loadSettings,
+  escapeSbplString,
+} from "../src/settings.js";
 
 describe("settings path resolution", () => {
   it("resolves home directory prefix ~", () => {
@@ -23,6 +29,36 @@ describe("settings path resolution", () => {
   it("resolves relative paths to settings file directory", () => {
     const res = resolvePath("./relative/file.txt", "/workspace");
     expect(res).toBe(resolve("/workspace/relative/file.txt"));
+  });
+});
+
+describe("SBPL profile injection hardening", () => {
+  it("escapes double quotes and backslashes in SBPL string literals", () => {
+    expect(escapeSbplString('a"b')).toBe('a\\"b');
+    expect(escapeSbplString("a\\b")).toBe("a\\\\b");
+  });
+
+  it("rejects values containing control characters", () => {
+    expect(() => escapeSbplString("a\nb")).toThrow(/control character/i);
+    expect(() => escapeSbplString("a\x00b")).toThrow(/control character/i);
+  });
+
+  it("neutralizes a crafted deny path so it cannot break out of the profile", () => {
+    const policy = new SandboxPolicy();
+    // A malicious project-scoped config could try to inject SBPL directives.
+    const evil = '/tmp/x") (allow network*) (subpath "/';
+    policy.mergeConfig({ file: { deny: { read: [evil] } } }, "/workspace");
+
+    const profile = policy.getSeatbeltProfile({
+      tmp: "/tmp",
+      cwd: "/workspace",
+      nodeBinDir: "/usr/local/bin",
+      nodeInstallDir: "/usr/local",
+    });
+
+    // The injected raw directive must NOT appear unescaped; the quote is escaped.
+    expect(profile).not.toContain('(subpath "/tmp/x") (allow network*)');
+    expect(profile).toContain('\\"');
   });
 });
 

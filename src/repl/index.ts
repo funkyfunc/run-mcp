@@ -21,7 +21,7 @@ import {
 } from "./state.js";
 import { replHistory, loadHistory, appendToHistoryFile } from "./history.js";
 import { loadWizardDefaults } from "./wizard.js";
-import { printBanner } from "./ui.js";
+import { printBanner, sanitizeServerText } from "./ui.js";
 import { completer, refreshCaches, resetTabCycle } from "./completer.js";
 import { handleCommand, mainMenuLoop, AbortFlowError, question } from "./commands.js";
 
@@ -60,13 +60,17 @@ export function startReadlineLoop(target: TargetManager, interceptor: ResponseIn
   setActiveRl(rl);
   setClosed(false);
 
-  // Reset tab cycling on any non-tab keypress
+  // Reset tab cycling on any non-tab keypress. Keep a reference so we can remove
+  // it when this readline instance closes — withSuspendedReadline tears down and
+  // rebuilds readline on every interactive prompt, so an un-removed listener
+  // would accumulate on process.stdin and eventually trip MaxListenersExceeded.
+  const onKeypress = (_str: string, key: any) => {
+    if (!key || key.name !== "tab") {
+      resetTabCycle();
+    }
+  };
   if (process.stdin.isTTY) {
-    process.stdin.on("keypress", (_str: string, key: any) => {
-      if (!key || key.name !== "tab") {
-        resetTabCycle();
-      }
-    });
+    process.stdin.on("keypress", onKeypress);
   }
 
   // When resuming after withSuspendedReadline, defer the prompt
@@ -130,6 +134,7 @@ export function startReadlineLoop(target: TargetManager, interceptor: ResponseIn
   rl.on("close", async () => {
     setClosed(true);
     setActiveRl(null);
+    process.stdin.removeListener("keypress", onKeypress);
 
     if (!globalPauseReadlineClose) {
       console.log(pc.dim("\nShutting down..."));
@@ -227,7 +232,7 @@ export async function startRepl(targetCommand: string[], opts: ReplOptions): Pro
         const lvl = (notification.params as any)?.level ?? "info";
         const data = (notification.params as any)?.data ?? "";
         const text = typeof data === "string" ? data : JSON.stringify(data);
-        console.log(pc.dim(`\n  [${lvl}] ${text}`));
+        console.log(pc.dim(`\n  [${lvl}] ${sanitizeServerText(text)}`));
       } else if (method === "notifications/tools/list_changed") {
         console.log(pc.yellow("\n  ⟳ Server tools changed. Run tools/list to see updates."));
         refreshCaches(target).catch(() => {});
@@ -236,7 +241,7 @@ export async function startRepl(targetCommand: string[], opts: ReplOptions): Pro
         refreshCaches(target).catch(() => {});
       } else if (method === "notifications/resources/updated") {
         const uri = (notification.params as any)?.uri ?? "unknown";
-        console.log(pc.yellow(`\n  ⟳ Resource updated: ${uri}`));
+        console.log(pc.yellow(`\n  ⟳ Resource updated: ${sanitizeServerText(String(uri))}`));
       } else if (method === "notifications/prompts/list_changed") {
         console.log(pc.yellow("\n  ⟳ Server prompts changed. Run prompts/list to see."));
         refreshCaches(target).catch(() => {});
@@ -251,7 +256,7 @@ export async function startRepl(targetCommand: string[], opts: ReplOptions): Pro
       for (const msg of messages) {
         const role = msg.role === "user" ? pc.blue("user") : pc.magenta("assistant");
         const text = msg.content?.text ?? JSON.stringify(msg.content);
-        console.log(pc.magenta(`  ║ ${role}: ${text}`));
+        console.log(pc.magenta(`  ║ ${role}: ${sanitizeServerText(text)}`));
       }
       console.log(pc.magenta("  ╚═════════════════════════════════════════════════════"));
       if (activeRl) {
@@ -289,7 +294,9 @@ export async function startRepl(targetCommand: string[], opts: ReplOptions): Pro
 
     target.on("elicitation_request", async ({ request, respond, reject: rejectFn }: any) => {
       console.log(pc.cyan("\n  ╔══ Elicitation Request ════════════════════════════════"));
-      console.log(pc.cyan(`  ║ ${request?.message ?? "Server requests input"}`));
+      console.log(
+        pc.cyan(`  ║ ${sanitizeServerText(request?.message ?? "Server requests input")}`),
+      );
       console.log(pc.cyan("  ╚═════════════════════════════════════════════════════"));
       if (activeRl) {
         try {

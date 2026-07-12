@@ -121,7 +121,7 @@ If an AI Agent is trying to provide parameters to a mock tool and accidentally l
 ### TypeScript & ESM
 
 - **Pure ESM** — `"type": "module"` in package.json. All imports use `.js` extensions (TypeScript resolves them to `.ts` at compile time).
-- **tsup for bundling** — Produces a single `dist/index.js` (≈25KB). No source maps in dist.
+- **tsup for bundling** — Produces a single `dist/index.js` (~360KB; ajv, ajv-formats, and @inquirer/prompts are bundled in, while `@modelcontextprotocol/sdk`, `commander`, `picocolors`, and `zod` stay external). No source maps in dist.
 - **tsc for type-checking only** — `tsconfig.json` has `noEmit: true`. Run `npm run typecheck`.
 - **Strict mode** — `strict: true` in tsconfig. No implicit any.
 
@@ -364,8 +364,8 @@ The package is designed to work with `npx run-mcp`:
 
 - `"bin": { "run-mcp": "dist/index.js" }` — the shebang (`#!/usr/bin/env node`) is preserved by tsup.
 - `"files": ["dist"]` — only `dist/index.js` is published (no source, no tests, no source maps).
-- `"prepublishOnly": "tsup"` — auto-builds before `npm publish`.
-- Package size: ~11KB compressed.
+- `"prepublishOnly": "tsup"` — auto-builds before `npm publish`. (Note: unlike `build`, this does not refresh the README help tables — run `npm run build` before publishing if CLI help changed.)
+- Bundled `dist/index.js` is ~360KB (ajv + @inquirer/prompts bundled); compressed tarball is a few tens of KB.
 
 ### MCP SDK Usage
 

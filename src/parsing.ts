@@ -516,19 +516,21 @@ export function splitArgs(input: string): string[] {
   let current = "";
   let inDoubleQuote = false;
   let inSingleQuote = false;
-  let escape = false;
 
   for (let i = 0; i < input.length; i++) {
     const ch = input[i];
 
-    if (escape) {
-      current += ch;
-      escape = false;
-      continue;
-    }
-
+    // Backslash only escapes a following quote (so `\"` yields a literal quote).
+    // Otherwise it is kept literally — dropping it corrupted Windows paths like
+    // `C:\Users\me` in HTTPie-style values.
     if (ch === "\\") {
-      escape = true;
+      const next = input[i + 1];
+      if (next === '"' || next === "'") {
+        current += next;
+        i++;
+      } else {
+        current += ch;
+      }
       continue;
     }
 

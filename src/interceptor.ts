@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import type { TargetManager } from "./target-manager.js";
 
 /** Matches a large base64 blob in text content (1000+ chars of base64 alphabet). */
@@ -379,10 +379,15 @@ export class ResponseInterceptor {
     await writeFile(filepath, buffer);
 
     if (this.openMedia) {
+      // execFile (no shell) so a crafted outDir can't inject shell commands.
       const isMac = process.platform === "darwin";
       const isWin = process.platform === "win32";
-      const cmd = isMac ? "open" : isWin ? "start" : "xdg-open";
-      exec(`${cmd} "${filepath}"`, () => {});
+      const [opener, openerArgs] = isMac
+        ? ["open", [filepath]]
+        : isWin
+          ? ["cmd", ["/c", "start", "", filepath]]
+          : ["xdg-open", [filepath]];
+      execFile(opener, openerArgs, () => {});
     }
 
     const sizeKB = (buffer.length / 1024).toFixed(1);

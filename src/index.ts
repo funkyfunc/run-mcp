@@ -115,13 +115,27 @@ async function handleHeadlessSession(
 
     const target = activeTargetCommand;
 
-    // Spawn the daemon process in background
+    // Spawn the daemon process in background. Forward the full sandbox policy —
+    // not just --sandbox — otherwise credential/deny protections would silently
+    // vanish in session mode. The target command is separated with `--` so the
+    // variadic flag values don't swallow it during re-parse.
     const binPath = resolve(import.meta.dirname, "./index.js");
     const daemonArgs = ["daemon", sessionName];
     if (opts.sandbox) {
       daemonArgs.push("--sandbox", opts.sandbox);
     }
-    daemonArgs.push(...target);
+    const listFlags: [string, string[] | undefined][] = [
+      ["--allow-read", opts.allowRead],
+      ["--allow-write", opts.allowWrite],
+      ["--allow-net", opts.allowNet],
+      ["--deny-read", opts.denyRead],
+      ["--deny-write", opts.denyWrite],
+      ["--deny-net", opts.denyNet],
+    ];
+    for (const [flag, vals] of listFlags) {
+      if (vals && vals.length > 0) daemonArgs.push(flag, ...vals);
+    }
+    daemonArgs.push("--", ...target);
     const daemonProcess = spawn("node", [binPath, ...daemonArgs], {
       detached: true,
       stdio: "ignore",
@@ -355,82 +369,105 @@ program
   .description("Start run-mcp in background session daemon mode")
   .option("--sandbox <mode>", "Sandbox execution mode: auto, docker, native, audit, none", "none")
   .allowUnknownOption()
-  .action(async (sessionName: string, targetCommand: string[], opts: { sandbox?: string }) => {
-    const targetCmd = activeTargetCommand ?? targetCommand;
-    if (!targetCmd || targetCmd.length === 0) {
-      process.stderr.write("Error: No target command provided for daemon.\n");
-      process.exit(64);
-    }
-
-    const server = createServer();
-    server.listen(0, "127.0.0.1", async () => {
-      const addr = server.address();
-      const port = (addr as any).port;
-
-      const target = new TargetManager(targetCmd[0], targetCmd.slice(1), {
-        sandbox: opts.sandbox as any,
-      });
-      const interceptor = new ResponseInterceptor();
-
-      try {
-        await target.connect();
-      } catch (err: any) {
-        process.stderr.write(`Daemon failed to connect to target: ${err.message}\n`);
-        process.exit(1);
+  .action(
+    async (
+      sessionName: string,
+      targetCommand: string[],
+      opts: {
+        sandbox?: string;
+        allowRead?: string[];
+        allowWrite?: string[];
+        allowNet?: string[];
+        denyRead?: string[];
+        denyWrite?: string[];
+        denyNet?: string[];
+      },
+    ) => {
+      const targetCmd = activeTargetCommand ?? targetCommand;
+      if (!targetCmd || targetCmd.length === 0) {
+        process.stderr.write("Error: No target command provided for daemon.\n");
+        process.exit(64);
       }
 
-      await mkdir(SESSION_DIR, { recursive: true });
-      await writeFile(
-        getSessionPath(sessionName),
-        JSON.stringify({ port, pid: process.pid }),
-        "utf8",
-      );
+      const server = createServer();
+      server.listen(0, "127.0.0.1", async () => {
+        const addr = server.address();
+        const port = (addr as any).port;
 
-      server.on("connection", (socket) => {
-        let buffer = "";
-        socket.on("data", async (data) => {
-          buffer += data.toString();
-          const lines = buffer.split("\n");
-          buffer = lines.pop() ?? "";
+        const target = new TargetManager(targetCmd[0], targetCmd.slice(1), {
+          sandbox: opts.sandbox as any,
+          allowRead: opts.allowRead,
+          allowWrite: opts.allowWrite,
+          allowNet: opts.allowNet,
+          denyRead: opts.denyRead,
+          denyWrite: opts.denyWrite,
+          denyNet: opts.denyNet,
+        });
+        const interceptor = new ResponseInterceptor();
 
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed) continue;
-            try {
-              const req = JSON.parse(trimmed);
-              if (req.method === "execute") {
-                const { operation, opts } = req.params;
-                const { result, hasError } = await executeOperation(
-                  target,
-                  interceptor,
-                  operation,
-                  opts,
-                );
+        try {
+          await target.connect();
+        } catch (err: any) {
+          process.stderr.write(`Daemon failed to connect to target: ${err.message}\n`);
+          process.exit(1);
+        }
+
+        // The daemon accepts commands over a loopback TCP socket whose port lives
+        // in this session file. Restrict the dir/file to the owner so other local
+        // users can't discover the port and drive the target. (Same-user local
+        // processes are already inside the trust boundary — they run as you.)
+        await mkdir(SESSION_DIR, { recursive: true, mode: 0o700 });
+        await writeFile(getSessionPath(sessionName), JSON.stringify({ port, pid: process.pid }), {
+          encoding: "utf8",
+          mode: 0o600,
+        });
+
+        server.on("connection", (socket) => {
+          let buffer = "";
+          socket.on("data", async (data) => {
+            buffer += data.toString();
+            const lines = buffer.split("\n");
+            buffer = lines.pop() ?? "";
+
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed) continue;
+              try {
+                const req = JSON.parse(trimmed);
+                if (req.method === "execute") {
+                  const { operation, opts } = req.params;
+                  const { result, hasError } = await executeOperation(
+                    target,
+                    interceptor,
+                    operation,
+                    opts,
+                  );
+                  socket.write(
+                    JSON.stringify({ jsonrpc: "2.0", result: { result, hasError }, id: req.id }) +
+                      "\n",
+                  );
+                  socket.end();
+                } else if (req.method === "close") {
+                  socket.write(
+                    JSON.stringify({ jsonrpc: "2.0", result: { ok: true }, id: req.id }) + "\n",
+                  );
+                  socket.end();
+                  await target.close().catch(() => {});
+                  await rm(getSessionPath(sessionName), { force: true }).catch(() => {});
+                  process.exit(0);
+                }
+              } catch (err: any) {
                 socket.write(
-                  JSON.stringify({ jsonrpc: "2.0", result: { result, hasError }, id: req.id }) +
-                    "\n",
+                  JSON.stringify({ jsonrpc: "2.0", error: { message: err.message }, id: 1 }) + "\n",
                 );
                 socket.end();
-              } else if (req.method === "close") {
-                socket.write(
-                  JSON.stringify({ jsonrpc: "2.0", result: { ok: true }, id: req.id }) + "\n",
-                );
-                socket.end();
-                await target.close().catch(() => {});
-                await rm(getSessionPath(sessionName), { force: true }).catch(() => {});
-                process.exit(0);
               }
-            } catch (err: any) {
-              socket.write(
-                JSON.stringify({ jsonrpc: "2.0", error: { message: err.message }, id: 1 }) + "\n",
-              );
-              socket.end();
             }
-          }
+          });
         });
       });
-    });
-  });
+    },
+  );
 
 // ─── Subcommand: close-session ───────────────────────────────────────────────
 

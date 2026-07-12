@@ -712,6 +712,11 @@ describe("splitArgs", () => {
   it("handles backslash escapes", () => {
     expect(splitArgs('title="Hello \\"World\\""')).toEqual(['title="Hello "World""']);
   });
+
+  it("preserves backslashes in Windows-style paths", () => {
+    // Regression: a bare backslash used to be swallowed, corrupting `C:\Users\me`.
+    expect(splitArgs("path=C:\\Users\\me foo=bar")).toEqual(["path=C:\\Users\\me", "foo=bar"]);
+  });
 });
 
 describe("parseHttpieArgs", () => {
@@ -735,6 +740,10 @@ describe("parseHttpieArgs", () => {
       name: "Alice Smith",
       role: "admin",
     });
+  });
+
+  it("preserves backslashes in a Windows path value", () => {
+    expect(parseHttpieArgs("path=C:\\Users\\me")).toEqual({ path: "C:\\Users\\me" });
   });
 });
 

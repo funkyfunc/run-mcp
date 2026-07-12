@@ -4,7 +4,7 @@ import { writeFileSync, rmSync, existsSync, mkdirSync, statSync } from "node:fs"
 import { join, relative, resolve, posix } from "node:path";
 import { tmpdir } from "node:os";
 import treeKill from "tree-kill";
-import { loadSettings, SandboxPolicy } from "./settings.js";
+import { hasControlChar, loadSettings, SandboxPolicy } from "./settings.js";
 import { NetworkAuditProxy } from "./proxy-audit.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
@@ -145,6 +145,15 @@ export class TargetManager extends EventEmitter {
     denyNet?: string[];
   };
 
+  /**
+   * Extra environment variables to inject into the target child process.
+   * Threaded through to the child env in `_getDefaultEnvironment()` rather than
+   * mutated onto the parent `process.env` — the latter both leaks secrets across
+   * connections in the long-lived agent server and never actually reached the
+   * child (the transport only forwards a fixed safe-var whitelist).
+   */
+  private readonly _extraEnv: Record<string, string>;
+
   constructor(
     private readonly command: string,
     private readonly args: string[],
@@ -156,10 +165,12 @@ export class TargetManager extends EventEmitter {
       denyRead?: string[];
       denyWrite?: string[];
       denyNet?: string[];
+      env?: Record<string, string>;
     } = {},
   ) {
     super();
     this.sandboxMode = options.sandbox ?? "none";
+    this._extraEnv = options.env ?? {};
     this.sandboxOptions = {
       allowRead: options.allowRead,
       allowWrite: options.allowWrite,
@@ -206,7 +217,7 @@ export class TargetManager extends EventEmitter {
           policy.networkAllow.size > 0 &&
           !policy.networkDeny.has("*")
         ) {
-          this._proxy = new NetworkAuditProxy();
+          this._proxy = new NetworkAuditProxy((host) => policy.isNetworkAllowed(host));
           this._proxyPort = await this._proxy.start();
         }
 
@@ -1007,6 +1018,18 @@ export class TargetManager extends EventEmitter {
             const rel = relative(absCwd, absP);
             const containerPath = posix.join("/workspace", rel.replace(/\\/g, "/"));
 
+            // The `-v host:container:ro` spec is colon-delimited. A denied path
+            // containing a colon or control char would corrupt the spec and could
+            // silently drop the mask. Refuse to launch rather than run a sandbox
+            // whose deny rule we can't guarantee (fail closed).
+            if (containerPath.includes(":") || hasControlChar(containerPath)) {
+              throw new Error(
+                `Cannot enforce sandbox deny rule for path "${p}": ` +
+                  `its container path contains a character unsafe for a Docker volume spec. ` +
+                  `Refusing to start rather than run an unenforced sandbox.`,
+              );
+            }
+
             let isDir = false;
             if (existsSync(absP)) {
               try {
@@ -1279,6 +1302,12 @@ export class TargetManager extends EventEmitter {
       if (process.env[key]) {
         env[key] = process.env[key]!;
       }
+    }
+    // Caller-supplied env for this specific target. Applied after the safe-var
+    // whitelist so callers can override, but before proxy vars below so the
+    // network-audit proxy configuration always wins for sandbox integrity.
+    for (const [key, value] of Object.entries(this._extraEnv)) {
+      env[key] = value;
     }
     if (this._proxyPort) {
       const proxyUrl = `http://127.0.0.1:${this._proxyPort}`;

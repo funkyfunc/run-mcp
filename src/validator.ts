@@ -60,15 +60,10 @@ export async function validateProtocol(
   };
 
   try {
-    // 1. Connection check
-    target = new TargetManager(command, args, { sandbox: "none" });
-
-    // Set custom env if provided
-    if (env) {
-      for (const [k, v] of Object.entries(env)) {
-        process.env[k] = v;
-      }
-    }
+    // 1. Connection check. Custom env is threaded into the child via TargetManager
+    // rather than mutated onto the parent process.env (which leaks and, for the
+    // long-lived agent server, would bleed one target's secrets into the next).
+    target = new TargetManager(command, args, { sandbox: "none", env });
 
     try {
       await Promise.race([

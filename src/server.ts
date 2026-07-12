@@ -169,13 +169,6 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       target = null;
     }
 
-    // Set env vars if provided
-    if (envToUse) {
-      for (const [key, value] of Object.entries(envToUse)) {
-        process.env[key] = value;
-      }
-    }
-
     target = new TargetManager(cmdToUse, argsToUse ?? [], {
       sandbox: opts.sandbox,
       allowRead: opts.allowRead,
@@ -184,6 +177,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       denyRead: opts.denyRead,
       denyWrite: opts.denyWrite,
       denyNet: opts.denyNet,
+      env: envToUse,
     });
     setupTargetListeners(target);
     try {
@@ -351,13 +345,6 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       }
 
       try {
-        // If env vars are provided, set them before spawning
-        if (env) {
-          for (const [key, value] of Object.entries(env)) {
-            process.env[key] = value;
-          }
-        }
-
         target = new TargetManager(command, args ?? [], {
           sandbox: sandbox ?? opts.sandbox,
           allowRead: opts.allowRead,
@@ -366,6 +353,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
           denyRead: opts.denyRead,
           denyWrite: opts.denyWrite,
           denyNet: opts.denyNet,
+          env,
         });
         setupTargetListeners(target);
         try {
@@ -1186,14 +1174,6 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         }
       }
 
-      const originalEnv: Record<string, string | undefined> = {};
-      if (env) {
-        for (const [key, value] of Object.entries(env)) {
-          originalEnv[key] = process.env[key];
-          process.env[key] = value;
-        }
-      }
-
       const tempTarget = new TargetManager(command, args ?? [], {
         sandbox: opts.sandbox,
         allowRead: opts.allowRead,
@@ -1202,6 +1182,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         denyRead: opts.denyRead,
         denyWrite: opts.denyWrite,
         denyNet: opts.denyNet,
+        env,
       });
       const stderrLines: string[] = [];
       tempTarget.on("stderr", (text: string) => {
@@ -1250,16 +1231,6 @@ export async function startServer(opts: ServerOptions): Promise<void> {
           ],
           isError: true,
         };
-      } finally {
-        if (env) {
-          for (const key of Object.keys(env)) {
-            if (originalEnv[key] === undefined) {
-              delete process.env[key];
-            } else {
-              process.env[key] = originalEnv[key];
-            }
-          }
-        }
       }
     },
   );
@@ -1304,14 +1275,6 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         const matchResults: any[] = [];
 
         for (const s of uniqueServers.values()) {
-          const originalEnv: Record<string, string | undefined> = {};
-          if (s.config.env) {
-            for (const [key, value] of Object.entries(s.config.env)) {
-              originalEnv[key] = process.env[key];
-              process.env[key] = value as string;
-            }
-          }
-
           const tempTarget = new TargetManager(s.config.command, s.config.args || [], {
             sandbox: opts.sandbox,
             allowRead: opts.allowRead,
@@ -1320,6 +1283,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
             denyRead: opts.denyRead,
             denyWrite: opts.denyWrite,
             denyNet: opts.denyNet,
+            env: s.config.env,
           });
           try {
             await Promise.race([
@@ -1387,15 +1351,6 @@ export async function startServer(opts: ServerOptions): Promise<void> {
             // Ignore individual server connection or query errors
           } finally {
             await tempTarget.close().catch(() => {});
-            if (s.config.env) {
-              for (const key of Object.keys(s.config.env)) {
-                if (originalEnv[key] === undefined) {
-                  delete process.env[key];
-                } else {
-                  process.env[key] = originalEnv[key];
-                }
-              }
-            }
           }
         }
 

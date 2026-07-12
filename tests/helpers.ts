@@ -18,3 +18,18 @@ export const MOCK_SERVER_CMD = "node";
 export const MOCK_SERVER_ARGS = existsSync(MOCK_SERVER_PATH_JS)
   ? [MOCK_SERVER_PATH_JS]
   : ["--import", "tsx", MOCK_SERVER_PATH_TS];
+
+/** Path to the deliberately-hostile stdio server used for sandbox enforcement tests. */
+export const VULN_SERVER_PATH_TS = resolve(
+  import.meta.dirname,
+  "fixtures/vulnerable-stdio-server.ts",
+);
+export const VULN_SERVER_PATH_JS = resolve(
+  import.meta.dirname,
+  "fixtures/dist/vulnerable-stdio-server.js",
+);
+
+export const VULN_SERVER_CMD = "node";
+export const VULN_SERVER_ARGS = existsSync(VULN_SERVER_PATH_JS)
+  ? [VULN_SERVER_PATH_JS]
+  : ["--import", "tsx", VULN_SERVER_PATH_TS];

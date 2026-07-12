@@ -5,14 +5,15 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCHEMA_DEST = join(__dirname, "../src/schema/mcp-schema.json");
 
-// Known stable fallback URL in case GitHub REST API rate-limits us
-const FALLBACK_VERSION = "2024-11-05";
-const FALLBACK_URL = `https://raw.githubusercontent.com/modelcontextprotocol/specification/main/schema/${FALLBACK_VERSION}/schema.json`;
+// Known stable fallback URL in case GitHub REST API rate-limits us.
+// Note: the spec repo was renamed `specification` -> `modelcontextprotocol`.
+const FALLBACK_VERSION = "2025-11-25";
+const FALLBACK_URL = `https://raw.githubusercontent.com/modelcontextprotocol/modelcontextprotocol/main/schema/${FALLBACK_VERSION}/schema.json`;
 
 async function fetchLatestSchema() {
   console.log("Fetching latest schema directory from GitHub...");
   try {
-    const res = await fetch("https://api.github.com/repos/modelcontextprotocol/specification/contents/schema", {
+    const res = await fetch("https://api.github.com/repos/modelcontextprotocol/modelcontextprotocol/contents/schema", {
       headers: {
         "User-Agent": "run-mcp-schema-updater (https://github.com/funkyfunc/run-mcp)",
       },
@@ -40,7 +41,7 @@ async function fetchLatestSchema() {
     const latestDir = dirs[dirs.length - 1];
     console.log(`Latest schema version found: ${latestDir}`);
 
-    const schemaUrl = `https://raw.githubusercontent.com/modelcontextprotocol/specification/main/schema/${latestDir}/schema.json`;
+    const schemaUrl = `https://raw.githubusercontent.com/modelcontextprotocol/modelcontextprotocol/main/schema/${latestDir}/schema.json`;
     console.log(`Downloading schema from: ${schemaUrl}`);
 
     const schemaRes = await fetch(schemaUrl);

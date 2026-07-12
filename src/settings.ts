@@ -35,6 +35,31 @@ export function resolvePath(p: string, settingsFileDir: string): string {
   return resolve(settingsFileDir, p);
 }
 
+export function hasControlChar(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}
+
+/**
+ * Escape a value for safe interpolation into an SBPL (macOS Seatbelt) string
+ * literal. SBPL strings are double-quoted with `\\` and `\"` escapes. Control
+ * characters (including newlines) are rejected outright: a legitimate sandbox
+ * path never contains them, and permitting them would let a malicious config
+ * file (e.g. a project-scoped `.run-mcp/settings.json`) close the string
+ * literal and inject arbitrary sandbox directives — a full sandbox escape.
+ */
+export function escapeSbplString(value: string): string {
+  if (hasControlChar(value)) {
+    throw new Error(
+      `Refusing to build sandbox profile: value contains control characters: ${JSON.stringify(value)}`,
+    );
+  }
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
 export function matchDomain(host: string, pattern: string): boolean {
   if (pattern === "*") return true;
 
@@ -241,6 +266,15 @@ export class SandboxPolicy {
     nodeInstallDir: string;
     audit?: boolean;
   }): string {
+    // All interpolated values (config-supplied paths, network patterns, and even
+    // process-derived dirs) are escaped for the SBPL string-literal context.
+    // Without this, a crafted path containing `"` / `)` could break out of the
+    // literal and inject arbitrary sandbox directives (sandbox escape).
+    const nodeBinDir = escapeSbplString(options.nodeBinDir);
+    const nodeInstallDir = escapeSbplString(options.nodeInstallDir);
+    const cwd = escapeSbplString(options.cwd);
+    const tmp = escapeSbplString(options.tmp);
+
     if (options.audit) {
       return `(version 1)
 (allow default)
@@ -252,7 +286,7 @@ export class SandboxPolicy {
   (subpath "/System")
   (subpath "/usr")
   (subpath "/bin")
-  (subpath "${options.nodeBinDir}")
+  (subpath "${nodeBinDir}")
 )
 (deny file-read*)
 (allow file-read*
@@ -264,27 +298,27 @@ export class SandboxPolicy {
   (subpath "/var")
   (subpath "/private/etc")
   (subpath "/etc")
-  (subpath "${options.nodeBinDir}")
-  (subpath "${options.nodeInstallDir}")
-  (subpath "${options.cwd}")
-  (path-ancestors "${options.cwd}")
-  (path-ancestors "${options.nodeBinDir}")
+  (subpath "${nodeBinDir}")
+  (subpath "${nodeInstallDir}")
+  (subpath "${cwd}")
+  (path-ancestors "${cwd}")
+  (path-ancestors "${nodeBinDir}")
 )
 `;
     }
 
     const readDirectives = Array.from(this.fileReadAllow)
-      .map((p) => `  (subpath "${p}")`)
+      .map((p) => `  (subpath "${escapeSbplString(p)}")`)
       .join("\n");
     const writeDirectives = Array.from(this.fileWriteAllow)
-      .map((p) => `  (subpath "${p}")`)
+      .map((p) => `  (subpath "${escapeSbplString(p)}")`)
       .join("\n");
 
     const readDenyDirectives = Array.from(this.fileReadDeny)
-      .map((p) => `  (subpath "${p}")`)
+      .map((p) => `  (subpath "${escapeSbplString(p)}")`)
       .join("\n");
     const writeDenyDirectives = Array.from(this.fileWriteDeny)
-      .map((p) => `  (subpath "${p}")`)
+      .map((p) => `  (subpath "${escapeSbplString(p)}")`)
       .join("\n");
 
     // Network allow rules
@@ -298,7 +332,7 @@ export class SandboxPolicy {
           if (pattern !== "*") {
             // Note: macOS Seatbelt resolved IPs or domains can be denied.
             // In allow default posture, we can explicitly deny specific domains.
-            netRules += `(deny network-outbound (remote ip "${pattern}"))\n`;
+            netRules += `(deny network-outbound (remote ip "${escapeSbplString(pattern)}"))\n`;
           }
         }
       }
@@ -311,7 +345,7 @@ export class SandboxPolicy {
 ${netRules}
 (deny file-write*)
 (allow file-write*
-  (subpath "${options.tmp}")
+  (subpath "${tmp}")
   (subpath "/private/tmp")
   (subpath "/tmp")
 ${writeDirectives}
@@ -329,12 +363,12 @@ ${writeDenyDirectives ? `(deny file-write*\n${writeDenyDirectives}\n)\n` : ""}
   (subpath "/etc")
   (subpath "/private/tmp")
   (subpath "/tmp")
-  (subpath "${options.nodeBinDir}")
-  (subpath "${options.nodeInstallDir}")
-  (subpath "${options.cwd}")
-  (subpath "${options.tmp}")
-  (path-ancestors "${options.cwd}")
-  (path-ancestors "${options.nodeBinDir}")
+  (subpath "${nodeBinDir}")
+  (subpath "${nodeInstallDir}")
+  (subpath "${cwd}")
+  (subpath "${tmp}")
+  (path-ancestors "${cwd}")
+  (path-ancestors "${nodeBinDir}")
 ${readDirectives}
 )
 ${readDenyDirectives ? `(deny file-read*\n${readDenyDirectives}\n)\n` : ""}

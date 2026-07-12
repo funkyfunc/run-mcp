@@ -138,8 +138,84 @@ ${pc.dim("Use tools/call <name> --clear to ignore remembered defaults.")}
 `);
 }
 
+/**
+ * Advance past a terminal escape sequence that starts at index `i` (which points
+ * at ESC 0x1B or the C1 CSI 0x9B). Returns the index of the sequence's final byte
+ * so the caller can `continue` from `i + 1`. Handles CSI (`ESC [ … final`), OSC
+ * (`ESC ] … BEL|ST`), and two-byte `ESC x` forms.
+ */
+function skipEscapeSequence(str: string, i: number): number {
+  const code = str.charCodeAt(i);
+  let j = i + 1;
+  const isOSC = code === 0x1b && str.charCodeAt(j) === 0x5d; // ESC ]
+  const isCSI = code === 0x9b || (code === 0x1b && str.charCodeAt(j) === 0x5b); // ESC [ or C1 CSI
+
+  if (isOSC) {
+    j += 1; // past ']'
+    while (j < str.length) {
+      const c = str.charCodeAt(j);
+      if (c === 0x07) return j; // BEL terminates OSC
+      if (c === 0x1b && str.charCodeAt(j + 1) === 0x5c) return j + 1; // ST = ESC '\'
+      j += 1;
+    }
+    return str.length;
+  }
+
+  if (isCSI) {
+    if (code === 0x1b) j += 1; // past '['
+    while (j < str.length) {
+      const c = str.charCodeAt(j);
+      if (c >= 0x40 && c <= 0x7e) return j; // final byte
+      j += 1;
+    }
+    return str.length;
+  }
+
+  // Other ESC x: drop the two bytes.
+  return j < str.length ? j : i;
+}
+
+/**
+ * Remove ANSI/terminal escape sequences from a string (used for display-width
+ * math). Keeps all printable content and control chars intact.
+ */
 export function stripAnsi(str: string): string {
-  return str.replace(/\x1B\[\d+m/g, "");
+  let out = "";
+  for (let i = 0; i < str.length; i++) {
+    const code = str.charCodeAt(i);
+    if (code === 0x1b || code === 0x9b) {
+      i = skipEscapeSequence(str, i);
+      continue;
+    }
+    out += str[i];
+  }
+  return out;
+}
+
+/**
+ * Sanitize untrusted server-sourced text before printing it to the terminal.
+ * Strips escape sequences AND stray control characters (keeping only tab and
+ * newline), neutralizing ANSI/OSC injection — e.g. OSC 52 clipboard hijacking,
+ * cursor/screen manipulation, hyperlink spoofing, or fake prompt lines from a
+ * malicious MCP server whose tool names, descriptions, or results flow here.
+ */
+export function sanitizeServerText(str: string): string {
+  if (typeof str !== "string") return str;
+  let out = "";
+  for (let i = 0; i < str.length; i++) {
+    const code = str.charCodeAt(i);
+    if (code === 0x1b || code === 0x9b) {
+      i = skipEscapeSequence(str, i);
+      continue;
+    }
+    if (code < 0x20) {
+      if (code === 0x09 || code === 0x0a) out += str[i]; // keep tab / newline
+      continue;
+    }
+    if (code === 0x7f || (code >= 0x80 && code <= 0x9f)) continue; // DEL + C1
+    out += str[i];
+  }
+  return out;
 }
 
 const BOX_WIDTH = 58;
@@ -163,7 +239,10 @@ export function printBanner(
   if (resourceCount > 0) parts.push(`${pc.bold(resourceCount.toString())} resources`);
   if (promptCount > 0) parts.push(`${pc.bold(promptCount.toString())} prompts`);
 
-  const baseTitle = serverVersion ? `${serverName} ${pc.dim(`v${serverVersion}`)}` : serverName;
+  // Server name/version are untrusted — sanitize before rendering into the box.
+  const safeName = sanitizeServerText(serverName);
+  const safeVersion = serverVersion ? sanitizeServerText(serverVersion) : undefined;
+  const baseTitle = safeVersion ? `${safeName} ${pc.dim(`v${safeVersion}`)}` : safeName;
   const title = harnessMode ? `${baseTitle} ${pc.bgBlue(pc.white(" AGENT HARNESS "))}` : baseTitle;
 
   console.log(pc.cyan(`  ┌${"─".repeat(BOX_WIDTH)}┐`));

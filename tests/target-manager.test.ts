@@ -47,6 +47,21 @@ describe("connection lifecycle", () => {
     expect(target.connected).toBe(true);
   }, 10_000);
 
+  it("does not leak the target env onto the parent process.env", async () => {
+    const key = "RUN_MCP_ENV_LEAK_CANARY";
+    delete process.env[key];
+
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS, {
+      env: { [key]: "secret-value" },
+    });
+    await target.connect();
+
+    // The custom env is threaded into the child, never written to the parent —
+    // critical for the long-lived agent server where one target's secrets must
+    // not bleed into the next.
+    expect(process.env[key]).toBeUndefined();
+  }, 10_000);
+
   it("reports status after connecting", async () => {
     target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
     await target.connect();

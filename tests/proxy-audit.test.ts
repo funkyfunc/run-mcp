@@ -121,3 +121,72 @@ describe("NetworkAuditProxy", () => {
     await new Promise<void>((resolve) => targetServer.close(() => resolve()));
   });
 });
+
+describe("NetworkAuditProxy enforcement", () => {
+  let consoleSpy: any;
+
+  beforeEach(() => {
+    consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    consoleSpy.mockRestore();
+  });
+
+  it("blocks HTTP requests to disallowed hosts with 403 and logs the block", async () => {
+    // Predicate: only allow example.com, deny everything else (e.g. 127.0.0.1)
+    const proxy = new NetworkAuditProxy((host) => host.startsWith("example.com"));
+    const proxyPort = await proxy.start();
+
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: "127.0.0.1",
+          port: proxyPort,
+          path: "http://127.0.0.1:9/blocked",
+          method: "GET",
+        },
+        (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        },
+      );
+      req.on("error", reject);
+      req.end();
+    });
+
+    expect(status).toBe(403);
+    const calls = consoleSpy.mock.calls.map((c: any) => c[0]);
+    expect(calls.some((c: string) => c.includes("[NETWORK BLOCKED]"))).toBe(true);
+
+    await proxy.close();
+  });
+
+  it("refuses CONNECT tunnels to disallowed hosts", async () => {
+    const proxy = new NetworkAuditProxy((host) => host.startsWith("example.com"));
+    const proxyPort = await proxy.start();
+
+    const blocked = await new Promise<boolean>((resolve) => {
+      const connReq = http.request({
+        hostname: "127.0.0.1",
+        port: proxyPort,
+        method: "CONNECT",
+        path: "127.0.0.1:9",
+      });
+      // Node fires "connect" even for a non-2xx CONNECT response, so a refused
+      // tunnel is signalled by a non-200 status (we return 403) rather than 200.
+      connReq.on("connect", (res, socket) => {
+        socket.destroy();
+        resolve((res.statusCode ?? 0) !== 200);
+      });
+      connReq.on("error", () => resolve(true));
+      connReq.end();
+    });
+
+    expect(blocked).toBe(true);
+    const calls = consoleSpy.mock.calls.map((c: any) => c[0]);
+    expect(calls.some((c: string) => c.includes("[NETWORK BLOCKED]"))).toBe(true);
+
+    await proxy.close();
+  });
+});

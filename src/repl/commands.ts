@@ -1,4 +1,4 @@
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import type { Interface as ReadlineInterface } from "node:readline";
 import { checkbox, confirm, input, search } from "@inquirer/prompts";
 import { colors as pc } from "../colors.js";
@@ -30,7 +30,7 @@ import {
 } from "./state.js";
 import { replHistory, appendToHistoryFile } from "./history.js";
 import { saveWizardDefaults } from "./wizard.js";
-import { printResultBlock, printHelp, printShortHelp } from "./ui.js";
+import { printResultBlock, printHelp, printShortHelp, sanitizeServerText } from "./ui.js";
 import { getActiveCommands, refreshCaches } from "./completer.js";
 import { startReadlineLoop } from "./index.js";
 
@@ -114,10 +114,16 @@ export async function handleCommand(
         console.error(pc.red("Error: Please specify a file path to view."));
         return;
       }
+      // Use execFile (no shell) so the path is passed as a literal argument and
+      // cannot be interpreted as shell (e.g. `view "; rm -rf ~ #`).
       const isMac = process.platform === "darwin";
       const isWin = process.platform === "win32";
-      const cmdToRun = isMac ? "open" : isWin ? "start" : "xdg-open";
-      exec(`${cmdToRun} "${filepath}"`, (err) => {
+      const [opener, openerArgs] = isMac
+        ? ["open", [filepath]]
+        : isWin
+          ? ["cmd", ["/c", "start", "", filepath]]
+          : ["xdg-open", [filepath]];
+      execFile(opener, openerArgs, (err) => {
         if (err) {
           console.error(pc.red(`Error opening file: ${err.message}`));
         } else {
@@ -243,9 +249,14 @@ export async function handleCommand(
     }
 
     default: {
-      // If it matches a tool name, execute it directly as tools/call
-      if (cachedToolNames.includes(cmd)) {
-        return await cmdToolsCall(target, interceptor, input);
+      // If it matches a tool name, execute it directly as tools/call. `cmd` is
+      // lowercased by parseCommandLine, so match case-insensitively and dispatch
+      // with the tool's real casing — otherwise a tool like `getWeather` could
+      // never be invoked by its bare name.
+      const matchedTool = cachedToolNames.find((n) => n.toLowerCase() === cmd);
+      if (matchedTool) {
+        const rebuilt = rest ? `${matchedTool} ${rest}` : matchedTool;
+        return await cmdToolsCall(target, interceptor, rebuilt);
       }
 
       // Suggest the closest known command if it's a likely typo
@@ -284,19 +295,22 @@ async function cmdToolsList(target: TargetManager): Promise<void> {
     return;
   }
 
-  // Print as a formatted table
-  const nameWidth = Math.max(8, ...tools.map((t) => t.name.length));
+  // Print as a formatted table. Tool names/descriptions are untrusted server
+  // output — sanitize to prevent terminal escape (ANSI/OSC) injection.
+  const safeNames = new Map(tools.map((t) => [t, sanitizeServerText(t.name)]));
+  const nameWidth = Math.max(8, ...tools.map((t) => safeNames.get(t)!.length));
 
   console.log(pc.bold(`  ${"Name".padEnd(nameWidth)}  Description`));
   console.log(pc.dim(`  ${"─".repeat(nameWidth)}  ${"─".repeat(50)}`));
 
   for (const tool of tools) {
-    const desc = tool.description
-      ? tool.description.length > 60
-        ? `${tool.description.slice(0, 57)}...`
-        : tool.description
+    const safeDesc = tool.description ? sanitizeServerText(tool.description) : "";
+    const desc = safeDesc
+      ? safeDesc.length > 60
+        ? `${safeDesc.slice(0, 57)}...`
+        : safeDesc
       : pc.dim("(no description)");
-    console.log(`  ${pc.green(tool.name.padEnd(nameWidth))}  ${desc}`);
+    console.log(`  ${pc.green(safeNames.get(tool)!.padEnd(nameWidth))}  ${desc}`);
   }
 
   console.log(pc.dim(`\n  ${tools.length} tool(s) total.`));
@@ -346,15 +360,20 @@ async function cmdToolsDescribe(target: TargetManager, rest: string): Promise<vo
     return;
   }
 
-  // Change 3: Smarter describe output
+  // Change 3: Smarter describe output. formatToolDescription emits plain text
+  // (no ANSI of our own), so sanitizing its whole output strips any escape
+  // sequences embedded in untrusted names/descriptions/arg docs without harming
+  // our formatting.
   console.log();
   console.log(
-    formatToolDescription({
-      name: tool.name,
-      description: tool.description,
-      inputSchema: tool.inputSchema as Record<string, unknown>,
-      annotations: tool.annotations as Record<string, unknown>,
-    }),
+    sanitizeServerText(
+      formatToolDescription({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.inputSchema as Record<string, unknown>,
+        annotations: tool.annotations as Record<string, unknown>,
+      }),
+    ),
   );
   console.log();
 }
@@ -364,9 +383,10 @@ async function cmdToolsCall(
   interceptor: ResponseInterceptor,
   rest: string,
 ): Promise<any> {
-  // Check for --clear flag (ignore remembered interactive defaults)
-  const clearPrevious = /\s--clear(\s|$)/.test(rest) || rest === "--clear";
-  const cleanedRest = clearPrevious ? rest.replace(/\s*--clear/, "").trim() : rest;
+  // Check for --clear flag (ignore remembered interactive defaults). Match only a
+  // standalone flag token so a JSON value like {"note":"--clear"} is not mangled.
+  const clearPrevious = /(?:^|\s)--clear(?=\s|$)/.test(rest);
+  const cleanedRest = clearPrevious ? rest.replace(/(?:^|\s)--clear(?=\s|$)/, " ").trim() : rest;
 
   // Parse: <name> <json_args> [--timeout <ms>]
   const { toolName, jsonArgs, timeoutMs } = parseCallArgs(cleanedRest);
@@ -500,18 +520,22 @@ async function cmdToolsCall(
   if (Array.isArray(content)) {
     for (const item of content) {
       if (item.type === "text") {
+        // item.text is untrusted server output. The JSON branches below are safe
+        // (JSON.stringify escapes control chars); the raw-text branches must be
+        // sanitized to prevent terminal escape (ANSI/OSC) injection.
+        const safeText = sanitizeServerText(item.text);
         if (isError) {
-          console.log(pc.red(`  ✗ ${item.text}`));
+          console.log(pc.red(`  ✗ ${safeText}`));
         } else {
           try {
             const parsed = JSON.parse(item.text);
             if (typeof parsed === "object" && parsed !== null) {
               console.log(formatJson(parsed, 2, true));
             } else {
-              console.log(pc.yellow(`  ${item.text}`));
+              console.log(pc.yellow(`  ${safeText}`));
             }
           } catch {
-            console.log(pc.yellow(`  ${item.text}`));
+            console.log(pc.yellow(`  ${safeText}`));
           }
         }
       } else {
@@ -923,15 +947,16 @@ async function cmdResourcesRead(
   for (const item of result.contents) {
     if ((item as any).text !== undefined) {
       const text = (item as any).text;
+      const safeText = sanitizeServerText(text);
       try {
         const parsed = JSON.parse(text);
         if (typeof parsed === "object" && parsed !== null) {
           console.log(formatJson(parsed, 2, true));
         } else {
-          console.log(pc.yellow(`  ${text}`));
+          console.log(pc.yellow(`  ${safeText}`));
         }
       } catch {
-        console.log(pc.yellow(`  ${text}`));
+        console.log(pc.yellow(`  ${safeText}`));
       }
     } else if ((item as any).blob !== undefined) {
       const mimeType = (item as any).mimeType ?? "application/octet-stream";
@@ -1077,16 +1102,17 @@ async function cmdPromptsGet(
   for (const msg of result.messages) {
     const role = msg.role === "user" ? pc.blue("user") : pc.magenta("assistant");
     const text = (msg.content as any).text ?? JSON.stringify(msg.content);
+    const safeText = sanitizeServerText(text);
     try {
       const parsed = JSON.parse(text);
       if (typeof parsed === "object" && parsed !== null) {
         console.log(`  ${pc.bold(role)}:`);
         console.log(formatJson(parsed, 4, true));
       } else {
-        console.log(`  ${pc.bold(role)}: ${pc.yellow(text)}`);
+        console.log(`  ${pc.bold(role)}: ${pc.yellow(safeText)}`);
       }
     } catch {
-      console.log(`  ${pc.bold(role)}: ${pc.yellow(text)}`);
+      console.log(`  ${pc.bold(role)}: ${pc.yellow(safeText)}`);
     }
   }
 
