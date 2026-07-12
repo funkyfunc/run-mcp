@@ -3,6 +3,8 @@ import type { Interface as ReadlineInterface } from "node:readline";
 import { checkbox, confirm, input, search } from "@inquirer/prompts";
 import { colors as pc } from "../colors.js";
 import { ResponseInterceptor } from "../interceptor.js";
+import type { PluginFinding } from "../plugins.js";
+import { rankTools } from "../ranking.js";
 import {
   formatJson,
   formatToolDescription,
@@ -146,11 +148,15 @@ export async function handleCommand(
       return;
 
     case "tools/list":
-      await cmdToolsList(target);
+      await cmdToolsList(target, interceptor);
       return;
 
     case "tools/describe":
-      await cmdToolsDescribe(target, rest);
+      await cmdToolsDescribe(target, interceptor, rest);
+      return;
+
+    case "find":
+      await cmdFind(target, interceptor, rest);
       return;
 
     case "tools/call":
@@ -287,8 +293,24 @@ export async function handleCommand(
 
 // ─── Command Implementations ────────────────────────────────────────────────
 
-async function cmdToolsList(target: TargetManager): Promise<void> {
-  const { tools } = await target.listTools();
+/** Print tool-poisoning findings (already sanitized) to the terminal. */
+function printToolFindings(findings: PluginFinding[]): void {
+  if (findings.length === 0) return;
+  console.log();
+  console.log(pc.yellow("  ⚠️  Tool safety findings:"));
+  for (const f of findings) {
+    const loc = f.location ? ` [${sanitizeServerText(f.location)}]` : "";
+    console.log(pc.dim(`    (${f.severity})${loc} ${sanitizeServerText(f.message)}`));
+  }
+}
+
+async function cmdToolsList(
+  target: TargetManager,
+  interceptor: ResponseInterceptor,
+): Promise<void> {
+  const listed = await target.listTools();
+  // Scan tools/list metadata (strips invisible chars, flags injection phrasing).
+  const { tools, findings } = await interceptor.processToolList(listed.tools as any);
 
   if (tools.length === 0) {
     console.log(pc.dim("  No tools available."));
@@ -317,7 +339,7 @@ async function cmdToolsList(target: TargetManager): Promise<void> {
 
   // Show grouped summary for large tool sets
   if (tools.length >= 10) {
-    const groups = groupToolsByPrefix(tools.map((t) => t.name));
+    const groups = groupToolsByPrefix(tools.map((t: any) => t.name));
     if (!groups.has("All")) {
       console.log();
       console.log(pc.bold("  Groups:"));
@@ -326,9 +348,15 @@ async function cmdToolsList(target: TargetManager): Promise<void> {
       }
     }
   }
+
+  printToolFindings(findings);
 }
 
-async function cmdToolsDescribe(target: TargetManager, rest: string): Promise<void> {
+async function cmdToolsDescribe(
+  target: TargetManager,
+  interceptor: ResponseInterceptor,
+  rest: string,
+): Promise<void> {
   const name = rest.trim();
 
   // Change 5: Inline help hint when no args given
@@ -343,19 +371,20 @@ async function cmdToolsDescribe(target: TargetManager, rest: string): Promise<vo
     return;
   }
 
-  const { tools } = await target.listTools();
-  const tool = tools.find((t) => t.name === name);
+  const listed = await target.listTools();
+  const { tools, findings } = await interceptor.processToolList(listed.tools as any);
+  const tool = (tools as any[]).find((t) => t.name === name);
 
   if (!tool) {
     console.log(pc.red(`Tool "${name}" not found.`));
     const suggestion = suggestCommand(
       name,
-      tools.map((t) => t.name),
+      (tools as any[]).map((t) => t.name),
     );
     if (suggestion) {
       console.log(pc.yellow(`Did you mean ${pc.bold(suggestion)}?`));
     } else {
-      console.log(pc.dim(`Available: ${tools.map((t) => t.name).join(", ")}`));
+      console.log(pc.dim(`Available: ${(tools as any[]).map((t) => t.name).join(", ")}`));
     }
     return;
   }
@@ -376,6 +405,46 @@ async function cmdToolsDescribe(target: TargetManager, rest: string): Promise<vo
     ),
   );
   console.log();
+  // Only findings for this tool.
+  printToolFindings(findings.filter((f) => !f.location || f.location.startsWith(name)));
+}
+
+async function cmdFind(
+  target: TargetManager,
+  interceptor: ResponseInterceptor,
+  rest: string,
+): Promise<void> {
+  const query = rest.trim();
+  if (!query) {
+    console.log(pc.yellow("  Usage: find <query>"));
+    console.log(pc.dim("  Ranks tools by relevance so you can discover the right one quickly."));
+    return;
+  }
+
+  const listed = await target.listTools();
+  const { tools, findings } = await interceptor.processToolList(listed.tools as any);
+  const ranked = rankTools(query, tools as any[], 8);
+
+  if (ranked.length === 0) {
+    console.log(
+      pc.dim(`  No tools matched "${query}" (of ${tools.length}). Try broader keywords.`),
+    );
+    return;
+  }
+
+  console.log(pc.dim(`\n  Top ${ranked.length} of ${tools.length} tool(s) for "${query}":`));
+  const nameWidth = Math.max(
+    8,
+    ...ranked.map((r) => sanitizeServerText((r.tool as any).name).length),
+  );
+  for (const { tool } of ranked) {
+    const safeName = sanitizeServerText((tool as any).name);
+    const rawDesc = (tool as any).description ? sanitizeServerText((tool as any).description) : "";
+    const desc = rawDesc.length > 60 ? `${rawDesc.slice(0, 57)}...` : rawDesc;
+    console.log(`  ${pc.green(safeName.padEnd(nameWidth))}  ${pc.dim(desc)}`);
+  }
+  console.log(pc.dim(`\n  Use ${pc.bold("tools/describe <name>")} for the full schema.`));
+  printToolFindings(findings);
 }
 
 async function cmdToolsCall(

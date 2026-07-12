@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { colors as pc } from "../colors.js";
 import { ResponseInterceptor } from "../interceptor.js";
+import { toolPoisoningScanner } from "../plugins.js";
 import { groupToolsByPrefix, interpolateString } from "../parsing.js";
 import { type Snapshot, computeSnapshotDiff, takeSnapshot } from "../snapshot.js";
 import type { ServerNotification } from "../target-manager.js";
@@ -39,6 +40,7 @@ interface ReplOptions {
   denyWrite?: string[];
   denyNet?: string[];
   transport?: "auto" | "http" | "sse";
+  env?: Record<string, string>;
 }
 
 function getPrompt(target: TargetManager): string {
@@ -156,11 +158,15 @@ export async function startRepl(targetCommand: string[], opts: ReplOptions): Pro
     denyWrite: opts.denyWrite,
     denyNet: opts.denyNet,
     transport: opts.transport,
+    env: opts.env,
   });
   const interceptor = new ResponseInterceptor({
     outDir: opts.outDir,
     mediaThresholdKb: opts.mediaThresholdKb,
     openMedia: opts.openMedia,
+    // Tool-poisoning defense: strip invisible chars + flag injection phrasing in
+    // tools/list metadata before it's shown to the human.
+    plugins: [toolPoisoningScanner()],
   });
 
   setIsScriptMode(!!opts.script);

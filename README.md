@@ -79,6 +79,7 @@ run-mcp [options] [target_command...]
 | `--redact-secrets` | Redact detected secrets/API keys from tool/resource/prompt output (Agent Mode) |
 | `--redact-emails` | When redacting, also redact email addresses (Agent Mode) |
 | `--audit-log <file>` | Append a JSONL audit trail of every MCP request/response to this file (Agent Mode) |
+| `--transport <mode>` | Transport for http(s) targets: auto (default), http (Streamable HTTP), sse |
 | `-w, --watch` | Watch the current directory for file changes and auto-reconnect (REPL Mode only) |
 | `--allow-read <paths...>` | Paths to allow reading under the sandbox |
 | `--allow-write <paths...>` | Paths to allow writing under the sandbox |
@@ -208,6 +209,7 @@ Then use these tools from your agent:
 | `connect_to_mcp` | Spawn and connect (use include to get tools/resources/prompts) |
 | `call_mcp_primitive` | Call a tool, read a resource, or get a prompt (auto-connects) |
 | `list_mcp_primitives` | List tools, resources, and/or prompts |
+| `find_tools` | Search tools by relevance (compact, avoids the tools tax) |
 | `disconnect_from_mcp` | Tear down and reconnect after changes |
 | `mcp_server_status` | Check connection status |
 | `get_mcp_server_stderr` | View target server stderr output |
@@ -226,6 +228,7 @@ Once connected via `run-mcp <command>`, the following shorthand commands are ava
 | `tools/describe <name>` | Show a tool's input schema |
 | `tools/call <name> [json] [opts]` | Call a tool (interactive if no json) |
 | `tools/scaffold <name>` | Generate argument template for a tool |
+| `find <query>` | Find tools by relevance to a query |
 | `resources/list` | List all available resources |
 | `resources/read <uri>` | Read a resource by URI |
 | `resources/templates` | List resource templates |

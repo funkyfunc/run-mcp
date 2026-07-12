@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
-import { MOCK_SERVER_ARGS, MOCK_SERVER_CMD } from "./helpers.js";
+import {
+  MOCK_SERVER_ARGS,
+  MOCK_SERVER_CMD,
+  POISONED_SERVER_ARGS,
+  POISONED_SERVER_CMD,
+} from "./helpers.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -39,6 +44,29 @@ async function runCli(
 // ═══════════════════════════════════════════════════════════════════════════════
 // Headless CLI Integration Tests
 // ═══════════════════════════════════════════════════════════════════════════════
+
+describe("headless: tool-poisoning scanner", () => {
+  const POISON_TARGET = ["--", POISONED_SERVER_CMD, ...POISONED_SERVER_ARGS];
+  const TAG = String.fromCodePoint(0xe0041); // invisible Unicode Tag char in the fixture
+
+  it("strips invisible chars from list-tools JSON and warns on stderr", async () => {
+    const { stdout, stderr, exitCode } = await runCli(["list-tools", ...POISON_TARGET]);
+    expect(exitCode).toBe(0);
+    // stdout stays clean JSON with the invisible char removed...
+    expect(stdout).not.toContain(TAG);
+    const tools = JSON.parse(stdout);
+    expect(tools.map((t: any) => t.name)).toContain("lookup");
+    // ...and the finding is surfaced on stderr, not stdout.
+    expect(stderr).toContain("tool-safety");
+    expect(stdout).not.toContain("tool-safety");
+  }, 15_000);
+
+  it("--no-scan-tools disables scanning", async () => {
+    const { stderr, exitCode } = await runCli(["list-tools", "--no-scan-tools", ...POISON_TARGET]);
+    expect(exitCode).toBe(0);
+    expect(stderr).not.toContain("tool-safety");
+  }, 15_000);
+});
 
 describe("headless: record & replay", () => {
   it("records a tool response then replays it offline with no target", async () => {
@@ -362,6 +390,20 @@ describe("headless: persistent sessions", () => {
     const { exitCode: code3 } = await runCli(["close-session", "test-session-1"]);
     expect(code3).toBe(0);
   }, 30_000);
+});
+
+describe("REPL find command (script mode)", () => {
+  it("ranks tools by relevance to the query", async () => {
+    const scriptPath = resolve(tmpdir(), `test-find-${Date.now()}.txt`);
+    writeFileSync(scriptPath, `find take a screenshot`, "utf8");
+
+    const { stdout, exitCode } = await runCli(["-s", scriptPath, ...TARGET]);
+    unlinkSync(scriptPath);
+
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("screenshot");
+    expect(stdout).toContain("tools/describe");
+  }, 15_000);
 });
 
 describe("script mode: variable extraction and error handling", () => {

@@ -281,21 +281,20 @@ Still open:
   `tests/sandbox-enforcement.test.ts` already provides honest visible-skip coverage
   against the real hostile server. Untangle only if you also de-mock that file.
 
-### 6.3 — Consistency follow-ups discovered during Tier 1–3 (small, high-value)
-- **Scanner/DLP not in REPL or headless.** The tool-poisoning scanner and DLP only
-  run in the agent server. A human using the REPL against an untrusted server gets
-  no scan. Consider wiring `processToolList` into `repl/commands.ts` `cmdToolsList`/
-  `cmdToolsDescribe` and into headless `list-tools`/`describe`. (ANSI sanitization
-  already protects the REPL terminal, but poisoned *phrasing* isn't flagged there.)
-- **REPL custom-env still leaks/doesn't forward.** The no-arg REPL picker in
-  `index.ts` does `Object.assign(process.env, selected.config.env)` and `startRepl`
-  builds a `TargetManager` without threading `env`. Apply the same `env` option fix
-  used for the agent server (Tier 1.4) to the REPL path.
-- **`find` REPL command.** `find_tools` exists only in the agent server. A human
-  `find <query>` REPL command over `rankTools` would be a cheap, nice parallel.
-- **Reconnect temp-file leak.** `target-manager.ts` `_maybeReconnect` nulls
-  transport/client without `close()`, and `connect()` overwrites `_tempSbPath`,
-  leaking the prior `.sb` file. Minor; clean up on reconnect.
+### 6.3 — Consistency follow-ups  ✅ DONE (this session)
+- **Tool-poisoning scanner now runs in REPL + headless** (was agent-server only):
+  `processToolList` wired into `repl/commands.ts` `cmdToolsList`/`cmdToolsDescribe`
+  (+ new `find`), headless `list-tools`/`describe` (findings → stderr, clean JSON
+  → stdout), and the session daemon. Default on; `--no-scan-tools` opt-out in
+  headless too. (DLP redaction remains agent-server-only by design — it mutates
+  result content and is opt-in there.)
+- **REPL custom-env fixed:** `ReplOptions.env` threaded into `TargetManager`; the
+  no-arg picker no longer mutates `process.env` (passes `selected.config.env`).
+- **`find <query>` REPL command** added over `rankTools` (parity with the agent
+  server's `find_tools`); in KNOWN_COMMANDS, help, and README.
+- **Reconnect temp-file leak fixed:** extracted `_cleanupTempFiles()` and call it
+  in `_maybeReconnect` before reconnecting so the prior Seatbelt `.sb` / docker
+  mask dirs are removed instead of leaking until exit.
 
 ### 6.4 — Tier 3: MCP multiplexer / aggregator
 - **Idea:** run-mcp connects to SEVERAL target servers and exposes a single

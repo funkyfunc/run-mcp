@@ -13,6 +13,7 @@ import { startRepl } from "./repl.js";
 import { startServer } from "./server.js";
 import { TargetManager } from "./target-manager.js";
 import { ResponseInterceptor } from "./interceptor.js";
+import { toolPoisoningScanner } from "./plugins.js";
 import { validateProtocol } from "./validator.js";
 
 // ─── Headless subcommand helper ───────────────────────────────────────────────
@@ -196,6 +197,7 @@ interface HeadlessOpts {
   record?: boolean;
   replay?: boolean;
   transport?: string;
+  scanTools?: boolean;
 }
 
 function parseHeadlessOpts(opts: HeadlessOpts) {
@@ -215,6 +217,7 @@ function parseHeadlessOpts(opts: HeadlessOpts) {
     cassettePath: opts.cassette,
     cassetteMode: opts.record ? ("record" as const) : opts.replay ? ("replay" as const) : undefined,
     transport: opts.transport as "auto" | "http" | "sse" | undefined,
+    scanTools: opts.scanTools,
   };
 }
 
@@ -274,6 +277,7 @@ function registerHeadlessCommand(config: HeadlessCommandConfig) {
       "--transport <mode>",
       "Transport for http(s) targets: auto (default), http (Streamable HTTP), sse",
     )
+    .option("--no-scan-tools", "Disable tool-poisoning scanning of tools/list metadata")
     .allowUnknownOption();
 
   // Command-specific options
@@ -427,7 +431,7 @@ program
           denyWrite: opts.denyWrite,
           denyNet: opts.denyNet,
         });
-        const interceptor = new ResponseInterceptor();
+        const interceptor = new ResponseInterceptor({ plugins: [toolPoisoningScanner()] });
 
         try {
           await target.connect();
@@ -725,6 +729,7 @@ REPL Mode Commands (once connected):
   tools/describe <name>               Show a tool's input schema
   tools/call <name> [json] [opts]     Call a tool (interactive if no json)
   tools/scaffold <name>               Generate argument template for a tool
+  find <query>                        Find tools by relevance to a query
   resources/list                      List all available resources
   resources/read <uri>                Read a resource by URI
   resources/templates                 List resource templates
@@ -829,11 +834,6 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
             return;
           }
 
-          // Environment variables from config
-          if (selected.config.env) {
-            Object.assign(process.env, selected.config.env);
-          }
-
           await startRepl([selected.config.command, ...(selected.config.args || [])], {
             script: opts.script,
             outDir: opts.outDir,
@@ -850,6 +850,8 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
             denyWrite: opts.denyWrite,
             denyNet: opts.denyNet,
             transport: opts.transport as any,
+            // Config env is threaded into the child, not mutated onto process.env.
+            env: selected.config.env,
           });
         }
       }

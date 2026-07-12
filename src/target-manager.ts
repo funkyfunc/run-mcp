@@ -885,27 +885,7 @@ export class TargetManager extends EventEmitter {
       });
     }
 
-    // Clean up temporary Seatbelt files
-    if (this._tempSbPath && existsSync(this._tempSbPath)) {
-      try {
-        rmSync(this._tempSbPath, { force: true });
-      } catch {
-        // ignore
-      }
-      this._tempSbPath = null;
-    }
-
-    // Clean up temporary Docker files/directories
-    for (const p of this._tempDockerPaths) {
-      if (existsSync(p)) {
-        try {
-          rmSync(p, { recursive: true, force: true });
-        } catch {
-          // ignore
-        }
-      }
-    }
-    this._tempDockerPaths = [];
+    this._cleanupTempFiles();
 
     // Shut down proxy if active
     if (this._proxy) {
@@ -967,10 +947,13 @@ export class TargetManager extends EventEmitter {
       maxAttempts: MAX_RECONNECT_ATTEMPTS,
     });
 
-    // Clean up old connection state
+    // Clean up old connection state. connect() will allocate a fresh sandbox
+    // profile / docker temp paths, so remove the previous ones first — otherwise
+    // each reconnect leaks a temp .sb file (and docker mask dirs) until exit.
     this.client = null;
     this.transport = null;
     this.childPid = null;
+    this._cleanupTempFiles();
 
     try {
       await this.connect();
@@ -1007,6 +990,29 @@ export class TargetManager extends EventEmitter {
   }
 
   // ─── Internal helpers ──────────────────────────────────────────────────────
+
+  /** Remove any temporary sandbox files (Seatbelt profile, Docker mask dirs). */
+  private _cleanupTempFiles(): void {
+    if (this._tempSbPath && existsSync(this._tempSbPath)) {
+      try {
+        rmSync(this._tempSbPath, { force: true });
+      } catch {
+        // ignore
+      }
+    }
+    this._tempSbPath = null;
+
+    for (const p of this._tempDockerPaths) {
+      if (existsSync(p)) {
+        try {
+          rmSync(p, { recursive: true, force: true });
+        } catch {
+          // ignore
+        }
+      }
+    }
+    this._tempDockerPaths = [];
+  }
 
   private async _maybeWrapCommand(
     policy: SandboxPolicy,

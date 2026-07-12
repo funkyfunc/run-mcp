@@ -87,6 +87,7 @@ ${tH}
              ${pc.dim("--clear")}                  ${tD("Ignore remembered argument defaults")}
   ${tC("tools/scaffold")} <name>              ${tD("Generate a template for a tool's arguments")}
   ${tC("tools/forget")} [name]                ${tD("Clear remembered interactive defaults")}
+  ${tC("find")} <query>                       ${tD("Find tools by relevance to a query")}
 
 ${rH}
 
