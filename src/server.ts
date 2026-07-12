@@ -10,6 +10,7 @@ import {
   toolPoisoningScanner,
 } from "./plugins.js";
 import { suggestCommand } from "./parsing.js";
+import { rankTools } from "./ranking.js";
 import {
   type Snapshot,
   computeSnapshotDiff,
@@ -57,6 +58,7 @@ export interface ServerOptions {
  *   mcp_server_status     → Check connection status
  *   call_mcp_primitive    → Call a tool, read a resource, or get a prompt (auto-connects if needed)
  *   list_mcp_primitives   → List tools, resources, and/or prompts
+ *   find_tools            → Relevance-ranked, compact tool discovery (context firewall)
  *   get_mcp_server_stderr → View target server stderr output
  *   list_available_mcp_servers → Discover other local MCP servers from config files
  *
@@ -755,6 +757,89 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       return {
         content: [{ type: "text" as const, text: sections.join("\n") }],
       };
+    },
+  );
+
+  // ─── find_tools ─────────────────────────────────────────────────────────
+
+  mcpServer.registerTool(
+    "find_tools",
+    {
+      title: "Find Tools",
+      description:
+        "Search the connected server's tools by relevance to a query and return a " +
+        "short, ranked list of compact summaries (name + description) — WITHOUT full " +
+        "schemas. Use this to discover the right tool without loading the entire tool " +
+        "catalog into context (avoids the 'tools tax'). Then inspect one schema with " +
+        "list_mcp_primitives(name='...') and invoke it with call_mcp_primitive.",
+      inputSchema: {
+        query: z
+          .string()
+          .describe(
+            "What you want to do — natural language or keywords (e.g. 'take a screenshot')",
+          ),
+        limit: z.number().optional().describe("Max number of tools to return (default 5)"),
+        include_schema: z
+          .boolean()
+          .optional()
+          .describe("Include the full input schema for each matched tool (default false)"),
+      },
+    },
+    async ({ query, limit, include_schema }) => {
+      if (!target?.connected) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "No target server connected. Use connect_to_mcp first.",
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      try {
+        const listed = await target.listTools();
+        // Run the tool-poisoning scanner over metadata before ranking/surfacing.
+        const { tools, findings } = await interceptor.processToolList(listed.tools as any);
+        const ranked = rankTools(query, tools as any[], limit ?? 5);
+
+        if (ranked.length === 0) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `No tools matched "${query}" among ${tools.length} tool(s). Try broader keywords, or list_mcp_primitives to browse.`,
+              },
+            ],
+          };
+        }
+
+        const matches = ranked.map(({ tool, score }) => {
+          const entry: Record<string, unknown> = {
+            name: (tool as any).name,
+            description: (tool as any).description,
+            score,
+          };
+          if (include_schema) entry.inputSchema = (tool as any).inputSchema;
+          return entry;
+        });
+
+        const lines = [
+          `Top ${matches.length} of ${tools.length} tool(s) for "${query}":`,
+          JSON.stringify(matches, null, 2),
+          "",
+          "Next: list_mcp_primitives(name='<tool>') for the full schema, then call_mcp_primitive to invoke it.",
+        ];
+        lines.push(...formatFindings(findings));
+
+        return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+      } catch (err: any) {
+        return {
+          content: [{ type: "text" as const, text: `Error searching tools: ${err.message}` }],
+          isError: true,
+        };
+      }
     },
   );
 

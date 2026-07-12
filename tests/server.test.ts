@@ -118,11 +118,42 @@ describe("server: tool-poisoning scanner", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// find_tools — context-firewall / lazy discovery
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("server: find_tools", () => {
+  it("returns a ranked, compact match without full schemas by default", async () => {
+    const c = await startRunMcpServer();
+    await connectToMockServer(c);
+    const result = await c.callTool({
+      name: "find_tools",
+      arguments: { query: "take a screenshot", limit: 3 },
+    });
+    const text = getText(result);
+    expect(text).toContain("screenshot");
+    // Compact by default: no inputSchema dumped into context.
+    expect(text).not.toContain("inputSchema");
+    // Guides the agent toward the drill-down workflow.
+    expect(text).toContain("list_mcp_primitives");
+  }, 15_000);
+
+  it("includes the schema only when include_schema is set", async () => {
+    const c = await startRunMcpServer();
+    await connectToMockServer(c);
+    const result = await c.callTool({
+      name: "find_tools",
+      arguments: { query: "screenshot", include_schema: true },
+    });
+    expect(getText(result)).toContain("inputSchema");
+  }, 15_000);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Server tool discovery
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("server: tool discovery", () => {
-  it("exposes exactly 9 consolidated tools", async () => {
+  it("exposes exactly 10 consolidated tools", async () => {
     const c = await startRunMcpServer();
     const result = await c.listTools();
     const names = result.tools.map((t) => t.name);
@@ -132,11 +163,12 @@ describe("server: tool discovery", () => {
     expect(names).toContain("mcp_server_status");
     expect(names).toContain("call_mcp_primitive");
     expect(names).toContain("list_mcp_primitives");
+    expect(names).toContain("find_tools");
     expect(names).toContain("get_mcp_server_stderr");
     expect(names).toContain("list_available_mcp_servers");
     expect(names).toContain("validate_mcp_server");
     expect(names).toContain("search_all_local_mcp_servers");
-    expect(names).toHaveLength(9);
+    expect(names).toHaveLength(10);
   }, 15_000);
 
   it("tools have descriptions", async () => {
