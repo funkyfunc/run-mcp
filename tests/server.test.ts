@@ -4,7 +4,12 @@ import { resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { afterEach, describe, expect, it } from "vitest";
-import { MOCK_SERVER_ARGS, MOCK_SERVER_CMD } from "./helpers.js";
+import {
+  MOCK_SERVER_ARGS,
+  MOCK_SERVER_CMD,
+  POISONED_SERVER_ARGS,
+  POISONED_SERVER_CMD,
+} from "./helpers.js";
 
 /**
  * Tests for the server mode (consolidated tool surface).
@@ -74,6 +79,43 @@ async function connectToMockServer(c: Client, extra: Record<string, unknown> = {
 function getText(result: any): string {
   return result.content?.[0]?.text ?? "";
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Tool-poisoning scanner (interceptor plugin) — end to end
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("server: tool-poisoning scanner", () => {
+  it("flags a poisoned target's tools and strips invisible chars when listing", async () => {
+    const c = await startRunMcpServer();
+    const result = await c.callTool({
+      name: "connect_to_mcp",
+      arguments: {
+        command: POISONED_SERVER_CMD,
+        args: POISONED_SERVER_ARGS,
+        include: ["tools"],
+      },
+    });
+    const text = getText(result);
+
+    // The scanner surfaces a safety-findings block to the agent...
+    expect(text).toContain("Tool Safety Findings");
+    // ...and the invisible Unicode Tag char is stripped from the listed metadata.
+    expect(text).not.toContain(String.fromCodePoint(0xe0041));
+  }, 15_000);
+
+  it("surfaces findings via list_mcp_primitives too", async () => {
+    const c = await startRunMcpServer();
+    await c.callTool({
+      name: "connect_to_mcp",
+      arguments: { command: POISONED_SERVER_CMD, args: POISONED_SERVER_ARGS },
+    });
+    const result = await c.callTool({
+      name: "list_mcp_primitives",
+      arguments: { type: ["tools"] },
+    });
+    expect(getText(result)).toContain("Tool Safety Findings");
+  }, 15_000);
+});
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Server tool discovery

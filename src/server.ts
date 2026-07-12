@@ -3,6 +3,12 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { discoverServers } from "./config-scanner.js";
 import { type InterceptionMetadata, ResponseInterceptor } from "./interceptor.js";
+import {
+  type InterceptorPlugin,
+  type PluginFinding,
+  secretRedactionPlugin,
+  toolPoisoningScanner,
+} from "./plugins.js";
 import { suggestCommand } from "./parsing.js";
 import {
   type Snapshot,
@@ -11,6 +17,7 @@ import {
 } from "./snapshot.js";
 import { TargetManager } from "./target-manager.js";
 import { validateProtocol } from "./validator.js";
+import { AuditLogger } from "./audit.js";
 
 export interface ServerOptions {
   outDir?: string;
@@ -25,6 +32,14 @@ export interface ServerOptions {
   denyWrite?: string[];
   denyNet?: string[];
   scan?: boolean;
+  /** Scan tools/list metadata for tool-poisoning (default: true). */
+  scanTools?: boolean;
+  /** Redact secrets from tool/resource/prompt result content (default: false). */
+  redactSecrets?: boolean;
+  /** When redacting, also redact email addresses (PII). */
+  redactEmails?: boolean;
+  /** If set, append a JSONL audit trail of every MCP request/response here. */
+  auditLogPath?: string;
 }
 
 /**
@@ -53,12 +68,37 @@ export async function startServer(opts: ServerOptions): Promise<void> {
   let cachedSpawnConfig: { command: string; args: string[]; env?: Record<string, string> } | null =
     null;
 
+  const auditLogger = opts.auditLogPath ? new AuditLogger(opts.auditLogPath) : null;
+
   const interceptor = new ResponseInterceptor({
     outDir: opts.outDir,
     defaultTimeoutMs: opts.timeoutMs,
     maxTextLength: opts.maxTextLength,
     mediaThresholdKb: opts.mediaThresholdKb,
+    // Tool-poisoning defense is on by default: the agent's context is exactly
+    // what this attack targets. Opt out with scanTools: false. Secret redaction
+    // is opt-in (it mutates result content).
+    plugins: (() => {
+      const p: InterceptorPlugin[] = [];
+      if (opts.scanTools !== false) p.push(toolPoisoningScanner());
+      if (opts.redactSecrets) p.push(secretRedactionPlugin({ redactEmails: opts.redactEmails }));
+      return p;
+    })(),
   });
+
+  /** Format plugin findings as a warning block appended to a tool listing. */
+  function formatFindings(findings: PluginFinding[]): string[] {
+    if (findings.length === 0) return [];
+    const lines = ["", "--- ⚠️ Tool Safety Findings ---"];
+    for (const f of findings) {
+      const loc = f.location ? ` [${f.location}]` : "";
+      lines.push(`  (${f.severity})${loc} ${f.message}`);
+    }
+    lines.push(
+      "Note: invisible/bidi characters were stripped automatically; review flagged tools before use.",
+    );
+    return lines;
+  }
 
   const mcpServer = new McpServer(
     { name: "run-mcp", version: PKG_VERSION },
@@ -74,6 +114,18 @@ export async function startServer(opts: ServerOptions): Promise<void> {
 
   /** Set up stderr and disconnect listeners on the target. */
   function setupTargetListeners(t: TargetManager): void {
+    if (auditLogger) {
+      t.on("history", (rec: any) => {
+        auditLogger.log("request", {
+          method: rec.method,
+          params: rec.params,
+          durationMs: rec.durationMs,
+          isError: rec.error !== undefined,
+          error: rec.error,
+        });
+      });
+    }
+
     t.on("stderr", (text) => {
       mcpServer
         .sendLoggingMessage({
@@ -199,13 +251,16 @@ export async function startServer(opts: ServerOptions): Promise<void> {
 
     if (include.includes("tools")) {
       try {
-        const { tools } = await target.listTools();
+        const listed = await target.listTools();
+        // Run tools through the interceptor plugins (tool-poisoning scan) before
+        // they enter the agent's context.
+        const { tools, findings } = await interceptor.processToolList(listed.tools as any);
         let displayTools = summary
-          ? tools.map((t) => ({ name: t.name, description: t.description }))
+          ? tools.map((t: any) => ({ name: t.name, description: t.description }))
           : tools;
         let jsonStr = JSON.stringify(displayTools, null, 2);
         if (!summary && jsonStr.length > 20000) {
-          displayTools = tools.map((t) => ({ name: t.name, description: t.description }));
+          displayTools = tools.map((t: any) => ({ name: t.name, description: t.description }));
           jsonStr = JSON.stringify(displayTools, null, 2);
           lines.push(
             "",
@@ -216,6 +271,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         } else {
           lines.push("", "--- Tools ---", jsonStr);
         }
+        lines.push(...formatFindings(findings));
       } catch (err: any) {
         lines.push("", "--- Tools ---", `Error: ${err.message}`);
       }
@@ -564,24 +620,27 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       if (requested.includes("tools") && caps.tools) {
         try {
           const result = await target.listTools({ cursor });
-          let tools = result.tools;
+          // Scan for tool-poisoning before surfacing tool metadata to the agent.
+          const scanned = await interceptor.processToolList(result.tools as any);
+          let tools: any[] = scanned.tools;
           if (name) {
-            tools = tools.filter((t) => t.name === name);
+            tools = tools.filter((t: any) => t.name === name);
             if (tools.length === 0) {
-              const available = result.tools.map((t) => t.name).join(", ");
+              const available = scanned.tools.map((t: any) => t.name).join(", ");
               sections.push("--- Tools ---", `Tool "${name}" not found.\nAvailable: ${available}`);
             } else {
               sections.push("--- Tools ---", JSON.stringify(tools[0], null, 2));
             }
           } else {
             const displayTools = summary
-              ? tools.map((t) => ({ name: t.name, description: t.description }))
+              ? tools.map((t: any) => ({ name: t.name, description: t.description }))
               : tools;
             sections.push("--- Tools ---", JSON.stringify(displayTools, null, 2));
           }
           if (result.nextCursor) {
             sections.push(`--- Tools Next Cursor: ${result.nextCursor} ---`);
           }
+          sections.push(...formatFindings(scanned.findings));
         } catch (err: any) {
           sections.push("--- Tools ---", `Error: ${err.message}`);
         }

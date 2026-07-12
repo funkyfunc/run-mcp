@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import type { TargetManager } from "./target-manager.js";
+import type { InterceptorPlugin, PluginFinding, ToolDef } from "./plugins.js";
 
 /** Matches a large base64 blob in text content (1000+ chars of base64 alphabet). */
 const BASE64_PATTERN = /^[A-Za-z0-9+/]{1000,}={0,2}$/;
@@ -19,6 +20,8 @@ export interface InterceptorOptions {
   maxTextLength?: number;
   mediaThresholdKb?: number;
   openMedia?: boolean;
+  /** Ordered middleware plugins run over tools/list and call/read/prompt results. */
+  plugins?: InterceptorPlugin[];
 }
 
 /**
@@ -31,6 +34,8 @@ export interface InterceptionMetadata {
   imagesSaved: number;
   audioSaved: number;
   originalSizeBytes: number;
+  /** Findings surfaced by interceptor plugins while processing this result. */
+  findings: PluginFinding[];
 }
 
 interface ContentItem {
@@ -56,6 +61,7 @@ export class ResponseInterceptor {
   private readonly maxTextLength: number;
   private readonly mediaThresholdKb: number;
   private readonly openMedia: boolean;
+  private readonly plugins: InterceptorPlugin[];
   private fileCounter = 0;
 
   constructor(opts: InterceptorOptions = {}) {
@@ -64,6 +70,50 @@ export class ResponseInterceptor {
     this.maxTextLength = opts.maxTextLength ?? DEFAULT_MAX_TEXT_LENGTH;
     this.mediaThresholdKb = opts.mediaThresholdKb ?? 0;
     this.openMedia = opts.openMedia ?? false;
+    this.plugins = opts.plugins ?? [];
+  }
+
+  /**
+   * Run the `onToolsList` hook of every plugin over a tools array, in order.
+   * Returns the (possibly transformed) tools and any findings the plugins
+   * surfaced (e.g. tool-poisoning warnings). Tools are mutated in place by
+   * plugins that strip content, so callers should use the returned array.
+   */
+  async processToolList(
+    tools: ToolDef[],
+  ): Promise<{ tools: ToolDef[]; findings: PluginFinding[] }> {
+    const findings: PluginFinding[] = [];
+    const report = (f: PluginFinding) => findings.push(f);
+    let current = tools;
+    for (const plugin of this.plugins) {
+      if (plugin.onToolsList) {
+        current = await plugin.onToolsList(current, report);
+      }
+    }
+    return { tools: current, findings };
+  }
+
+  /**
+   * Run a result-transform hook (onToolResult/onResourceResult/onPromptResult)
+   * for every plugin, threading findings into `metadata.findings`.
+   */
+  private async _runResultHooks(
+    hook: "onToolResult" | "onResourceResult" | "onPromptResult",
+    result: Record<string, unknown>,
+    primitive: "tool" | "resource" | "prompt",
+    name: string | undefined,
+    metadata: InterceptionMetadata,
+  ): Promise<Record<string, unknown>> {
+    if (this.plugins.length === 0) return result;
+    const report = (f: PluginFinding) => metadata.findings.push(f);
+    let current = result;
+    for (const plugin of this.plugins) {
+      const fn = plugin[hook];
+      if (fn) {
+        current = await fn.call(plugin, current, { primitive, name, report });
+      }
+    }
+    return current;
   }
 
   /**
@@ -112,6 +162,7 @@ export class ResponseInterceptor {
       imagesSaved: 0,
       audioSaved: 0,
       originalSizeBytes: 0,
+      findings: [],
     };
 
     const targetCall = target.readResource(params);
@@ -137,7 +188,13 @@ export class ResponseInterceptor {
       }
     }
 
-    return result as Record<string, unknown>;
+    return this._runResultHooks(
+      "onResourceResult",
+      result as Record<string, unknown>,
+      "resource",
+      params.uri,
+      metadata,
+    );
   }
 
   /**
@@ -155,6 +212,7 @@ export class ResponseInterceptor {
       imagesSaved: 0,
       audioSaved: 0,
       originalSizeBytes: 0,
+      findings: [],
     };
 
     const targetCall = target.getPrompt(params);
@@ -196,7 +254,13 @@ export class ResponseInterceptor {
       }
     }
 
-    return result as Record<string, unknown>;
+    return this._runResultHooks(
+      "onPromptResult",
+      result as Record<string, unknown>,
+      "prompt",
+      params.name,
+      metadata,
+    );
   }
 
   /**
@@ -215,6 +279,7 @@ export class ResponseInterceptor {
       imagesSaved: 0,
       audioSaved: 0,
       originalSizeBytes: 0,
+      findings: [],
     };
 
     // Start the target call. We attach a dummy .catch to prevent unhandled
@@ -243,7 +308,15 @@ export class ResponseInterceptor {
       }
     }
 
-    return { result: result as Record<string, unknown>, metadata };
+    const finalResult = await this._runResultHooks(
+      "onToolResult",
+      result as Record<string, unknown>,
+      "tool",
+      name,
+      metadata,
+    );
+
+    return { result: finalResult, metadata };
   }
 
   /**

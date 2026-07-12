@@ -676,6 +676,9 @@ export class TargetManager extends EventEmitter {
     if (this._history.length > MAX_HISTORY) {
       this._history = this._history.slice(-MAX_HISTORY);
     }
+    // Emit for audit sinks (e.g. the JSONL AuditLogger). Kept separate from the
+    // bounded in-memory ring buffer so nothing is dropped from the audit trail.
+    this.emit("history", record);
   }
 
   // ─── Notification History ───────────────────────────────────────────────────

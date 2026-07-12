@@ -633,6 +633,19 @@ program
     "Scan the current workspace and parent directories for any JSON files containing mcpServers",
   )
   .option(
+    "--no-scan-tools",
+    "Disable tool-poisoning scanning of tools/list metadata (Agent Mode; on by default)",
+  )
+  .option(
+    "--redact-secrets",
+    "Redact detected secrets/API keys from tool/resource/prompt output (Agent Mode)",
+  )
+  .option("--redact-emails", "When redacting, also redact email addresses (Agent Mode)")
+  .option(
+    "--audit-log <file>",
+    "Append a JSONL audit trail of every MCP request/response to this file (Agent Mode)",
+  )
+  .option(
     "-w, --watch",
     "Watch the current directory for file changes and auto-reconnect (REPL Mode only)",
   )
@@ -724,6 +737,10 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
         denyWrite?: string[];
         denyNet?: string[];
         scan?: boolean;
+        scanTools?: boolean;
+        redactSecrets?: boolean;
+        redactEmails?: boolean;
+        auditLog?: string;
       },
     ) => {
       const target = activeTargetCommand ?? targetCommand ?? [];
@@ -765,6 +782,10 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
             denyWrite: opts.denyWrite,
             denyNet: opts.denyNet,
             scan: opts.scan,
+            scanTools: opts.scanTools,
+            redactSecrets: opts.redactSecrets,
+            redactEmails: opts.redactEmails,
+            auditLogPath: opts.auditLog,
           });
         } else {
           // Human is running it in a terminal without arguments -> pick a config

@@ -33,3 +33,14 @@ export const VULN_SERVER_CMD = "node";
 export const VULN_SERVER_ARGS = existsSync(VULN_SERVER_PATH_JS)
   ? [VULN_SERVER_PATH_JS]
   : ["--import", "tsx", VULN_SERVER_PATH_TS];
+
+/** Path to the tool-poisoned server fixture (invisible chars + injection phrase). */
+export const POISONED_SERVER_PATH_TS = resolve(import.meta.dirname, "fixtures/poisoned-server.ts");
+export const POISONED_SERVER_PATH_JS = resolve(
+  import.meta.dirname,
+  "fixtures/dist/poisoned-server.js",
+);
+export const POISONED_SERVER_CMD = "node";
+export const POISONED_SERVER_ARGS = existsSync(POISONED_SERVER_PATH_JS)
+  ? [POISONED_SERVER_PATH_JS]
+  : ["--import", "tsx", POISONED_SERVER_PATH_TS];

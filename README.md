@@ -75,6 +75,10 @@ run-mcp [options] [target_command...]
 | `--open-media` | Automatically open intercepted images and audio files using the host OS viewer |
 | `--sandbox <mode>` | Sandbox execution mode: auto, docker, native, audit, none (default: "none") |
 | `--scan` | Scan the current workspace and parent directories for any JSON files containing mcpServers |
+| `--no-scan-tools` | Disable tool-poisoning scanning of tools/list metadata (Agent Mode; on by default) |
+| `--redact-secrets` | Redact detected secrets/API keys from tool/resource/prompt output (Agent Mode) |
+| `--redact-emails` | When redacting, also redact email addresses (Agent Mode) |
+| `--audit-log <file>` | Append a JSONL audit trail of every MCP request/response to this file (Agent Mode) |
 | `-w, --watch` | Watch the current directory for file changes and auto-reconnect (REPL Mode only) |
 | `--allow-read <paths...>` | Paths to allow reading under the sandbox |
 | `--allow-write <paths...>` | Paths to allow writing under the sandbox |
