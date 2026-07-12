@@ -224,8 +224,7 @@ export class TargetManager extends EventEmitter {
     this._intentionalClose = false;
     this._everConnected = false;
     if (!isHttpFallback) this._httpTriedStreamable = false;
-    const isHttpUrl =
-      this.command.startsWith("http://") || this.command.startsWith("https://");
+    const isHttpUrl = this.command.startsWith("http://") || this.command.startsWith("https://");
     try {
       // Detect transport: HTTP(S) URL → Streamable HTTP / SSE, else spawn stdio.
       if (isHttpUrl) {

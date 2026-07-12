@@ -328,6 +328,44 @@ server.registerTool(
   },
 );
 
+// ─── Tool: request_sampling (server → client sampling round-trip) ──────────
+
+server.registerTool(
+  "request_sampling",
+  {
+    description: "Asks the client to sample an LLM completion (tests sampling forwarding)",
+    inputSchema: { prompt: z.string().describe("Prompt to sample") },
+  },
+  async ({ prompt }) => {
+    const result = await server.server.createMessage({
+      messages: [{ role: "user", content: { type: "text", text: prompt } }],
+      maxTokens: 100,
+    });
+    const text = (result.content as any)?.text ?? JSON.stringify(result.content ?? result);
+    return { content: [{ type: "text", text: `sampled: ${text}` }] };
+  },
+);
+
+// ─── Tool: request_elicitation (server → client elicitation round-trip) ────
+
+server.registerTool(
+  "request_elicitation",
+  {
+    description: "Asks the client to elicit input (tests elicitation forwarding)",
+  },
+  async () => {
+    const result = await server.server.elicitInput({
+      message: "Please provide your name",
+      requestedSchema: {
+        type: "object",
+        properties: { name: { type: "string" } },
+        required: ["name"],
+      },
+    });
+    return { content: [{ type: "text", text: `elicited: ${JSON.stringify(result)}` }] };
+  },
+);
+
 // ─── Start ─────────────────────────────────────────────────────────────────
 
 process.stderr.write("Mock MCP server running on stdio\n");

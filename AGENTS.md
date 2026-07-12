@@ -312,6 +312,8 @@ Tests run **sequentially** (`fileParallelism: false` in vitest.config.ts) becaus
 | `multi_content` | Returns multiple content items                                                  |
 | `audio_tool`    | Returns a fake base64 WAV clip (audio interception testing)                     |
 | `error_tool`    | Returns `isError: true` (error passthrough testing)                             |
+| `request_sampling` | Calls the client's `sampling/createMessage` (tests sampling forwarding)      |
+| `request_elicitation` | Calls the client's `elicitation/create` (tests elicitation forwarding)    |
 
 **Resources:**
 

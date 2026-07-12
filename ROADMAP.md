@@ -249,29 +249,37 @@ Ordered roughly by value/fit. Each has enough context to start cold.
   selection, and the auto→SSE fallback. (Note: `vulnerable-http-server.ts` remains
   unused/orphaned; the new tests use in-process servers instead.)
 
-### 6.2 — Tier 2 leftover: test hardening
-- **Mock server gaps** (`tests/fixtures/mock-server.ts`): it does NOT simulate
-  sampling, elicitation, resource subscriptions, real pagination (ignores
-  `cursor`, never returns `nextCursor`), progress notifications, cancellation,
-  completion, roots, list_changed notifications, or structured/`outputSchema`
-  output. Whole code paths (e.g. `server.ts` sampling/elicitation forwarding,
-  `target-manager.ts` notification handlers) are therefore untested. Add
-  simulations + tests.
-- **Zero-coverage modules:** `repl/*` (entire interactive surface incl.
-  sampling/elicitation approval prompts, watch mode), `config-scanner.ts`,
-  `watcher.ts`, `snapshot.ts` (diff add/modify/remove paths — only "unchanged" is
-  asserted), `colors.ts`. `repl/*` is hard to test because of the module-singleton
-  state in `repl/state.ts` — consider refactoring that for testability, or extract
-  more pure logic à la `parsing.ts`.
-- **Untested TargetManager surface:** successful auto-reconnect (only the
-  no-reconnect paths are tested), ping, resource templates, subscribe/unsubscribe,
-  getPrompt, setLoggingLevel, complete, roots, history/notification buffers.
-- **Flakiness to clean:** sleep-based sync in `server.test.ts` / `target-manager.test.ts`;
-  `settings.test.ts` uses a repo-root temp dir + touches the real `~/.ssh`
-  resolution; fixed session name/port in headless session test.
-- **Old silent sandbox skips:** convert the `return;` skips in the sandbox
-  `describe` of `tests/target-manager.test.ts` to visible `it.skipIf` (they're
-  entangled with an `execSync` mock that fakes bwrap presence — untangle carefully).
+### 6.2 — Tier 2 leftover: test hardening  ◑ PARTIALLY DONE (this session)
+Done this session:
+- Mock server now simulates **sampling** and **elicitation** (`request_sampling`,
+  `request_elicitation` tools) → `tests/target-manager.test.ts` covers the
+  `sampling_request` / `elicitation_request` forwarding events.
+- Added unit tests: `snapshot.ts` (diff add/modify/remove paths),
+  `colors.ts` (full precedence hierarchy), `config-scanner.ts` (scan walk-up +
+  malformed/skip handling), `watcher.ts` (relativePath, start/stop, debounced
+  change with platform-unsupported fallback).
+- Covered untested TargetManager surface: `ping`, `listResourceTemplates`,
+  `getPrompt`, history buffer get/clear, roots add/list/remove.
+
+Still open:
+- Mock server STILL does NOT simulate: resource subscriptions, real pagination
+  (ignores `cursor`, never returns `nextCursor`), progress notifications,
+  cancellation, completion, list_changed, structured/`outputSchema` output.
+- `repl/*` remains ZERO-coverage (entire interactive surface incl. sampling/
+  elicitation approval prompts, watch mode). Hard to test due to the
+  module-singleton state in `repl/state.ts` — refactor that for testability or
+  extract more pure logic à la `parsing.ts`.
+- Untested TargetManager: successful auto-reconnect (only no-reconnect paths),
+  subscribe/unsubscribe, setLoggingLevel, complete, notification buffers.
+- **Flakiness to clean:** sleep-based sync in `server.test.ts` /
+  `target-manager.test.ts`; `settings.test.ts` uses a repo-root temp dir + touches
+  the real `~/.ssh` resolution; fixed session name/port in headless session test.
+- **Old silent sandbox skips:** the `return;` skips in the sandbox `describe` of
+  `tests/target-manager.test.ts` are entangled with a module-level `vi.mock` of
+  `node:child_process.execSync` that fakes bwrap presence — computing availability
+  at import time would hit the mock and never skip honestly. Left as-is; the Tier 1
+  `tests/sandbox-enforcement.test.ts` already provides honest visible-skip coverage
+  against the real hostile server. Untangle only if you also de-mock that file.
 
 ### 6.3 — Consistency follow-ups discovered during Tier 1–3 (small, high-value)
 - **Scanner/DLP not in REPL or headless.** The tool-poisoning scanner and DLP only

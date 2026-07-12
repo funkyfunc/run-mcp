@@ -206,6 +206,87 @@ describe("callTool", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Additional MCP client-role surface
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("MCP client-role methods", () => {
+  it("ping returns a round-trip time", async () => {
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
+    await target.connect();
+    const rtt = await target.ping();
+    expect(rtt).toBeGreaterThanOrEqual(0);
+  }, 10_000);
+
+  it("lists resource templates", async () => {
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
+    await target.connect();
+    const { resourceTemplates } = await target.listResourceTemplates();
+    expect(resourceTemplates.map((t: any) => t.uriTemplate)).toContain("docs://pages/{page}");
+  }, 10_000);
+
+  it("gets a prompt with arguments", async () => {
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
+    await target.connect();
+    const result = await target.getPrompt({ name: "greeting", arguments: { name: "Ada" } });
+    expect(JSON.stringify(result.messages)).toContain("Ada");
+  }, 10_000);
+
+  it("tracks and clears request history", async () => {
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
+    await target.connect();
+    await target.listTools();
+    await target.callTool("echo", { text: "hi" });
+    expect(target.getHistory().length).toBeGreaterThanOrEqual(2);
+    expect(target.getHistory(1)).toHaveLength(1);
+    target.clearHistory();
+    expect(target.getHistory()).toHaveLength(0);
+  }, 10_000);
+
+  it("manages roots (add, list, remove) without error", async () => {
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
+    await target.connect();
+    await target.addRoot({ uri: "file:///tmp/x", name: "x" });
+    expect(target.getRoots().map((r) => r.uri)).toContain("file:///tmp/x");
+    // Adding a duplicate is a no-op.
+    await target.addRoot({ uri: "file:///tmp/x" });
+    expect(target.getRoots()).toHaveLength(1);
+    const removed = await target.removeRoot("file:///tmp/x");
+    expect(removed).toBe(true);
+    expect(target.getRoots()).toHaveLength(0);
+  }, 10_000);
+});
+
+describe("sampling & elicitation forwarding", () => {
+  it("emits a sampling_request event and returns the responder's result", async () => {
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
+    await target.connect();
+
+    target.on("sampling_request", ({ respond }: any) => {
+      respond({
+        model: "test-model",
+        role: "assistant",
+        content: { type: "text", text: "sampled reply" },
+      });
+    });
+
+    const res: any = await target.callTool("request_sampling", { prompt: "hello" });
+    expect(res.content[0].text).toContain("sampled reply");
+  }, 10_000);
+
+  it("emits an elicitation_request event and returns the responder's content", async () => {
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
+    await target.connect();
+
+    target.on("elicitation_request", ({ respond }: any) => {
+      respond({ action: "accept", content: { name: "Ada" } });
+    });
+
+    const res: any = await target.callTool("request_elicitation", {});
+    expect(res.content[0].text).toContain("Ada");
+  }, 10_000);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Enhanced status fields
 // ═══════════════════════════════════════════════════════════════════════════
 
