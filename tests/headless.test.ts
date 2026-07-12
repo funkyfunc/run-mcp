@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
-import { writeFileSync, unlinkSync } from "node:fs";
+import { existsSync, rmSync, writeFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { MOCK_SERVER_ARGS, MOCK_SERVER_CMD } from "./helpers.js";
@@ -39,6 +39,67 @@ async function runCli(
 // ═══════════════════════════════════════════════════════════════════════════════
 // Headless CLI Integration Tests
 // ═══════════════════════════════════════════════════════════════════════════════
+
+describe("headless: record & replay", () => {
+  it("records a tool response then replays it offline with no target", async () => {
+    const cassette = join(
+      tmpdir(),
+      `run-mcp-cass-${Date.now()}-${Math.random().toString(36).slice(2)}.json`,
+    );
+    try {
+      // Record against the live mock server.
+      const rec = await runCli([
+        "call",
+        "echo",
+        '{"text":"vcr"}',
+        "--cassette",
+        cassette,
+        "--record",
+        ...TARGET,
+      ]);
+      expect(rec.exitCode).toBe(0);
+      expect(JSON.parse(rec.stdout)[0].text).toBe("vcr");
+      expect(existsSync(cassette)).toBe(true);
+
+      // Replay offline: NO target command provided at all.
+      const rep = await runCli([
+        "call",
+        "echo",
+        '{"text":"vcr"}',
+        "--cassette",
+        cassette,
+        "--replay",
+      ]);
+      expect(rep.exitCode).toBe(0);
+      expect(JSON.parse(rep.stdout)[0].text).toBe("vcr");
+      expect(rep.stderr).toContain("Replaying from cassette");
+      expect(rep.stderr).not.toContain("Connecting");
+    } finally {
+      if (existsSync(cassette)) rmSync(cassette, { force: true });
+    }
+  }, 20_000);
+
+  it("errors on a replay miss", async () => {
+    const cassette = join(
+      tmpdir(),
+      `run-mcp-cass-${Date.now()}-${Math.random().toString(36).slice(2)}.json`,
+    );
+    try {
+      const res = await runCli([
+        "call",
+        "echo",
+        '{"text":"never recorded"}',
+        "--cassette",
+        cassette,
+        "--replay",
+      ]);
+      expect(res.exitCode).not.toBe(0);
+      expect(res.stderr).toContain("No cassette recording");
+    } finally {
+      if (existsSync(cassette)) rmSync(cassette, { force: true });
+    }
+  }, 15_000);
+});
 
 describe("headless: call", () => {
   it("calls a tool and outputs JSON to stdout", async () => {

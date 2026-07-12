@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { execFile } from "node:child_process";
 import type { TargetManager } from "./target-manager.js";
 import type { InterceptorPlugin, PluginFinding, ToolDef } from "./plugins.js";
+import type { Cassette } from "./cassette.js";
 
 /** Matches a large base64 blob in text content (1000+ chars of base64 alphabet). */
 const BASE64_PATTERN = /^[A-Za-z0-9+/]{1000,}={0,2}$/;
@@ -22,6 +23,8 @@ export interface InterceptorOptions {
   openMedia?: boolean;
   /** Ordered middleware plugins run over tools/list and call/read/prompt results. */
   plugins?: InterceptorPlugin[];
+  /** Record/replay cassette. When set, call/read/getPrompt consult and record it. */
+  cassette?: Cassette;
 }
 
 /**
@@ -62,6 +65,7 @@ export class ResponseInterceptor {
   private readonly mediaThresholdKb: number;
   private readonly openMedia: boolean;
   private readonly plugins: InterceptorPlugin[];
+  private readonly cassette?: Cassette;
   private fileCounter = 0;
 
   constructor(opts: InterceptorOptions = {}) {
@@ -71,6 +75,33 @@ export class ResponseInterceptor {
     this.mediaThresholdKb = opts.mediaThresholdKb ?? 0;
     this.openMedia = opts.openMedia ?? false;
     this.plugins = opts.plugins ?? [];
+    this.cassette = opts.cassette;
+  }
+
+  /** Empty interception metadata (used for replayed results). */
+  private _emptyMetadata(): InterceptionMetadata {
+    return { truncated: false, imagesSaved: 0, audioSaved: 0, originalSizeBytes: 0, findings: [] };
+  }
+
+  /**
+   * Consult the cassette for a recorded result. Returns it on a hit; in replay
+   * mode a miss throws (the cassette is stale for this request).
+   */
+  private _replay(
+    primitive: "tool" | "resource" | "prompt",
+    name: string,
+    args: unknown,
+  ): Record<string, unknown> | undefined {
+    if (!this.cassette) return undefined;
+    const hit = this.cassette.match(primitive, name, args);
+    if (hit) return hit.result as Record<string, unknown>;
+    if (this.cassette.mode === "replay") {
+      throw new Error(
+        `No cassette recording for ${primitive} "${name}" with the given arguments (replay mode). ` +
+          `Re-record with --record, or check the arguments match.`,
+      );
+    }
+    return undefined;
   }
 
   /**
@@ -165,6 +196,9 @@ export class ResponseInterceptor {
       findings: [],
     };
 
+    const replayed = this._replay("resource", params.uri, params);
+    if (replayed !== undefined) return replayed;
+
     const targetCall = target.readResource(params);
     targetCall.catch(() => {});
 
@@ -188,13 +222,15 @@ export class ResponseInterceptor {
       }
     }
 
-    return this._runResultHooks(
+    const finalResult = await this._runResultHooks(
       "onResourceResult",
       result as Record<string, unknown>,
       "resource",
       params.uri,
       metadata,
     );
+    this.cassette?.record("resource", params.uri, params, finalResult, new Date().toISOString());
+    return finalResult;
   }
 
   /**
@@ -214,6 +250,9 @@ export class ResponseInterceptor {
       originalSizeBytes: 0,
       findings: [],
     };
+
+    const replayed = this._replay("prompt", params.name, params.arguments);
+    if (replayed !== undefined) return replayed;
 
     const targetCall = target.getPrompt(params);
     targetCall.catch(() => {});
@@ -254,13 +293,21 @@ export class ResponseInterceptor {
       }
     }
 
-    return this._runResultHooks(
+    const finalResult = await this._runResultHooks(
       "onPromptResult",
       result as Record<string, unknown>,
       "prompt",
       params.name,
       metadata,
     );
+    this.cassette?.record(
+      "prompt",
+      params.name,
+      params.arguments,
+      finalResult,
+      new Date().toISOString(),
+    );
+    return finalResult;
   }
 
   /**
@@ -281,6 +328,12 @@ export class ResponseInterceptor {
       originalSizeBytes: 0,
       findings: [],
     };
+
+    // Replay from cassette if we have a recording (skips the target entirely).
+    const replayed = this._replay("tool", name, args);
+    if (replayed !== undefined) {
+      return { result: replayed, metadata: this._emptyMetadata() };
+    }
 
     // Start the target call. We attach a dummy .catch to prevent unhandled
     // promise rejections if the real call fails AFTER our Promise.race times out.
@@ -315,6 +368,8 @@ export class ResponseInterceptor {
       name,
       metadata,
     );
+
+    this.cassette?.record("tool", name, args, finalResult, new Date().toISOString());
 
     return { result: finalResult, metadata };
   }

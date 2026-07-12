@@ -192,6 +192,9 @@ interface HeadlessOpts {
   denyRead?: string[];
   denyWrite?: string[];
   denyNet?: string[];
+  cassette?: string;
+  record?: boolean;
+  replay?: boolean;
 }
 
 function parseHeadlessOpts(opts: HeadlessOpts) {
@@ -208,6 +211,8 @@ function parseHeadlessOpts(opts: HeadlessOpts) {
     denyRead: opts.denyRead,
     denyWrite: opts.denyWrite,
     denyNet: opts.denyNet,
+    cassettePath: opts.cassette,
+    cassetteMode: opts.record ? ("record" as const) : opts.replay ? ("replay" as const) : undefined,
   };
 }
 
@@ -257,6 +262,12 @@ function registerHeadlessCommand(config: HeadlessCommandConfig) {
     .option("--show-stderr", "Stream target server stderr to process stderr")
     .option("--session <name>", "Persistent session name")
     .option("--sandbox <mode>", "Sandbox execution mode: auto, docker, native, audit, none", "none")
+    .option(
+      "--cassette <file>",
+      "Record/replay responses to a cassette file (auto: replay if present, else record)",
+    )
+    .option("--record", "Force (re)recording into the --cassette file")
+    .option("--replay", "Force replay-only from the --cassette file (error on a miss)")
     .allowUnknownOption();
 
   // Command-specific options
@@ -279,7 +290,14 @@ function registerHeadlessCommand(config: HeadlessCommandConfig) {
     if (opts.session) {
       await handleHeadlessSession(opts.session, targetCommand, operation, parsedOpts, usageStr);
     } else {
-      const target = requireTargetCommand(activeTargetCommand ?? targetCommand, usageStr);
+      // Offline replay (call/read/get-prompt) needs no target command — the
+      // response comes from the cassette. Every other case requires the target.
+      const offlineReplayable = new Set(["call", "read", "get-prompt"]);
+      const canRunOffline =
+        parsedOpts.cassetteMode === "replay" && offlineReplayable.has(operation.type);
+      const provided = activeTargetCommand ?? targetCommand ?? [];
+      const target =
+        canRunOffline && provided.length === 0 ? [] : requireTargetCommand(provided, usageStr);
       await runHeadless(target, operation, parsedOpts);
     }
   });

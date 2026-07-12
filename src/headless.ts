@@ -16,6 +16,7 @@
 import { ResponseInterceptor } from "./interceptor.js";
 import { parseHttpieArgs } from "./parsing.js";
 import { TargetManager } from "./target-manager.js";
+import { Cassette, type CassetteMode } from "./cassette.js";
 
 /** Default timeout for headless tool calls (30 seconds). */
 const DEFAULT_HEADLESS_TIMEOUT_MS = 30_000;
@@ -32,6 +33,8 @@ export interface HeadlessOptions {
   denyRead?: string[];
   denyWrite?: string[];
   denyNet?: string[];
+  cassettePath?: string;
+  cassetteMode?: CassetteMode;
 }
 
 export type HeadlessOperation =
@@ -64,9 +67,13 @@ export async function runHeadless(
     denyWrite: opts.denyWrite,
     denyNet: opts.denyNet,
   });
+  const cassette = opts.cassettePath
+    ? new Cassette(opts.cassettePath, opts.cassetteMode ?? "auto")
+    : undefined;
   const interceptor = new ResponseInterceptor({
     outDir: opts.outDir,
     defaultTimeoutMs: opts.timeoutMs ?? DEFAULT_HEADLESS_TIMEOUT_MS,
+    cassette,
   });
 
   // Stream or suppress server stderr
@@ -78,12 +85,21 @@ export async function runHeadless(
     target.on("stderr", () => {});
   }
 
-  try {
-    process.stderr.write(`Connecting to ${targetCommand.join(" ")}...\n`);
-    await target.connect();
+  // In replay mode, interceptor-routed operations (call/read/get-prompt) are
+  // served from the cassette, so we can run fully offline without spawning the
+  // target. List operations still need a live server.
+  const replayableOffline = new Set(["call", "read", "get-prompt"]);
+  const skipConnect = cassette?.mode === "replay" && replayableOffline.has(operation.type);
 
-    const status = target.getStatus();
-    process.stderr.write(`Connected (PID: ${status.pid})\n`);
+  try {
+    if (skipConnect) {
+      process.stderr.write(`Replaying from cassette (offline)...\n`);
+    } else {
+      process.stderr.write(`Connecting to ${targetCommand.join(" ")}...\n`);
+      await target.connect();
+      const status = target.getStatus();
+      process.stderr.write(`Connected (PID: ${status.pid})\n`);
+    }
 
     const { result, hasError } = await executeOperation(target, interceptor, operation, opts);
 

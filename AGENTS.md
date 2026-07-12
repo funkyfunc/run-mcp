@@ -97,6 +97,7 @@ All three interfaces feed into the same interception pipeline. See `README.md` f
 | **Colors**              | `src/colors.ts`         | Color constants and helpers using `picocolors` for consistent terminal styling across REPL and headless output. |
 | **Plugins**             | `src/plugins.ts`        | Interceptor plugin framework (ordered middleware hooks: `onToolsList`, `onToolResult`, `onResourceResult`, `onPromptResult`) plus bundled plugins: `toolPoisoningScanner` (strips invisible/bidi Unicode + flags injection phrasing in tools/list) and `secretRedactionPlugin` (DLP redaction of secrets in results). |
 | **Audit**               | `src/audit.ts`          | Append-only JSONL audit logger (`--audit-log`) recording every MCP request/response from `TargetManager`'s `history` event. |
+| **Cassette**            | `src/cassette.ts`       | Record/replay ("VCR for MCP", `--cassette`/`--record`/`--replay`): captures tool/resource/prompt responses keyed by a canonical (primitive, name, args) hash and replays them deterministically. The interceptor short-circuits the target on a replay hit (offline in headless mode). |
 
 ### Auto-Reconnect Logic (TargetManager)
 
