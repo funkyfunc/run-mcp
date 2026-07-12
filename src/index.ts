@@ -195,6 +195,7 @@ interface HeadlessOpts {
   cassette?: string;
   record?: boolean;
   replay?: boolean;
+  transport?: string;
 }
 
 function parseHeadlessOpts(opts: HeadlessOpts) {
@@ -213,6 +214,7 @@ function parseHeadlessOpts(opts: HeadlessOpts) {
     denyNet: opts.denyNet,
     cassettePath: opts.cassette,
     cassetteMode: opts.record ? ("record" as const) : opts.replay ? ("replay" as const) : undefined,
+    transport: opts.transport as "auto" | "http" | "sse" | undefined,
   };
 }
 
@@ -268,6 +270,10 @@ function registerHeadlessCommand(config: HeadlessCommandConfig) {
     )
     .option("--record", "Force (re)recording into the --cassette file")
     .option("--replay", "Force replay-only from the --cassette file (error on a miss)")
+    .option(
+      "--transport <mode>",
+      "Transport for http(s) targets: auto (default), http (Streamable HTTP), sse",
+    )
     .allowUnknownOption();
 
   // Command-specific options
@@ -664,6 +670,10 @@ program
     "Append a JSONL audit trail of every MCP request/response to this file (Agent Mode)",
   )
   .option(
+    "--transport <mode>",
+    "Transport for http(s) targets: auto (default), http (Streamable HTTP), sse",
+  )
+  .option(
     "-w, --watch",
     "Watch the current directory for file changes and auto-reconnect (REPL Mode only)",
   )
@@ -760,6 +770,7 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
         redactSecrets?: boolean;
         redactEmails?: boolean;
         auditLog?: string;
+        transport?: string;
       },
     ) => {
       const target = activeTargetCommand ?? targetCommand ?? [];
@@ -781,6 +792,7 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
           denyRead: opts.denyRead,
           denyWrite: opts.denyWrite,
           denyNet: opts.denyNet,
+          transport: opts.transport as any,
         });
       } else {
         // No target command provided
@@ -805,6 +817,7 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
             redactSecrets: opts.redactSecrets,
             redactEmails: opts.redactEmails,
             auditLogPath: opts.auditLog,
+            transport: opts.transport as any,
           });
         } else {
           // Human is running it in a terminal without arguments -> pick a config
@@ -836,6 +849,7 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
             denyRead: opts.denyRead,
             denyWrite: opts.denyWrite,
             denyNet: opts.denyNet,
+            transport: opts.transport as any,
           });
         }
       }

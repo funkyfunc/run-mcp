@@ -38,6 +38,7 @@ interface ReplOptions {
   denyRead?: string[];
   denyWrite?: string[];
   denyNet?: string[];
+  transport?: "auto" | "http" | "sse";
 }
 
 function getPrompt(target: TargetManager): string {
@@ -154,6 +155,7 @@ export async function startRepl(targetCommand: string[], opts: ReplOptions): Pro
     denyRead: opts.denyRead,
     denyWrite: opts.denyWrite,
     denyNet: opts.denyNet,
+    transport: opts.transport,
   });
   const interceptor = new ResponseInterceptor({
     outDir: opts.outDir,

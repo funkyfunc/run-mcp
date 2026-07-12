@@ -35,6 +35,7 @@ export interface HeadlessOptions {
   denyNet?: string[];
   cassettePath?: string;
   cassetteMode?: CassetteMode;
+  transport?: "auto" | "http" | "sse";
 }
 
 export type HeadlessOperation =
@@ -66,6 +67,7 @@ export async function runHeadless(
     denyRead: opts.denyRead,
     denyWrite: opts.denyWrite,
     denyNet: opts.denyNet,
+    transport: opts.transport,
   });
   const cassette = opts.cassettePath
     ? new Cassette(opts.cassettePath, opts.cassetteMode ?? "auto")

@@ -41,6 +41,8 @@ export interface ServerOptions {
   redactEmails?: boolean;
   /** If set, append a JSONL audit trail of every MCP request/response here. */
   auditLogPath?: string;
+  /** Transport for http(s) targets: auto (default), http (Streamable), or sse. */
+  transport?: "auto" | "http" | "sse";
 }
 
 /**
@@ -232,6 +234,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       denyWrite: opts.denyWrite,
       denyNet: opts.denyNet,
       env: envToUse,
+      transport: opts.transport,
     });
     setupTargetListeners(target);
     try {
@@ -412,6 +415,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
           denyWrite: opts.denyWrite,
           denyNet: opts.denyNet,
           env,
+          transport: opts.transport,
         });
         setupTargetListeners(target);
         try {
@@ -1327,6 +1331,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         denyWrite: opts.denyWrite,
         denyNet: opts.denyNet,
         env,
+        transport: opts.transport,
       });
       const stderrLines: string[] = [];
       tempTarget.on("stderr", (text: string) => {
@@ -1428,6 +1433,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
             denyWrite: opts.denyWrite,
             denyNet: opts.denyNet,
             env: s.config.env,
+            transport: opts.transport,
           });
           try {
             await Promise.race([

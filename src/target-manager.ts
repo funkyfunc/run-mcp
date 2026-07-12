@@ -8,6 +8,7 @@ import { hasControlChar, loadSettings, SandboxPolicy } from "./settings.js";
 import { NetworkAuditProxy } from "./proxy-audit.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { z } from "zod";
@@ -35,6 +36,15 @@ export interface TargetStatus {
   maxReconnectAttempts: number;
   sandbox: "auto" | "docker" | "native" | "audit" | "none";
 }
+
+/**
+ * Transport selection for http(s) targets:
+ *  - "http": Streamable HTTP (the current MCP remote transport).
+ *  - "sse":  legacy HTTP+SSE (deprecated in the SDK; kept for old servers).
+ *  - "auto": try Streamable HTTP first, fall back to SSE on failure.
+ * Ignored for stdio (local command) targets.
+ */
+export type TransportMode = "auto" | "http" | "sse";
 
 /** Minimum uptime (ms) before a crash is considered "transient" and worth retrying. */
 const MIN_UPTIME_FOR_RESTART_MS = 5_000;
@@ -154,6 +164,15 @@ export class TargetManager extends EventEmitter {
    */
   private readonly _extraEnv: Record<string, string>;
 
+  // Transport selection for http(s) targets.
+  private readonly transportMode: TransportMode;
+  /** Set during an auto-mode fallback so the retry uses SSE instead of Streamable HTTP. */
+  private _httpTriedStreamable = false;
+  /** Once a transport kind is known to work, reconnects reuse it directly. */
+  private _resolvedHttpTransport: "http" | "sse" | null = null;
+  /** The http transport kind used by the in-flight connect attempt. */
+  private _activeHttpKind: "http" | "sse" | null = null;
+
   constructor(
     private readonly command: string,
     private readonly args: string[],
@@ -166,11 +185,13 @@ export class TargetManager extends EventEmitter {
       denyWrite?: string[];
       denyNet?: string[];
       env?: Record<string, string>;
+      transport?: TransportMode;
     } = {},
   ) {
     super();
     this.sandboxMode = options.sandbox ?? "none";
     this._extraEnv = options.env ?? {};
+    this.transportMode = options.transport ?? "auto";
     this.sandboxOptions = {
       allowRead: options.allowRead,
       allowWrite: options.allowWrite,
@@ -190,17 +211,32 @@ export class TargetManager extends EventEmitter {
   }
 
   /**
-   * Spawn the target MCP server and establish the MCP client connection.
-   * Stderr from the child process is emitted as 'stderr' events.
+   * Establish the MCP client connection to the target.
+   * For a local command this spawns a child process (stderr emitted as 'stderr'
+   * events); for an http(s) URL it connects over Streamable HTTP (falling back to
+   * SSE in auto mode). See the `transport` constructor option.
    */
   async connect(): Promise<void> {
+    return this._connect(false);
+  }
+
+  private async _connect(isHttpFallback: boolean): Promise<void> {
     this._intentionalClose = false;
     this._everConnected = false;
+    if (!isHttpFallback) this._httpTriedStreamable = false;
+    const isHttpUrl =
+      this.command.startsWith("http://") || this.command.startsWith("https://");
     try {
-      // Detect if we should use SSE or Stdio based on the command
-      if (this.command.startsWith("http://") || this.command.startsWith("https://")) {
-        // eslint-disable-next-line @typescript-eslint/no-deprecated
-        this.transport = new SSEClientTransport(new URL(this.command));
+      // Detect transport: HTTP(S) URL → Streamable HTTP / SSE, else spawn stdio.
+      if (isHttpUrl) {
+        this._activeHttpKind = this._selectHttpTransportKind();
+        const url = new URL(this.command);
+        if (this._activeHttpKind === "sse") {
+          // eslint-disable-next-line @typescript-eslint/no-deprecated
+          this.transport = new SSEClientTransport(url);
+        } else {
+          this.transport = new StreamableHTTPClientTransport(url);
+        }
       } else {
         const policy = new SandboxPolicy();
         const fileSettings = loadSettings();
@@ -405,6 +441,11 @@ export class TargetManager extends EventEmitter {
 
       await this.client.connect(this.transport);
 
+      // Remember which http transport worked so reconnects skip re-probing.
+      if (isHttpUrl && this._activeHttpKind) {
+        this._resolvedHttpTransport = this._activeHttpKind;
+      }
+
       this._connected = true;
       this._everConnected = true;
       this.startTime = Date.now();
@@ -422,8 +463,33 @@ export class TargetManager extends EventEmitter {
       this._startStableTimer();
     } catch (err) {
       await this.close().catch(() => {});
+
+      // Auto mode: if the Streamable HTTP attempt failed and we haven't yet
+      // tried SSE, fall back to it once (many servers still only speak SSE).
+      if (
+        isHttpUrl &&
+        this.transportMode === "auto" &&
+        this._activeHttpKind === "http" &&
+        !this._httpTriedStreamable
+      ) {
+        this._httpTriedStreamable = true;
+        process.stderr.write(
+          "Streamable HTTP connection failed; falling back to legacy SSE transport...\n",
+        );
+        return this._connect(true);
+      }
+
       throw err;
     }
+  }
+
+  /** Decide which http transport kind to use for the current connect attempt. */
+  private _selectHttpTransportKind(): "http" | "sse" {
+    if (this._resolvedHttpTransport) return this._resolvedHttpTransport;
+    if (this.transportMode === "sse") return "sse";
+    // auto (first attempt) and explicit "http" both start with Streamable HTTP.
+    if (this.transportMode === "auto" && this._httpTriedStreamable) return "sse";
+    return "http";
   }
 
   get connected(): boolean {

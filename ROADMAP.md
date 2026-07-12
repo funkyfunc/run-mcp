@@ -238,21 +238,16 @@ Source under `src/`. Prefer describing by module/function; line numbers drift.
 
 Ordered roughly by value/fit. Each has enough context to start cold.
 
-### 6.1 — Tier 2 leftover: Streamable HTTP transport  ★ recommended next
-- **Why:** `target-manager.ts` `connect()` uses `SSEClientTransport` for
-  `http(s)://` targets. SSE is **deprecated** in the MCP SDK; Streamable HTTP is
-  the current remote transport (and the research flags SSE's scaling/DNS-rebinding
-  issues). The `// eslint-disable-next-line @typescript-eslint/no-deprecated` on
-  that line is the marker.
-- **Do:** import `StreamableHTTPClientTransport` from the SDK
-  (`@modelcontextprotocol/sdk/client/streamableHttp.js`), and select transport by
-  URL/scheme. Consider: keep SSE as a fallback for servers that only speak it, or
-  add a `--transport sse|http` override. Handle session IDs / resumability if the
-  SDK requires. OAuth is out of scope here (that's the Tier 4 gateway).
-- **Test:** the existing `tests/fixtures/vulnerable-http-server.ts` is an
-  SSE server on a hardcoded port 3001 and is currently UNUSED/unbuilt. Either add
-  a Streamable-HTTP fixture or adapt. Prefer an ephemeral port (port 3001 will
-  collide). Add to `build:fixtures` if you compile it.
+### 6.1 — Tier 2 leftover: Streamable HTTP transport  ✅ DONE (this session)
+- Implemented in `target-manager.ts`: http(s) targets default to
+  `StreamableHTTPClientTransport`; a `transport` constructor option / `--transport
+  auto|http|sse` flag selects the mode. `auto` (default) tries Streamable HTTP and
+  falls back to legacy SSE on failure (`_selectHttpTransportKind`, `_connect`
+  fallback). Threaded through REPL/headless/agent-server.
+- Tested in `tests/streamable-http.test.ts` with in-process stateless Streamable
+  HTTP + SSE-only servers (ephemeral ports) — covers http connect/call, auto
+  selection, and the auto→SSE fallback. (Note: `vulnerable-http-server.ts` remains
+  unused/orphaned; the new tests use in-process servers instead.)
 
 ### 6.2 — Tier 2 leftover: test hardening
 - **Mock server gaps** (`tests/fixtures/mock-server.ts`): it does NOT simulate
