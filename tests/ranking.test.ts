@@ -42,4 +42,28 @@ describe("rankTools", () => {
     expect(ranked).toHaveLength(2);
     expect(ranked.every((r) => r.score === 0)).toBe(true);
   });
+
+  it("matches on argument names and descriptions (BM25 searches arg fields)", () => {
+    const tools = [
+      { name: "alpha", description: "does a thing" },
+      {
+        name: "beta",
+        description: "does another thing",
+        inputSchema: {
+          type: "object",
+          properties: { latitude: { type: "number", description: "geographic coordinate" } },
+        },
+      },
+    ];
+    const ranked = rankTools("latitude coordinate", tools);
+    expect(ranked[0].tool.name).toBe("beta");
+  });
+
+  it("weights name matches above description matches", () => {
+    const tools = [
+      { name: "unrelated", description: "mentions backup in passing" },
+      { name: "backup", description: "unrelated words here" },
+    ];
+    expect(rankTools("backup", tools)[0].tool.name).toBe("backup");
+  });
 });

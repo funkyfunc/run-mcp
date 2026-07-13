@@ -82,7 +82,12 @@ describe("formatSchemaResponse", () => {
 describe("flattenToolResult", () => {
   it("joins MCP text content parts", () => {
     expect(
-      flattenToolResult({ content: [{ type: "text", text: "a" }, { type: "text", text: "b" }] }),
+      flattenToolResult({
+        content: [
+          { type: "text", text: "a" },
+          { type: "text", text: "b" },
+        ],
+      }),
     ).toBe("a\nb");
   });
   it("unwraps a lone { result }", () => {
@@ -130,6 +135,8 @@ describe("normalizeServerName / applyToolFilters", () => {
 
 describe("buildCatalog", () => {
   it("newline-joins entries", () => {
-    expect(buildCatalog([echo, add], "high")).toBe("<tool>echo(message)</tool>\n<tool>add(a, b)</tool>");
+    expect(buildCatalog([echo, add], "high")).toBe(
+      "<tool>echo(message)</tool>\n<tool>add(a, b)</tool>",
+    );
   });
 });

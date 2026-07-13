@@ -315,10 +315,21 @@ Code Mode) deferred + opt-in. Full plan in the plan file.
   get_tool_schema description, routes invoke_tool through the interceptor). README
   "Proxy Mode" section rewritten (was stale). Tests: `tests/compression.test.ts`
   (unit) + `tests/proxy.test.ts` (e2e via real MCP Client).
-- **Stage B2 — multiplexer (NEXT):** `TargetPool` (Map<name, TargetManager>) from a
-  config (`--config mcp.json`, reuse `config-scanner`; `--multi-server`), per-backend
-  tool prefix (dropped for single backend), route to owning backend, aggregate
-  capabilities, isolate backend failures.
+- **Stage B2 — multiplexer ✅ DONE (this session):** `run-mcp proxy --config mcp.json`
+  / `--multi-server "name=cmd"`. `src/target-pool.ts` (`TargetPool`: spawn from
+  config, eager connect + failure isolation, collision-free per-server prefixes).
+  Multi-backend proxy exposes the Dynamic-Context-Loading surface — `list_servers`
+  (Level-1 overview free in its description; descriptions from server `instructions`
+  / tool-catalog heuristic / optional config `description`), `find_tools`
+  (cross-server BM25), `list_server_tools` (Level 2), namespaced
+  `get_tool_schema`/`invoke_tool` (Level 3, routes to the owning backend). Single
+  backend keeps the B1 2-tier surface. `rankTools` upgraded to **BM25** (validated
+  by Anthropic's tool-search tool, which defaults to regex/BM25 — embeddings only
+  optional). `McpServerConfig` gained optional `description` + `url`. Tests:
+  `tests/target-pool.test.ts` + multiplex e2e in `tests/proxy.test.ts`.
+- **Stage C (deferred, opt-in):** embeddings (transformers.js MiniLM q8, ~22MB) for
+  semantic routing — Anthropic treats this as the optional upgrade too; add only if
+  lexical BM25 routing proves weak in practice.
 - **Deferred/opt-in:** C semantic routing (transformers.js ~22MB), D Code Mode
   (`isolated-vm`). Extraction to a standalone package after B proves the API.
 

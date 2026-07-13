@@ -141,6 +141,21 @@ function expectsStructured(schema: unknown): boolean {
   return Array.isArray(type) && (type.includes("object") || type.includes("array"));
 }
 
+/** Separator between a backend prefix and a tool name (`best_browser__navigate`). */
+export const NAMESPACE_SEP = "__";
+
+/** Build a namespaced tool name for a backend. */
+export function namespaceToolName(prefix: string, toolName: string): string {
+  return `${prefix}${NAMESPACE_SEP}${toolName}`;
+}
+
+/** Split a namespaced tool name into `{ prefix, tool }` (on the first separator). */
+export function parseNamespacedName(name: string): { prefix: string; tool: string } | undefined {
+  const idx = name.indexOf(NAMESPACE_SEP);
+  if (idx <= 0) return undefined;
+  return { prefix: name.slice(0, idx), tool: name.slice(idx + NAMESPACE_SEP.length) };
+}
+
 /** Normalize a server name for use as a tool-name prefix. */
 export function normalizeServerName(name: string | undefined): string {
   const value = name ?? "tools";

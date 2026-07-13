@@ -2,7 +2,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { MOCK_SERVER_ARGS, MOCK_SERVER_CMD } from "./helpers.js";
+import {
+  MOCK_SERVER_ARGS,
+  MOCK_SERVER_CMD,
+  POISONED_SERVER_ARGS,
+  POISONED_SERVER_CMD,
+} from "./helpers.js";
 
 /**
  * End-to-end tests for the compressing proxy (Stage B1). A real MCP Client
@@ -81,7 +86,11 @@ describe("compressing proxy (B1)", () => {
   it("max compression adds list_tools and withholds the upfront catalog", async () => {
     const c = await startProxy(["-c", "max"]);
     const { tools } = await c.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(["get_tool_schema", "invoke_tool", "list_tools"]);
+    expect(tools.map((t) => t.name).sort()).toEqual([
+      "get_tool_schema",
+      "invoke_tool",
+      "list_tools",
+    ]);
     expect(tools.find((t) => t.name === "get_tool_schema")!.description).not.toContain("<tool>");
 
     const list: any = await c.callTool({ name: "list_tools", arguments: {} });
@@ -97,4 +106,78 @@ describe("compressing proxy (B1)", () => {
     const res: any = await c.callTool({ name: "get_tool_schema", arguments: { name: "greet" } });
     expect(res.isError).toBe(true);
   }, 15_000);
+});
+
+describe("multiplexing proxy (B2)", () => {
+  async function startMultiplex(extra: string[] = []): Promise<Client> {
+    transport = new StdioClientTransport({
+      command: "node",
+      args: [
+        CLI,
+        "proxy",
+        "-c",
+        "medium",
+        ...extra,
+        "--multi-server",
+        `alpha=${MOCK_SERVER_CMD} ${MOCK_SERVER_ARGS.join(" ")}`,
+        `beta=${POISONED_SERVER_CMD} ${POISONED_SERVER_ARGS.join(" ")}`,
+      ],
+      stderr: "pipe",
+    });
+    client = new Client({ name: "mux-test", version: "1.0.0" }, { capabilities: {} });
+    await client.connect(transport);
+    return client;
+  }
+
+  it("exposes the fixed DCL surface regardless of fleet size", async () => {
+    const c = await startMultiplex();
+    const names = (await c.listTools()).tools.map((t) => t.name).sort();
+    expect(names).toEqual([
+      "find_tools",
+      "get_tool_schema",
+      "invoke_tool",
+      "list_server_tools",
+      "list_servers",
+    ]);
+  }, 20_000);
+
+  it("list_servers embeds the Level-1 overview in its description", async () => {
+    const c = await startMultiplex();
+    const desc = (await c.listTools()).tools.find((t) => t.name === "list_servers")!.description!;
+    expect(desc).toContain("<server>alpha:");
+    expect(desc).toContain("<server>beta:");
+  }, 20_000);
+
+  it("find_tools returns namespaced, BM25-ranked results across servers", async () => {
+    const c = await startMultiplex();
+    const res: any = await c.callTool({
+      name: "find_tools",
+      arguments: { query: "greet someone by name" },
+    });
+    expect(res.content[0].text).toContain("alpha__greet");
+  }, 20_000);
+
+  it("invoke_tool routes a namespaced call to the owning backend", async () => {
+    const c = await startMultiplex();
+    const res: any = await c.callTool({
+      name: "invoke_tool",
+      arguments: { name: "alpha__greet", input: { name: "Ada" } },
+    });
+    expect(res.content[0].text).toBe("Hello, Ada!");
+  }, 20_000);
+
+  it("get_tool_schema returns the schema under the namespaced name", async () => {
+    const c = await startMultiplex();
+    const res: any = await c.callTool({
+      name: "get_tool_schema",
+      arguments: { name: "alpha__greet" },
+    });
+    expect(res.content[0].text).toContain("<tool>alpha__greet(name)");
+  }, 20_000);
+
+  it("list_server_tools lists one server's namespaced catalog", async () => {
+    const c = await startMultiplex();
+    const res: any = await c.callTool({ name: "list_server_tools", arguments: { server: "beta" } });
+    expect(res.content[0].text).toContain("beta__lookup");
+  }, 20_000);
 });

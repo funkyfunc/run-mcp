@@ -9,6 +9,10 @@ export interface McpServerConfig {
   command: string;
   args?: string[];
   env?: Record<string, string>;
+  /** Optional human description (used by the proxy's server overview). Superset of the standard shape. */
+  description?: string;
+  /** Optional remote (Streamable HTTP) backend URL; used as the command when set. */
+  url?: string;
 }
 
 export interface McpConfigMap {
@@ -78,6 +82,28 @@ function getConfigPaths(): { source: string; file: string }[] {
       file: path.join(home, ".gemini", "config", "mcp_config.json"),
     },
   ];
+}
+
+/**
+ * Load an explicit MCP config file (standard `mcpServers` shape) and return its
+ * named servers. Used by the compressing proxy's `--config`. Throws on a missing
+ * or malformed file so the caller can report it.
+ */
+export async function loadMcpServersFile(
+  file: string,
+): Promise<{ name: string; config: McpServerConfig }[]> {
+  const content = await readFile(file, "utf8");
+  const json = JSON.parse(content);
+  const map: McpConfigMap | undefined =
+    json.mcpServers ?? json.mcp?.servers ?? json.servers ?? undefined;
+  if (!map || typeof map !== "object") {
+    throw new Error(`No "mcpServers" object found in ${file}`);
+  }
+  const out: { name: string; config: McpServerConfig }[] = [];
+  for (const [name, config] of Object.entries(map)) {
+    if (config && (config.command || config.url)) out.push({ name, config });
+  }
+  return out;
 }
 
 /**

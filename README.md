@@ -337,6 +337,26 @@ Configure it as the command your MCP client spawns:
 }
 ```
 
+### Fronting a whole fleet (multiplexer)
+
+Point run-mcp at a standard `mcpServers` config (the same shape every agent tool
+uses) and it fronts them all through one entry, with **Dynamic Context Loading**:
+
+```bash
+run-mcp proxy -c medium --config ./mcp-fleet.json
+# or, without a file:
+run-mcp proxy --multi-server "github=npx -y @modelcontextprotocol/server-github" \
+              --multi-server "browser=node ./browser-mcp/dist/index.js"
+```
+
+With two or more backends the surface becomes a five-tool discovery hierarchy —
+your context stays tiny no matter how many servers or tools you front:
+
+- `list_servers` — Level 1: which servers exist and what each is for (this overview is embedded in the tool's own description, so it costs nothing until you go deeper). Descriptions come from each server's own MCP `instructions`, its tool catalog, or an optional `"description"` you add per server in the config.
+- `find_tools` — cross-server BM25 search; returns ranked, namespaced tool names.
+- `list_server_tools` — Level 2: one server's compressed catalog.
+- `get_tool_schema` / `invoke_tool` — Level 3 + execute; tool names are namespaced `server__tool`, and calls route to the owning backend. One backend failing to start doesn't sink the proxy.
+
 ### Compression levels (`-c`, default `medium`)
 
 | Level    | Catalog entry format                          |

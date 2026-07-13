@@ -7,12 +7,13 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
-import { pickDiscoveredServer } from "./config-scanner.js";
+import { pickDiscoveredServer, loadMcpServersFile } from "./config-scanner.js";
 import { runHeadless, executeOperation } from "./headless.js";
 import { startRepl } from "./repl.js";
 import { startServer } from "./server.js";
 import { startProxyServer } from "./proxy.js";
 import { COMPRESSION_LEVELS, type CompressionLevel } from "./compression.js";
+import type { PoolBackendConfig } from "./target-pool.js";
 import { TargetManager } from "./target-manager.js";
 import { ResponseInterceptor } from "./interceptor.js";
 import { toolPoisoningScanner } from "./plugins.js";
@@ -647,6 +648,11 @@ program
     "-c, --compression <level>",
     `Compression level: ${COMPRESSION_LEVELS.join(", ")} (default: medium)`,
   )
+  .option("--config <file>", "MCP config file (mcpServers shape) to front multiple backends")
+  .option(
+    "--multi-server <spec...>",
+    'Add a backend as "name=command [args...]" (repeatable, alternative to --config)',
+  )
   .option("--include-tools <names...>", "Only expose these backend tools")
   .option("--exclude-tools <names...>", "Hide these backend tools")
   .option("--compress-output", "Also minify backend tool output (lossless JSON minify)")
@@ -658,6 +664,8 @@ program
       targetCommand: string[],
       opts: {
         compression?: string;
+        config?: string;
+        multiServer?: string[];
         includeTools?: string[];
         excludeTools?: string[];
         compressOutput?: boolean;
@@ -665,13 +673,6 @@ program
         transport?: string;
       },
     ) => {
-      const target = activeTargetCommand ?? targetCommand ?? [];
-      if (target.length === 0) {
-        process.stderr.write("Error: Backend server command must be provided after '--'.\n");
-        process.stderr.write("Usage: run-mcp proxy [-c medium] -- <backend_command...>\n");
-        process.exit(64);
-      }
-
       const level = opts.compression as CompressionLevel | undefined;
       if (level && !COMPRESSION_LEVELS.includes(level)) {
         process.stderr.write(
@@ -680,9 +681,53 @@ program
         process.exit(64);
       }
 
+      // Resolve backends from: --config (a file), --multi-server (repeatable), or
+      // a single `-- <cmd>`.
+      let backends: PoolBackendConfig[] | undefined;
+      if (opts.config) {
+        try {
+          const servers = await loadMcpServersFile(opts.config);
+          backends = servers.map(({ name, config }) => ({
+            name,
+            command: config.command ?? config.url!,
+            args: config.args,
+            env: config.env,
+            description: config.description,
+          }));
+        } catch (err: any) {
+          process.stderr.write(`Error loading --config "${opts.config}": ${err.message}\n`);
+          process.exit(64);
+        }
+      } else if (opts.multiServer && opts.multiServer.length > 0) {
+        backends = opts.multiServer.map((spec) => {
+          const eq = spec.indexOf("=");
+          if (eq <= 0) {
+            process.stderr.write(
+              `Error: --multi-server must be "name=command [args...]": ${spec}\n`,
+            );
+            process.exit(64);
+          }
+          const name = spec.slice(0, eq).trim();
+          const parts = spec
+            .slice(eq + 1)
+            .trim()
+            .split(/\s+/);
+          return { name, command: parts[0], args: parts.slice(1) };
+        });
+      }
+
+      const target = activeTargetCommand ?? targetCommand ?? [];
+      if (!backends && target.length === 0) {
+        process.stderr.write("Error: provide a backend via '--', --config, or --multi-server.\n");
+        process.stderr.write("Usage: run-mcp proxy [-c medium] -- <backend_command...>\n");
+        process.stderr.write("       run-mcp proxy [-c medium] --config mcp.json\n");
+        process.exit(64);
+      }
+
       await startProxyServer({
-        command: target[0],
-        args: target.slice(1),
+        command: backends ? undefined : target[0],
+        args: backends ? undefined : target.slice(1),
+        backends,
         level,
         includeTools: opts.includeTools,
         excludeTools: opts.excludeTools,
