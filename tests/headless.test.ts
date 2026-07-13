@@ -68,6 +68,36 @@ describe("headless: tool-poisoning scanner", () => {
   }, 15_000);
 });
 
+describe("headless: output compression", () => {
+  it("--compress-output minifies a JSON tool result losslessly", async () => {
+    const plain = await runCli(["call", "json_data", ...TARGET]);
+    const compressed = await runCli(["call", "json_data", "--compress-output", ...TARGET]);
+
+    expect(plain.exitCode).toBe(0);
+    expect(compressed.exitCode).toBe(0);
+
+    const plainText = JSON.parse(plain.stdout)[0].text;
+    const compressedText = JSON.parse(compressed.stdout)[0].text;
+
+    // Compressed output is strictly smaller...
+    expect(compressedText.length).toBeLessThan(plainText.length);
+    // ...but the parsed value is identical (lossless).
+    expect(JSON.parse(compressedText)).toEqual(JSON.parse(plainText));
+  }, 15_000);
+
+  it("leaves a non-JSON result byte-identical", async () => {
+    const { stdout, exitCode } = await runCli([
+      "call",
+      "echo",
+      '{"text":"plain unchanged text"}',
+      "--compress-output",
+      ...TARGET,
+    ]);
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout)[0].text).toBe("plain unchanged text");
+  }, 15_000);
+});
+
 describe("headless: record & replay", () => {
   it("records a tool response then replays it offline with no target", async () => {
     const cassette = join(

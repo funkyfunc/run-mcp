@@ -328,6 +328,27 @@ server.registerTool(
   },
 );
 
+// ─── Tool: json_data (pretty-printed JSON, for compression testing) ────────
+
+server.registerTool(
+  "json_data",
+  {
+    description: "Returns a pretty-printed JSON object (for output-compression testing)",
+  },
+  async () => ({
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(
+          { status: "ok", items: [1, 2, 3], nested: { a: true, b: "value" } },
+          null,
+          2,
+        ),
+      },
+    ],
+  }),
+);
+
 // ─── Tool: request_sampling (server → client sampling round-trip) ──────────
 
 server.registerTool(

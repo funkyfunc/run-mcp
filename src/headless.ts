@@ -17,7 +17,12 @@ import { ResponseInterceptor } from "./interceptor.js";
 import { parseHttpieArgs } from "./parsing.js";
 import { TargetManager } from "./target-manager.js";
 import { Cassette, type CassetteMode } from "./cassette.js";
-import { type PluginFinding, toolPoisoningScanner } from "./plugins.js";
+import {
+  type InterceptorPlugin,
+  type PluginFinding,
+  outputCompressionPlugin,
+  toolPoisoningScanner,
+} from "./plugins.js";
 
 /** Default timeout for headless tool calls (30 seconds). */
 const DEFAULT_HEADLESS_TIMEOUT_MS = 30_000;
@@ -39,6 +44,10 @@ export interface HeadlessOptions {
   transport?: "auto" | "http" | "sse";
   /** Scan tools/list metadata for tool-poisoning (default: true). */
   scanTools?: boolean;
+  /** Compress verbose output text (lossless JSON minify by default). */
+  compressOutput?: boolean;
+  /** When compressing, also collapse blank lines / trailing whitespace (lossy). */
+  compressAggressive?: boolean;
 }
 
 /** Write scanner findings to stderr so stdout stays pipe-clean JSON. */
@@ -87,7 +96,13 @@ export async function runHeadless(
     outDir: opts.outDir,
     defaultTimeoutMs: opts.timeoutMs ?? DEFAULT_HEADLESS_TIMEOUT_MS,
     cassette,
-    plugins: opts.scanTools === false ? [] : [toolPoisoningScanner()],
+    plugins: (() => {
+      const p: InterceptorPlugin[] = [];
+      if (opts.scanTools !== false) p.push(toolPoisoningScanner());
+      if (opts.compressOutput)
+        p.push(outputCompressionPlugin({ aggressive: opts.compressAggressive }));
+      return p;
+    })(),
   });
 
   // Stream or suppress server stderr

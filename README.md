@@ -80,6 +80,8 @@ run-mcp [options] [target_command...]
 | `--redact-emails` | When redacting, also redact email addresses (Agent Mode) |
 | `--audit-log <file>` | Append a JSONL audit trail of every MCP request/response to this file (Agent Mode) |
 | `--transport <mode>` | Transport for http(s) targets: auto (default), http (Streamable HTTP), sse |
+| `--compress-output` | Minify verbose output text to save tokens (lossless JSON minify by default) (Agent Mode) |
+| `--compress-aggressive` | With --compress-output, also collapse blank lines / trailing whitespace (lossy) (Agent Mode) |
 | `-w, --watch` | Watch the current directory for file changes and auto-reconnect (REPL Mode only) |
 | `--allow-read <paths...>` | Paths to allow reading under the sandbox |
 | `--allow-write <paths...>` | Paths to allow writing under the sandbox |

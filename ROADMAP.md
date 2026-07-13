@@ -296,6 +296,23 @@ Still open:
   in `_maybeReconnect` before reconnecting so the prior Seatbelt `.sb` / docker
   mask dirs are removed instead of leaking until exit.
 
+### 6.3b — Token-bloat mitigation (from the Context-Bloat research report)
+Driven by `docs/research/Researching MCP Context Bloat Mitigations.md`. Decisions:
+build in run-mcp (extract later), staged A→B, heavy layers (semantic routing /
+Code Mode) deferred + opt-in. Full plan in the plan file.
+- **Stage A — output-compression plugin ✅ DONE (this session):**
+  `outputCompressionPlugin` in `src/plugins.ts` — lossless JSON minify by default,
+  opt-in aggressive whitespace collapse, char-length inflation guard, reports
+  savings. Opt-in via `--compress-output` [`--compress-aggressive`] in the agent
+  server + headless (registered after DLP; not in the REPL). Tests: unit +
+  headless e2e (lossless JSON minify, non-JSON untouched).
+- **Stage B — transparent compressing proxy + multiplexer (NEXT):** see the plan
+  file. B1 single-backend transparent proxy (`get_tool_schema`/`invoke_tool` +
+  compression levels, new `src/proxy.ts`), then B2 multiplexer (`TargetPool`,
+  namespacing, config-driven). Also fix the stale README "Proxy Mode" section.
+- **Deferred/opt-in:** C semantic routing (transformers.js ~22MB), D Code Mode
+  (`isolated-vm`). Extraction to a standalone package after B proves the API.
+
 ### 6.4 — Tier 3: MCP multiplexer / aggregator
 - **Idea:** run-mcp connects to SEVERAL target servers and exposes a single
   unified, namespaced, searchable facade (`serverA.toolX`). Addresses the "too many

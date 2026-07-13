@@ -198,6 +198,8 @@ interface HeadlessOpts {
   replay?: boolean;
   transport?: string;
   scanTools?: boolean;
+  compressOutput?: boolean;
+  compressAggressive?: boolean;
 }
 
 function parseHeadlessOpts(opts: HeadlessOpts) {
@@ -218,6 +220,8 @@ function parseHeadlessOpts(opts: HeadlessOpts) {
     cassetteMode: opts.record ? ("record" as const) : opts.replay ? ("replay" as const) : undefined,
     transport: opts.transport as "auto" | "http" | "sse" | undefined,
     scanTools: opts.scanTools,
+    compressOutput: opts.compressOutput,
+    compressAggressive: opts.compressAggressive,
   };
 }
 
@@ -278,6 +282,11 @@ function registerHeadlessCommand(config: HeadlessCommandConfig) {
       "Transport for http(s) targets: auto (default), http (Streamable HTTP), sse",
     )
     .option("--no-scan-tools", "Disable tool-poisoning scanning of tools/list metadata")
+    .option("--compress-output", "Minify verbose output text (lossless JSON minify by default)")
+    .option(
+      "--compress-aggressive",
+      "With --compress-output, also collapse blank lines / trailing whitespace (lossy)",
+    )
     .allowUnknownOption();
 
   // Command-specific options
@@ -678,6 +687,14 @@ program
     "Transport for http(s) targets: auto (default), http (Streamable HTTP), sse",
   )
   .option(
+    "--compress-output",
+    "Minify verbose output text to save tokens (lossless JSON minify by default) (Agent Mode)",
+  )
+  .option(
+    "--compress-aggressive",
+    "With --compress-output, also collapse blank lines / trailing whitespace (lossy) (Agent Mode)",
+  )
+  .option(
     "-w, --watch",
     "Watch the current directory for file changes and auto-reconnect (REPL Mode only)",
   )
@@ -776,6 +793,8 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
         redactEmails?: boolean;
         auditLog?: string;
         transport?: string;
+        compressOutput?: boolean;
+        compressAggressive?: boolean;
       },
     ) => {
       const target = activeTargetCommand ?? targetCommand ?? [];
@@ -823,6 +842,8 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
             redactEmails: opts.redactEmails,
             auditLogPath: opts.auditLog,
             transport: opts.transport as any,
+            compressOutput: opts.compressOutput,
+            compressAggressive: opts.compressAggressive,
           });
         } else {
           // Human is running it in a terminal without arguments -> pick a config

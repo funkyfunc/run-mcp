@@ -6,6 +6,7 @@ import { type InterceptionMetadata, ResponseInterceptor } from "./interceptor.js
 import {
   type InterceptorPlugin,
   type PluginFinding,
+  outputCompressionPlugin,
   secretRedactionPlugin,
   toolPoisoningScanner,
 } from "./plugins.js";
@@ -43,6 +44,10 @@ export interface ServerOptions {
   auditLogPath?: string;
   /** Transport for http(s) targets: auto (default), http (Streamable), or sse. */
   transport?: "auto" | "http" | "sse";
+  /** Compress verbose output text (lossless JSON minify by default). */
+  compressOutput?: boolean;
+  /** When compressing, also collapse blank lines / trailing whitespace (lossy). */
+  compressAggressive?: boolean;
 }
 
 /**
@@ -86,6 +91,9 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       const p: InterceptorPlugin[] = [];
       if (opts.scanTools !== false) p.push(toolPoisoningScanner());
       if (opts.redactSecrets) p.push(secretRedactionPlugin({ redactEmails: opts.redactEmails }));
+      // Compression runs last so it minifies already-redacted text.
+      if (opts.compressOutput)
+        p.push(outputCompressionPlugin({ aggressive: opts.compressAggressive }));
       return p;
     })(),
   });
