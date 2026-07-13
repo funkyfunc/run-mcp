@@ -306,10 +306,19 @@ Code Mode) deferred + opt-in. Full plan in the plan file.
   savings. Opt-in via `--compress-output` [`--compress-aggressive`] in the agent
   server + headless (registered after DLP; not in the REPL). Tests: unit +
   headless e2e (lossless JSON minify, non-JSON untouched).
-- **Stage B — transparent compressing proxy + multiplexer (NEXT):** see the plan
-  file. B1 single-backend transparent proxy (`get_tool_schema`/`invoke_tool` +
-  compression levels, new `src/proxy.ts`), then B2 multiplexer (`TargetPool`,
-  namespacing, config-driven). Also fix the stale README "Proxy Mode" section.
+- **Stage B1 — single-backend transparent compressing proxy ✅ DONE (this session):**
+  `run-mcp proxy [-c low|medium|high|max] [--include-tools] [--exclude-tools]
+  [--compress-output] -- <backend>`. New `src/compression.ts` (pure helpers:
+  `<tool>name(args): summary</tool>` catalog per level, schema response, result
+  flatten, arg coercion, filters) + `src/proxy.ts` (`startProxyServer`: McpServer
+  exposing `get_tool_schema` + `invoke_tool` [+ `list_tools` at max], catalog in the
+  get_tool_schema description, routes invoke_tool through the interceptor). README
+  "Proxy Mode" section rewritten (was stale). Tests: `tests/compression.test.ts`
+  (unit) + `tests/proxy.test.ts` (e2e via real MCP Client).
+- **Stage B2 — multiplexer (NEXT):** `TargetPool` (Map<name, TargetManager>) from a
+  config (`--config mcp.json`, reuse `config-scanner`; `--multi-server`), per-backend
+  tool prefix (dropped for single backend), route to owning backend, aggregate
+  capabilities, isolate backend failures.
 - **Deferred/opt-in:** C semantic routing (transformers.js ~22MB), D Code Mode
   (`isolated-vm`). Extraction to a standalone package after B proves the API.
 

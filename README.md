@@ -177,6 +177,7 @@ run-mcp close-session main
 - `daemon [options] <session_name> [target_command...]`
 - `close-session <session_name>`
 - `validate [options] [target_command...]`
+- `proxy [options] [target_command...]`
 <!-- SUBCOMMANDS_END -->
 
 Use `run-mcp <subcommand> --help` for specific command options.
@@ -312,39 +313,55 @@ run-mcp -s commands.txt -- node my-server.js
 - Lines starting with `#` are treated as comments
 - Exits with code `0` on success, `1` on first error
 
-## Proxy Mode — How It Works
+## Compressing Proxy Mode — Beat the "Tools Tax"
 
-In proxy mode, `run-mcp` acts as an MCP server itself. Configure it as the command your AI agent spawns:
+A powerful MCP server can expose dozens or hundreds of tools; sending every
+name, description, and JSON Schema to the model up front wastes thousands of
+tokens before the agent does any work. `run-mcp proxy` sits in front of a backend
+server and replaces its full catalog with a tiny **discovery-on-demand** surface:
+
+- `get_tool_schema` — its description embeds a compact `<tool>name(args): summary</tool>` catalog; call it with a tool name to get that tool's full schema on demand.
+- `invoke_tool` — call the chosen tool by name with a JSON input object.
+- `list_tools` — added only at `max` compression.
+
+Configure it as the command your MCP client spawns:
 
 ```json
 {
   "mcpServers": {
     "my-server": {
       "command": "run-mcp",
-      "args": ["--mcp", "--out-dir", "./images", "--", "node", "path/to/actual-server.js"]
+      "args": ["proxy", "-c", "medium", "--", "node", "path/to/actual-server.js"]
     }
   }
 }
 ```
 
-### What the proxy forwards
+### Compression levels (`-c`, default `medium`)
 
-The proxy dynamically mirrors the target server's capabilities. All MCP primitives that the target supports are forwarded transparently:
+| Level    | Catalog entry format                          |
+| -------- | --------------------------------------------- |
+| `low`    | `<tool>name(args): full description</tool>`   |
+| `medium` | `<tool>name(args): first sentence</tool>`     |
+| `high`   | `<tool>name(args)</tool>`                      |
+| `max`    | `<tool>name</tool>` (+ adds a `list_tools` tool) |
 
-| Primitive                                                                      | Forwarded?                        |
-| ------------------------------------------------------------------------------ | --------------------------------- |
-| **Tools** (`tools/list`, `tools/call`)                                         | ✅ Always (with interception)     |
-| **Resources** (`resources/list`, `resources/read`, `resources/templates/list`) | ✅ If target supports             |
-| **Prompts** (`prompts/list`, `prompts/get`)                                    | ✅ If target supports             |
-| **Logging** (`logging/setLevel`)                                               | ✅ If target supports             |
-| **Completion** (`completion/complete`)                                         | ✅ If target supports             |
-| **Notifications** (list changes, logging)                                      | ✅ Forwarded from target to agent |
-| **Tool annotations** (`readOnlyHint`, `destructiveHint`, etc.)                 | ✅ Preserved as-is                |
-| **Pagination** (`nextCursor` / `cursor`)                                       | ✅ Passed through                 |
+### Options
 
-### What the proxy intercepts
+- `-c, --compression <level>` — `low` / `medium` / `high` / `max`.
+- `--include-tools <names...>` / `--exclude-tools <names...>` — restrict the exposed backend tools (applied before compression).
+- `--compress-output` — also minify backend tool output (lossless JSON minify).
+- `--sandbox <mode>`, `--transport <mode>` — forwarded to the backend.
 
-Tool call responses are processed through the interceptor pipeline. All other primitives pass through untouched.
+Calls routed through `invoke_tool` still pass through the interceptor pipeline
+(tool-poisoning scan, media extraction, truncation, optional output compression).
+
+## Agent Server Mode — How It Works
+
+Run with no target command (or `--mcp`), `run-mcp` is itself an MCP server that
+exposes tools (`connect_to_mcp`, `call_mcp_primitive`, `find_tools`, …) so an
+agent can dynamically spawn and test local MCP servers. Tool-call responses are
+processed through the interceptor pipeline:
 
 | Feature              | Behavior                                                                                                                 |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------ |

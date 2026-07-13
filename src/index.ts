@@ -11,6 +11,8 @@ import { pickDiscoveredServer } from "./config-scanner.js";
 import { runHeadless, executeOperation } from "./headless.js";
 import { startRepl } from "./repl.js";
 import { startServer } from "./server.js";
+import { startProxyServer } from "./proxy.js";
+import { COMPRESSION_LEVELS, type CompressionLevel } from "./compression.js";
 import { TargetManager } from "./target-manager.js";
 import { ResponseInterceptor } from "./interceptor.js";
 import { toolPoisoningScanner } from "./plugins.js";
@@ -629,6 +631,65 @@ program
         }
         process.exit(1);
       }
+    },
+  );
+
+// ─── Subcommand: proxy (compressing proxy) ───────────────────────────────────
+
+program
+  .command("proxy")
+  .description(
+    "Run as a compressing MCP proxy: expose a backend's tools as a tiny " +
+      "get_tool_schema/invoke_tool surface to slash tool-metadata tokens",
+  )
+  .argument("[target_command...]", "Backend server command (after --)")
+  .option(
+    "-c, --compression <level>",
+    `Compression level: ${COMPRESSION_LEVELS.join(", ")} (default: medium)`,
+  )
+  .option("--include-tools <names...>", "Only expose these backend tools")
+  .option("--exclude-tools <names...>", "Hide these backend tools")
+  .option("--compress-output", "Also minify backend tool output (lossless JSON minify)")
+  .option("--sandbox <mode>", "Sandbox execution mode: auto, docker, native, audit, none", "none")
+  .option("--transport <mode>", "Transport for http(s) backends: auto, http, sse")
+  .allowUnknownOption()
+  .action(
+    async (
+      targetCommand: string[],
+      opts: {
+        compression?: string;
+        includeTools?: string[];
+        excludeTools?: string[];
+        compressOutput?: boolean;
+        sandbox?: string;
+        transport?: string;
+      },
+    ) => {
+      const target = activeTargetCommand ?? targetCommand ?? [];
+      if (target.length === 0) {
+        process.stderr.write("Error: Backend server command must be provided after '--'.\n");
+        process.stderr.write("Usage: run-mcp proxy [-c medium] -- <backend_command...>\n");
+        process.exit(64);
+      }
+
+      const level = opts.compression as CompressionLevel | undefined;
+      if (level && !COMPRESSION_LEVELS.includes(level)) {
+        process.stderr.write(
+          `Error: invalid compression level "${level}". Use one of: ${COMPRESSION_LEVELS.join(", ")}.\n`,
+        );
+        process.exit(64);
+      }
+
+      await startProxyServer({
+        command: target[0],
+        args: target.slice(1),
+        level,
+        includeTools: opts.includeTools,
+        excludeTools: opts.excludeTools,
+        compressOutput: opts.compressOutput,
+        sandbox: opts.sandbox as any,
+        transport: opts.transport as any,
+      });
     },
   );
 
