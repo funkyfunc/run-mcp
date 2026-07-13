@@ -202,10 +202,7 @@ export class ResponseInterceptor {
     const targetCall = target.readResource(params);
     targetCall.catch(() => {});
 
-    const result = await Promise.race([
-      targetCall,
-      this._timeout(timeout, `resource:${params.uri}`),
-    ]);
+    const result = await this._raceWithTimeout(targetCall, timeout, `resource:${params.uri}`);
 
     const contents = (result as any).contents;
     if (Array.isArray(contents)) {
@@ -257,10 +254,7 @@ export class ResponseInterceptor {
     const targetCall = target.getPrompt(params);
     targetCall.catch(() => {});
 
-    const result = await Promise.race([
-      targetCall,
-      this._timeout(timeout, `prompt:${params.name}`),
-    ]);
+    const result = await this._raceWithTimeout(targetCall, timeout, `prompt:${params.name}`);
 
     const messages = (result as any).messages;
     if (Array.isArray(messages)) {
@@ -342,7 +336,7 @@ export class ResponseInterceptor {
     targetCall.catch(() => {});
 
     // Race the actual call against a timeout
-    const result = await Promise.race([targetCall, this._timeout(timeout, name)]);
+    const result = await this._raceWithTimeout(targetCall, timeout, name);
 
     // Process content array if present — modifies items in-place
     const content = (result as any).content;
@@ -528,11 +522,15 @@ export class ResponseInterceptor {
   }
 
   /**
-   * Returns a promise that rejects after the given timeout.
+   * Race a target call against a timeout, clearing the timer once either side
+   * settles. Without the cleanup every intercepted call would leave a live
+   * timer for the full timeout window (5 minutes by default) — retaining
+   * memory and keeping the event loop alive in busy agent/proxy sessions.
    */
-  private _timeout(ms: number, targetName: string): Promise<never> {
-    return new Promise((_, reject) => {
-      setTimeout(() => {
+  private async _raceWithTimeout<T>(targetCall: Promise<T>, ms: number, targetName: string) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
         const humanMs = ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
         const typeLabel = targetName.includes(":") ? "Request" : "Tool";
         reject(
@@ -543,6 +541,11 @@ export class ResponseInterceptor {
         );
       }, ms);
     });
+    try {
+      return await Promise.race([targetCall, timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /**

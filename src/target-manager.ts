@@ -69,6 +69,14 @@ export interface HistoryRecord {
 
 const MAX_HISTORY = 100;
 
+/**
+ * Cap on the serialized size of a result retained in the in-memory history
+ * ring. Without it, 100 retained multi-MB tool results (screenshots, big
+ * reads) pin hundreds of MB per target in long-lived sessions. The `history`
+ * event still carries the full record for audit sinks.
+ */
+const MAX_HISTORY_RESULT_CHARS = 64_000;
+
 // ─── Notification types ─────────────────────────────────────────────────────
 
 export interface ServerNotification {
@@ -559,6 +567,22 @@ export class TargetManager extends EventEmitter {
   }
 
   /**
+   * List ALL tools, following cursor-based pagination to exhaustion.
+   * `listTools()` returns a single page — a paginating backend would otherwise
+   * yield a silently partial catalog (worse than an error for a proxy).
+   */
+  async listAllTools(): Promise<{ tools: any[] }> {
+    const tools: any[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.listTools(cursor ? { cursor } : undefined);
+      tools.push(...(page.tools ?? []));
+      cursor = (page as any).nextCursor;
+    } while (cursor);
+    return { tools };
+  }
+
+  /**
    * Call a tool on the target MCP server.
    * We apply a massive SDK-level timeout (e.g. 10 hours) because we want to handle
    * timeouts in the interceptor via Promise.race, and we DO NOT want to send
@@ -737,13 +761,31 @@ export class TargetManager extends EventEmitter {
       durationMs,
       timestamp: Date.now(),
     };
-    this._history.push(record);
+    this._history.push({ ...record, result: this._boundHistoryResult(result) });
     if (this._history.length > MAX_HISTORY) {
       this._history = this._history.slice(-MAX_HISTORY);
     }
-    // Emit for audit sinks (e.g. the JSONL AuditLogger). Kept separate from the
-    // bounded in-memory ring buffer so nothing is dropped from the audit trail.
+    // Emit for audit sinks (e.g. the JSONL AuditLogger) with the FULL result.
+    // Kept separate from the size-bounded in-memory ring buffer so nothing is
+    // dropped from the audit trail.
     this.emit("history", record);
+  }
+
+  /** Replace oversized results with a placeholder before retaining in history. */
+  private _boundHistoryResult(result: unknown): unknown {
+    let serialized: string;
+    try {
+      serialized = JSON.stringify(result) ?? "";
+    } catch {
+      return result;
+    }
+    if (serialized.length <= MAX_HISTORY_RESULT_CHARS) return result;
+    return {
+      _historyElided: true,
+      note:
+        `Result (${serialized.length.toLocaleString()} serialized chars) elided from ` +
+        `in-memory history to bound memory. Use --audit-log to capture full traffic.`,
+    };
   }
 
   // ─── Notification History ───────────────────────────────────────────────────
@@ -900,6 +942,10 @@ export class TargetManager extends EventEmitter {
 
     this._connected = false;
     this.childPid = null;
+    // Drop this instance from the static cleanup set — otherwise long-lived
+    // sessions that connect/disconnect many targets (agent server, server
+    // search) retain every dead manager's history and stderr buffers forever.
+    TargetManager._instances.delete(this);
   }
 
   // ─── Auto-reconnect logic ──────────────────────────────────────────────────
@@ -1411,19 +1457,30 @@ export class TargetManager extends EventEmitter {
     TargetManager._cleanupRegistered = true;
 
     const cleanupAll = () => {
-      for (const instance of TargetManager._instances) {
+      for (const instance of [...TargetManager._instances]) {
         instance.close().catch(() => {});
       }
     };
 
+    // Give tree-kills a bounded window to actually land before exiting.
+    // Firing close() and exiting synchronously races the kills against process
+    // teardown and can leave orphaned grandchildren.
+    const SHUTDOWN_GRACE_MS = 500;
+    const closeAllWithGrace = async (): Promise<void> => {
+      const closes = [...TargetManager._instances].map((i) => i.close().catch(() => {}));
+      const grace = new Promise<void>((resolve) => {
+        setTimeout(resolve, SHUTDOWN_GRACE_MS).unref?.();
+      });
+      await Promise.race([Promise.all(closes), grace]);
+    };
+
+    // 'exit' can't await async work — keep the best-effort sync sweep.
     process.on("exit", cleanupAll);
     process.on("SIGINT", () => {
-      cleanupAll();
-      process.exit(130);
+      void closeAllWithGrace().then(() => process.exit(130));
     });
     process.on("SIGTERM", () => {
-      cleanupAll();
-      process.exit(143);
+      void closeAllWithGrace().then(() => process.exit(143));
     });
   }
 }

@@ -52,15 +52,30 @@ From an interview with the creator (see `recommendations.md` §4):
 
 ## 2. Current state (as of this handoff)
 
-- **Branch:** `tier1-security-hardening` (despite the name, it now also contains
-  all of Tier 2 + the Tier 3 facade). **Nothing has been pushed or PR'd.**
-- **Commits on the branch (newest first):**
-  - `3bb61a4` Tier 3: context-firewall facade — `find_tools` + relevance ranking
-  - `3b872b0` Tier 2: record & replay cassettes ("VCR for MCP")
-  - `f92276e` Tier 2: interceptor plugin framework, tool-poisoning scanner, DLP, audit log
-  - `37c922b` Tier 1: security hardening, correctness fixes, and analysis docs
-- **Tests:** 292 passing across 15 files. `npm test` runs `pretest` (tsup build +
-  build:fixtures) then vitest. Full run is ~90s (integration tests spawn real
+- **Branch:** `main` (the tier work above has landed, through Stage B2 — the
+  multiplexing compressing proxy — plus the July 2026 reliability hardening).
+- **Fresh-eyes strategic review (July 2026):** see **`fable-analysis.md`** and
+  **`fable-recommendations.md`** at the repo root — they supersede
+  `analysis-report.md`/`recommendations.md` and contain the current tiered
+  roadmap (Fix Now / Build Next / Strategic Bets / Spin-offs) plus six
+  interview-locked decisions (passthrough-first proxy, local-sidecar deployment,
+  OAuth in Tier 2, unified B1/B2 surface, REPL in maintenance mode).
+- **Tier 1 "Fix Now" hardening is DONE** (this session): interceptor timeout
+  timers cleared on settle; debounced cassette writes (`flush()` + exit hook);
+  `TargetManager._instances` no longer leaks closed instances; history results
+  size-capped in memory; bounded-grace SIGINT/SIGTERM shutdown; lazy ajv
+  compilation; proxy per-backend tool-list cache (`src/tool-cache.ts`,
+  invalidated by `tools/list_changed` + TTL) with pagination-complete
+  `listAllTools()`; proxy sampling/elicitation forwarding; backend
+  auto-reconnect + live status in `list_servers` and honest "backend down"
+  errors; catalog descriptions refresh cache-stably via `RegisteredTool.update`;
+  `normalizeServerName` collapses `__`; smarter `firstSentence`;
+  `fitCatalogLevel` size guard; `call_mcp_primitive` validation uses a cached
+  tools list; hermetic net test (no example.com egress in-scope), shared test
+  helpers (`mockTarget`/`tmpPath`/`waitFor`), reconnect success-path and
+  dead-backend tests (`tests/fixtures/crashy-server.ts`).
+- **Tests:** 381 passing across 24 files. `npm test` runs `pretest` (tsup build +
+  build:fixtures) then vitest. Full run is ~100s (integration tests spawn real
   child processes; `fileParallelism: false` — do NOT change).
 - **Gate:** a `simple-git-hooks` pre-commit hook runs
   `npm run format && npm run lint && npm run typecheck && npm test` on every

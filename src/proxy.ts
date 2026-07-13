@@ -4,6 +4,7 @@ import { z } from "zod";
 import { ResponseInterceptor } from "./interceptor.js";
 import { TargetManager } from "./target-manager.js";
 import { TargetPool, type PoolBackendConfig, type PooledServer } from "./target-pool.js";
+import { ToolListCache } from "./tool-cache.js";
 import { toolPoisoningScanner, outputCompressionPlugin } from "./plugins.js";
 import { rankTools } from "./ranking.js";
 import { groupToolsByPrefix } from "./parsing.js";
@@ -13,6 +14,7 @@ import {
   DEFAULT_COMPRESSION_LEVEL,
   applyToolFilters,
   coerceStructuredArgs,
+  fitCatalogLevel,
   flattenToolResult,
   formatSchemaResponse,
   getToolSchemaDescription,
@@ -55,6 +57,16 @@ export interface ProxyOptions {
  *    (Level 1 overview, free in its description), `find_tools` (cross-server BM25),
  *    `list_server_tools` (Level 2), `get_tool_schema`/`invoke_tool` (namespaced
  *    `server__tool`).
+ *
+ * Reliability behavior:
+ *  - Backend tool lists are **cached** (invalidated by `tools/list_changed`, TTL
+ *    fallback) instead of re-fetched per call.
+ *  - Backends **auto-reconnect** after a stable-start crash; a downed backend is
+ *    reported honestly ("backend down"), not as "tool not found".
+ *  - Backend **sampling/elicitation requests are forwarded** to the downstream
+ *    client instead of timing out.
+ *  - Catalog descriptions refresh only when the catalog truly changes, keeping
+ *    the surface prompt-cache-stable.
  */
 export async function startProxyServer(opts: ProxyOptions): Promise<void> {
   const level = opts.level ?? DEFAULT_COMPRESSION_LEVEL;
@@ -92,12 +104,56 @@ export async function startProxyServer(opts: ProxyOptions): Promise<void> {
   await mcpServer.connect(transport);
 }
 
+/**
+ * Forward backend-initiated sampling/elicitation requests to the downstream
+ * client. Without this, a backend that requests sampling waits five minutes
+ * behind the proxy and gets a timeout rejection.
+ */
+function forwardClientRequests(mcpServer: McpServer, target: TargetManager): void {
+  target.on("sampling_request", async ({ request, respond, reject }: any) => {
+    try {
+      const result = await mcpServer.server.request(
+        { method: "sampling/createMessage", params: request },
+        z.any(),
+      );
+      respond(result);
+    } catch (err: any) {
+      reject(err);
+    }
+  });
+
+  target.on("elicitation_request", async ({ request, respond, reject }: any) => {
+    try {
+      const result = await mcpServer.server.request(
+        { method: "elicitation/create", params: request },
+        z.any(),
+      );
+      respond(result);
+    } catch (err: any) {
+      reject(err);
+    }
+  });
+}
+
+/** Fetch, scan, and filter a backend's full (pagination-followed) tool list. */
+function scannedToolsFetcher(
+  target: TargetManager,
+  interceptor: ResponseInterceptor,
+  filters: { include?: string[]; exclude?: string[] },
+): () => Promise<BackendTool[]> {
+  return async () => {
+    const { tools } = await target.listAllTools();
+    const { tools: scanned } = await interceptor.processToolList(tools as any);
+    return applyToolFilters(scanned as BackendTool[], filters);
+  };
+}
+
 // ─── Single-backend surface (B1) ────────────────────────────────────────────
 
 async function registerSingleSurface(
   mcpServer: McpServer,
   interceptor: ResponseInterceptor,
-  level: CompressionLevel,
+  requestedLevel: CompressionLevel,
   filters: { include?: string[]; exclude?: string[] },
   target: TargetManager,
 ): Promise<void> {
@@ -108,15 +164,48 @@ async function registerSingleSurface(
     process.exit(1);
   }
 
-  const loadTools = async (): Promise<BackendTool[]> => {
-    const { tools } = await target.listTools();
-    const { tools: scanned } = await interceptor.processToolList(tools as any);
-    return applyToolFilters(scanned as BackendTool[], filters);
+  target.enableAutoReconnect();
+  forwardClientRequests(mcpServer, target);
+
+  const cache = new ToolListCache<BackendTool>(scannedToolsFetcher(target, interceptor, filters));
+  const initialTools = await cache.get();
+
+  // Pin the effective level at startup: past ~4k tokens the embedded catalog
+  // costs more context than the compression saves, so escalate (with a notice
+  // — never silently).
+  const fit = fitCatalogLevel(initialTools, requestedLevel);
+  const level = fit.level;
+  if (fit.escalated) {
+    process.stderr.write(
+      `[proxy] Catalog too large at level "${requestedLevel}" ` +
+        `(${initialTools.length} tools) — escalated to "${level}" to protect context.\n`,
+    );
+  }
+
+  const backendDown = () => ({
+    content: [
+      {
+        type: "text" as const,
+        text:
+          "Backend server is disconnected (it may have crashed). run-mcp is attempting " +
+          "to auto-reconnect — retry shortly, or restart the proxy if this persists.",
+      },
+    ],
+    isError: true as const,
+  });
+
+  /** Look up a tool, force-refreshing the cache once before declaring a miss. */
+  const findTool = async (name: string) => {
+    let tools = await cache.get();
+    let tool = tools.find((t) => t.name === name);
+    if (!tool) {
+      tools = await cache.refresh();
+      tool = tools.find((t) => t.name === name);
+    }
+    return { tool, tools };
   };
 
-  const initialTools = await loadTools();
-
-  mcpServer.registerTool(
+  const getSchemaTool = mcpServer.registerTool(
     "get_tool_schema",
     {
       title: "Get Tool Schema",
@@ -124,8 +213,8 @@ async function registerSingleSurface(
       inputSchema: { name: z.string().describe("Exact backend tool name to fetch the schema for") },
     },
     async ({ name }) => {
-      const tools = await loadTools();
-      const tool = tools.find((t) => t.name === name);
+      if (!target.connected) return backendDown();
+      const { tool, tools } = await findTool(name);
       if (!tool) return notFound(name, tools);
       return { content: [{ type: "text" as const, text: formatSchemaResponse(tool) }] };
     },
@@ -142,8 +231,8 @@ async function registerSingleSurface(
       },
     },
     async ({ name, input }) => {
-      const tools = await loadTools();
-      const tool = tools.find((t) => t.name === name);
+      if (!target.connected) return backendDown();
+      const { tool, tools } = await findTool(name);
       if (!tool) return notFound(name, tools);
       return runTool(interceptor, target, name, tool, (input as Record<string, unknown>) ?? {});
     },
@@ -153,11 +242,34 @@ async function registerSingleSurface(
     mcpServer.registerTool(
       "list_tools",
       { title: "List Tools", description: "Enumerate the available backend tool names." },
-      async () => ({
-        content: [{ type: "text" as const, text: buildCatalog(await loadTools(), level) }],
-      }),
+      async () => {
+        if (!target.connected) return backendDown();
+        return {
+          content: [{ type: "text" as const, text: buildCatalog(await cache.get(), level) }],
+        };
+      },
     );
   }
+
+  // Keep the embedded catalog honest without churning it: refresh the cache on
+  // the backend's own change signals and update the description ONLY when the
+  // catalog text actually changed (prompt-cache stability).
+  let lastDescription = getToolSchemaDescription(initialTools, level);
+  const syncCatalogDescription = async () => {
+    try {
+      const tools = await cache.refresh();
+      const description = getToolSchemaDescription(tools, level);
+      if (description === lastDescription) return;
+      lastDescription = description;
+      getSchemaTool.update({ description });
+    } catch {
+      // Backend hiccup — the next signal or TTL refresh will catch up.
+    }
+  };
+  target.on("notification", (record: { method: string }) => {
+    if (record.method === "notifications/tools/list_changed") void syncCatalogDescription();
+  });
+  target.on("reconnected", () => void syncCatalogDescription());
 
   mcpServer.server.onclose = async () => {
     await target.close();
@@ -178,47 +290,92 @@ async function registerMultiplexSurface(
   backends: PoolBackendConfig[],
   opts: ProxyOptions,
 ): Promise<void> {
-  const pool = new TargetPool(backends, { sandbox: opts.sandbox, transport: opts.transport });
+  const pool = new TargetPool(backends, {
+    sandbox: opts.sandbox,
+    transport: opts.transport,
+    autoReconnect: true,
+  });
   await pool.connectAll();
 
-  const connected = pool.connectedServers();
-  if (connected.length === 0) {
+  if (pool.connectedServers().length === 0) {
     process.stderr.write("[proxy] No backends connected. Exiting.\n");
     process.exit(1);
   }
 
-  /** A server's current (scanned + filtered) tools. */
-  const serverTools = async (s: PooledServer): Promise<BackendTool[]> => {
-    const { tools } = await s.target.listTools();
-    const { tools: scanned } = await interceptor.processToolList(tools as any);
-    return applyToolFilters(scanned as BackendTool[], filters);
-  };
+  // Per-backend cached tool lists (scanned + filtered).
+  const caches = new Map<string, ToolListCache<BackendTool>>();
+  for (const s of pool.servers) {
+    caches.set(s.prefix, new ToolListCache(scannedToolsFetcher(s.target, interceptor, filters)));
+    forwardClientRequests(mcpServer, s.target);
+  }
 
-  /** Build the Level-1 server overview (embedded free in list_servers' description). */
+  /** A server's current (scanned + filtered) tools, from cache. */
+  const serverTools = (s: PooledServer): Promise<BackendTool[]> => caches.get(s.prefix)!.get();
+
+  /** Build the Level-1 server overview — every backend, with live status. */
   const serverOverview = async (): Promise<string> => {
-    const lines: string[] = [];
-    for (const s of connected) {
-      const tools = await serverTools(s);
-      lines.push(
-        `<server>${s.prefix}: ${describeServer(s, tools)} (${tools.length} tools)</server>`,
-      );
-    }
+    const lines = await Promise.all(
+      pool.servers.map(async (s) => {
+        if (!s.connected) {
+          const reason = s.error ? ` — ${s.error}` : "";
+          return `<server>${s.prefix}: DOWN${reason}. Tools unavailable until it reconnects.</server>`;
+        }
+        try {
+          const tools = await serverTools(s);
+          return `<server>${s.prefix}: ${describeServer(s, tools)} (${tools.length} tools)</server>`;
+        } catch (err: any) {
+          return `<server>${s.prefix}: unavailable (${err.message})</server>`;
+        }
+      }),
+    );
     return lines.join("\n");
   };
 
   const overview = await serverOverview();
+  const LIST_SERVERS_DESCRIPTION =
+    "List the backend MCP servers this proxy fronts and what each is for. " +
+    "Available servers:\n";
 
-  mcpServer.registerTool(
+  const listServersTool = mcpServer.registerTool(
     "list_servers",
     {
       title: "List Servers",
-      description:
-        "List the backend MCP servers this proxy fronts and what each is for. " +
-        "Available servers:\n" +
-        overview,
+      description: LIST_SERVERS_DESCRIPTION + overview,
     },
     async () => ({ content: [{ type: "text" as const, text: await serverOverview() }] }),
   );
+
+  // Keep the embedded overview honest without churning it (prompt-cache
+  // stability): recompute on backend change signals, update only on real change.
+  let lastOverview = overview;
+  const syncOverview = async () => {
+    try {
+      const current = await serverOverview();
+      if (current === lastOverview) return;
+      lastOverview = current;
+      listServersTool.update({ description: LIST_SERVERS_DESCRIPTION + current });
+    } catch {
+      // Transient — the next signal will catch up.
+    }
+  };
+  for (const s of pool.servers) {
+    s.target.on("notification", (record: { method: string }) => {
+      if (record.method !== "notifications/tools/list_changed") return;
+      void caches
+        .get(s.prefix)!
+        .refresh()
+        .then(syncOverview)
+        .catch(() => {});
+    });
+    s.target.on("reconnected", () => {
+      void caches
+        .get(s.prefix)!
+        .refresh()
+        .then(syncOverview)
+        .catch(() => {});
+    });
+    s.target.on("disconnected", () => void syncOverview());
+  }
 
   mcpServer.registerTool(
     "find_tools",
@@ -234,12 +391,13 @@ async function registerMultiplexSurface(
       },
     },
     async ({ query, limit }) => {
-      const rankable: BackendTool[] = [];
-      for (const s of connected) {
-        for (const t of await serverTools(s)) {
-          rankable.push({ ...t, name: namespaceToolName(s.prefix, t.name) });
-        }
-      }
+      const connected = pool.connectedServers();
+      const perServer = await Promise.all(
+        connected.map(async (s) =>
+          (await serverTools(s)).map((t) => ({ ...t, name: namespaceToolName(s.prefix, t.name) })),
+        ),
+      );
+      const rankable: BackendTool[] = perServer.flat();
       const ranked = rankTools(query, rankable, limit ?? 8);
       if (ranked.length === 0) {
         return {
@@ -256,6 +414,22 @@ async function registerMultiplexSurface(
     },
   );
 
+  const knownPrefixes = () =>
+    pool.servers.map((s) => (s.connected ? s.prefix : `${s.prefix} (down)`)).join(", ");
+
+  const backendDown = (s: PooledServer) => ({
+    content: [
+      {
+        type: "text" as const,
+        text:
+          `Backend server "${s.prefix}" is down${s.error ? ` (${s.error})` : ""}. ` +
+          "run-mcp attempts to auto-reconnect after stable-start crashes — retry shortly, " +
+          "or check the backend with list_servers.",
+      },
+    ],
+    isError: true as const,
+  });
+
   mcpServer.registerTool(
     "list_server_tools",
     {
@@ -267,17 +441,17 @@ async function registerMultiplexSurface(
     async ({ server }) => {
       const s = pool.serverByPrefix(server);
       if (!s) {
-        const available = connected.map((c) => c.prefix).join(", ");
         return {
           content: [
             {
               type: "text" as const,
-              text: `Server "${server}" not found.\nAvailable: ${available}`,
+              text: `Server "${server}" not found.\nAvailable: ${knownPrefixes()}`,
             },
           ],
           isError: true,
         };
       }
+      if (!s.connected) return backendDown(s);
       const tools = (await serverTools(s)).map((t) => ({
         ...t,
         name: namespaceToolName(s.prefix, t.name),
@@ -286,15 +460,44 @@ async function registerMultiplexSurface(
     },
   );
 
-  const resolve = async (
-    namespaced: string,
-  ): Promise<{ server: PooledServer; tool: BackendTool } | undefined> => {
+  type Resolution =
+    | { ok: true; server: PooledServer; tool: BackendTool }
+    | { ok: false; response: { content: { type: "text"; text: string }[]; isError: true } };
+
+  const resolve = async (namespaced: string): Promise<Resolution> => {
+    const fail = (text: string): Resolution => ({
+      ok: false,
+      response: { content: [{ type: "text" as const, text }], isError: true },
+    });
+
     const parsed = parseNamespacedName(namespaced);
-    if (!parsed) return undefined;
+    if (!parsed) {
+      return fail(
+        `Tool "${namespaced}" is not a namespaced name (expected server__tool). ` +
+          "Use find_tools to discover names.",
+      );
+    }
     const server = pool.serverByPrefix(parsed.prefix);
-    if (!server) return undefined;
-    const tool = (await serverTools(server)).find((t) => t.name === parsed.tool);
-    return tool ? { server, tool } : undefined;
+    if (!server) {
+      return fail(
+        `Server "${parsed.prefix}" not found.\nAvailable: ${knownPrefixes()}. ` +
+          "Use find_tools to discover names.",
+      );
+    }
+    if (!server.connected) return { ok: false, response: backendDown(server) };
+
+    // Force-refresh once before declaring a miss — the backend may have added
+    // the tool since the last cache fill.
+    const cache = caches.get(server.prefix)!;
+    let tool = (await cache.get()).find((t) => t.name === parsed.tool);
+    if (!tool) tool = (await cache.refresh()).find((t) => t.name === parsed.tool);
+    if (!tool) {
+      return fail(
+        `Tool "${parsed.tool}" not found on server "${parsed.prefix}". ` +
+          "Use list_server_tools or find_tools to discover names.",
+      );
+    }
+    return { ok: true, server, tool };
   };
 
   mcpServer.registerTool(
@@ -308,17 +511,7 @@ async function registerMultiplexSurface(
     },
     async ({ name }) => {
       const found = await resolve(name);
-      if (!found) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Tool "${name}" not found. Use find_tools to discover names.`,
-            },
-          ],
-          isError: true,
-        };
-      }
+      if (!found.ok) return found.response;
       // Present the schema under the namespaced name.
       const display = { ...found.tool, name };
       return { content: [{ type: "text" as const, text: formatSchemaResponse(display) }] };
@@ -337,22 +530,11 @@ async function registerMultiplexSurface(
     },
     async ({ name, input }) => {
       const found = await resolve(name);
-      if (!found) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Tool "${name}" not found. Use find_tools to discover names.`,
-            },
-          ],
-          isError: true,
-        };
-      }
-      const parsed = parseNamespacedName(name)!;
+      if (!found.ok) return found.response;
       return runTool(
         interceptor,
         found.server.target,
-        parsed.tool,
+        found.tool.name,
         found.tool,
         (input as Record<string, unknown>) ?? {},
       );
@@ -364,7 +546,8 @@ async function registerMultiplexSurface(
     process.exit(0);
   };
   process.stderr.write(
-    `[proxy] Multiplexing proxy on stdio (level: ${level}, ${connected.length}/${pool.servers.length} backend(s) connected).\n`,
+    `[proxy] Multiplexing proxy on stdio (level: ${level}, ` +
+      `${pool.connectedServers().length}/${pool.servers.length} backend(s) connected).\n`,
   );
 }
 

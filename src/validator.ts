@@ -3,20 +3,37 @@ import addFormats from "ajv-formats";
 import { TargetManager } from "./target-manager.js";
 import schema from "./schema/mcp-schema.json" with { type: "json" };
 
-const ajv = new Ajv2020({ allErrors: true, strict: false });
-(addFormats as any)(ajv);
-ajv.addSchema(schema, "mcp-schema.json");
+/**
+ * Compiled ajv validators, built lazily on first use. Compiling five schema
+ * validators at module load taxed EVERY CLI startup (this module is imported
+ * from the entrypoint), even for invocations that never validate anything.
+ */
+interface CompiledValidators {
+  ajv: Ajv2020;
+  serverCapabilities: ReturnType<Ajv2020["compile"]>;
+  implementation: ReturnType<Ajv2020["compile"]>;
+  listToolsResult: ReturnType<Ajv2020["compile"]>;
+  listResourcesResult: ReturnType<Ajv2020["compile"]>;
+  listPromptsResult: ReturnType<Ajv2020["compile"]>;
+}
 
-// Compile validators against JSON Schema $defs
-const validateServerCapabilities = ajv.compile({
-  $ref: "mcp-schema.json#/$defs/ServerCapabilities",
-});
-const validateImplementation = ajv.compile({ $ref: "mcp-schema.json#/$defs/Implementation" });
-const validateListToolsResult = ajv.compile({ $ref: "mcp-schema.json#/$defs/ListToolsResult" });
-const validateListResourcesResult = ajv.compile({
-  $ref: "mcp-schema.json#/$defs/ListResourcesResult",
-});
-const validateListPromptsResult = ajv.compile({ $ref: "mcp-schema.json#/$defs/ListPromptsResult" });
+let compiledValidators: CompiledValidators | null = null;
+
+function getValidators(): CompiledValidators {
+  if (compiledValidators) return compiledValidators;
+  const ajv = new Ajv2020({ allErrors: true, strict: false });
+  (addFormats as any)(ajv);
+  ajv.addSchema(schema, "mcp-schema.json");
+  compiledValidators = {
+    ajv,
+    serverCapabilities: ajv.compile({ $ref: "mcp-schema.json#/$defs/ServerCapabilities" }),
+    implementation: ajv.compile({ $ref: "mcp-schema.json#/$defs/Implementation" }),
+    listToolsResult: ajv.compile({ $ref: "mcp-schema.json#/$defs/ListToolsResult" }),
+    listResourcesResult: ajv.compile({ $ref: "mcp-schema.json#/$defs/ListResourcesResult" }),
+    listPromptsResult: ajv.compile({ $ref: "mcp-schema.json#/$defs/ListPromptsResult" }),
+  };
+  return compiledValidators;
+}
 
 export interface ValidationCheck {
   name: string;
@@ -59,6 +76,8 @@ export async function validateProtocol(
     ]);
   };
 
+  const v = getValidators();
+
   try {
     // 1. Connection check. Custom env is threaded into the child via TargetManager
     // rather than mutated onto the parent process.env (which leaks and, for the
@@ -81,7 +100,7 @@ export async function validateProtocol(
     // 2. Server Implementation Metadata Check
     const versionInfo = target.getServerVersion();
     if (versionInfo) {
-      const valid = validateImplementation(versionInfo);
+      const valid = v.implementation(versionInfo);
       if (valid) {
         addCheck(
           "implementation_metadata",
@@ -89,7 +108,7 @@ export async function validateProtocol(
           `Server implementation: "${versionInfo.name}" (version: ${versionInfo.version})`,
         );
       } else {
-        const errors = ajv.errorsText(validateImplementation.errors);
+        const errors = v.ajv.errorsText(v.implementation.errors);
         addCheck(
           "implementation_metadata",
           "WARN",
@@ -107,7 +126,7 @@ export async function validateProtocol(
     // 3. Server Capabilities Check
     const capabilities = target.getServerCapabilities();
     if (capabilities) {
-      const valid = validateServerCapabilities(capabilities);
+      const valid = v.serverCapabilities(capabilities);
       if (valid) {
         const capsList = Object.keys(capabilities).filter((k) => (capabilities as any)[k]);
         addCheck(
@@ -116,7 +135,7 @@ export async function validateProtocol(
           `Server advertised capabilities: ${capsList.join(", ") || "none"}`,
         );
       } else {
-        const errors = ajv.errorsText(validateServerCapabilities.errors);
+        const errors = v.ajv.errorsText(v.serverCapabilities.errors);
         addCheck(
           "server_capabilities",
           "FAIL",
@@ -148,7 +167,7 @@ export async function validateProtocol(
         }
       } else {
         // Advertised capability, now validate response
-        const valid = (validateListToolsResult as any)(toolsResult);
+        const valid = (v.listToolsResult as any)(toolsResult);
         if (valid) {
           addCheck(
             "tools_capability",
@@ -209,7 +228,7 @@ export async function validateProtocol(
             }
           }
         } else {
-          const errors = ajv.errorsText(validateListToolsResult.errors);
+          const errors = v.ajv.errorsText(v.listToolsResult.errors);
           addCheck(
             "tools_capability",
             "FAIL",
@@ -253,7 +272,7 @@ export async function validateProtocol(
           );
         }
       } else {
-        const valid = (validateListResourcesResult as any)(resourcesResult);
+        const valid = (v.listResourcesResult as any)(resourcesResult);
         if (valid) {
           addCheck(
             "resources_capability",
@@ -278,7 +297,7 @@ export async function validateProtocol(
             }
           }
         } else {
-          const errors = ajv.errorsText(validateListResourcesResult.errors);
+          const errors = v.ajv.errorsText(v.listResourcesResult.errors);
           addCheck(
             "resources_capability",
             "FAIL",
@@ -317,7 +336,7 @@ export async function validateProtocol(
           addCheck("prompts_capability", "PASS", "Server correctly returned empty or no prompts.");
         }
       } else {
-        const valid = (validateListPromptsResult as any)(promptsResult);
+        const valid = (v.listPromptsResult as any)(promptsResult);
         if (valid) {
           addCheck(
             "prompts_capability",
@@ -354,7 +373,7 @@ export async function validateProtocol(
             }
           }
         } else {
-          const errors = ajv.errorsText(validateListPromptsResult.errors);
+          const errors = v.ajv.errorsText(v.listPromptsResult.errors);
           addCheck(
             "prompts_capability",
             "FAIL",

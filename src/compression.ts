@@ -29,11 +29,34 @@ export function toolSignature(tool: BackendTool): string {
   return `${tool.name}(${args.join(", ")})`;
 }
 
-/** First sentence of a description (up to and excluding the first period). */
+/** Abbreviations whose trailing period does not end a sentence. */
+const NON_SENTENCE_ENDERS = new Set(["e.g", "i.e", "etc", "vs", "cf", "al", "approx", "incl"]);
+
+/**
+ * First sentence of a description (up to and excluding its ending period).
+ * A period only ends a sentence when followed by whitespace (or end of text) —
+ * so "v1.2", URLs, and filenames don't truncate — and not when it terminates a
+ * common abbreviation ("e.g.", "etc."). Every medium-level catalog entry flows
+ * through this, so a naive first-`.` split quietly degrades the primary
+ * surface agents read.
+ */
 export function firstSentence(description: string): string {
   const trimmed = description.trim();
-  const dot = trimmed.indexOf(".");
-  return dot === -1 ? trimmed : trimmed.slice(0, dot);
+  for (let i = 0; i < trimmed.length; i++) {
+    if (trimmed[i] !== ".") continue;
+    const next = trimmed[i + 1];
+    if (next !== undefined && next !== " " && next !== "\t" && next !== "\n") continue;
+    const wordStart = Math.max(
+      trimmed.lastIndexOf(" ", i - 1),
+      trimmed.lastIndexOf("\t", i - 1),
+      trimmed.lastIndexOf("\n", i - 1),
+      trimmed.lastIndexOf("(", i - 1),
+    );
+    const word = trimmed.slice(wordStart + 1, i).toLowerCase();
+    if (NON_SENTENCE_ENDERS.has(word)) continue;
+    return trimmed.slice(0, i);
+  }
+  return trimmed;
 }
 
 /** A single `<tool>…</tool>` catalog entry at the given compression level. */
@@ -156,14 +179,47 @@ export function parseNamespacedName(name: string): { prefix: string; tool: strin
   return { prefix: name.slice(0, idx), tool: name.slice(idx + NAMESPACE_SEP.length) };
 }
 
-/** Normalize a server name for use as a tool-name prefix. */
+/**
+ * Normalize a server name for use as a tool-name prefix. Underscore runs are
+ * collapsed so a prefix can never contain the `__` namespace separator — a
+ * config name like "my__server" would otherwise produce namespaced names that
+ * `parseNamespacedName` splits at the wrong boundary.
+ */
 export function normalizeServerName(name: string | undefined): string {
   const value = name ?? "tools";
   const normalized = value
     .replace(/[^A-Za-z0-9_]+/gu, "_")
+    .replace(/_+/gu, "_")
     .replace(/^_+|_+$/gu, "")
     .toLowerCase();
   return normalized || "tools";
+}
+
+/**
+ * Ceiling for a catalog embedded in a tool description (~4k tokens). Past it,
+ * the catalog would consume more context than the compression saves.
+ */
+export const MAX_CATALOG_CHARS = 16_000;
+
+/**
+ * Pick the compression level that actually fits: starting from the requested
+ * level, escalate (medium → high → max) until the catalog is under `maxChars`.
+ * A 300-tool backend at `medium` can otherwise produce a `get_tool_schema`
+ * description bigger than the problem being solved. Callers should log when
+ * `escalated` is true so the level change isn't silent.
+ */
+export function fitCatalogLevel(
+  tools: BackendTool[],
+  requested: CompressionLevel,
+  maxChars: number = MAX_CATALOG_CHARS,
+): { level: CompressionLevel; escalated: boolean } {
+  let idx = COMPRESSION_LEVELS.indexOf(requested);
+  let level = requested;
+  while (idx < COMPRESSION_LEVELS.length - 1 && buildCatalog(tools, level).length > maxChars) {
+    idx++;
+    level = COMPRESSION_LEVELS[idx];
+  }
+  return { level, escalated: level !== requested };
 }
 
 /** Apply include/exclude filters to the tool set before compression. */

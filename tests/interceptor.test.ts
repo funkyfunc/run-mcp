@@ -4,13 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ResponseInterceptor } from "../src/interceptor.js";
-
-// Helper: create a mock TargetManager with a configurable callTool response
-function mockTarget(response: Record<string, unknown>) {
-  return {
-    callTool: vi.fn().mockResolvedValue(response),
-  } as any;
-}
+import { mockTarget } from "./helpers.js";
 
 // Helper: create a slow mock target that takes N ms to respond
 function slowMockTarget(ms: number, response: Record<string, unknown>) {

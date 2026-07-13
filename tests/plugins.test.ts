@@ -1,5 +1,6 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { ResponseInterceptor } from "../src/interceptor.js";
+import { mockTarget } from "./helpers.js";
 import {
   stripInvisible,
   findInjectionPhrases,
@@ -14,10 +15,6 @@ import {
 const ZWSP = String.fromCodePoint(0x200b); // zero-width space
 const BOM = String.fromCodePoint(0xfeff);
 const TAG_A = String.fromCodePoint(0xe0041); // Unicode Tag "A" (invisible ASCII smuggling)
-
-function mockTarget(response: Record<string, unknown>) {
-  return { callTool: vi.fn().mockResolvedValue(response) } as any;
-}
 
 describe("stripInvisible", () => {
   it("removes zero-width, BOM, and Unicode tag characters", () => {

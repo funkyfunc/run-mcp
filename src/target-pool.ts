@@ -26,6 +26,11 @@ export interface PooledServer {
  * (Stage B2). Spawns each backend, connects eagerly with **failure isolation**
  * (one backend failing to start does not sink the proxy), and namespaces tools by
  * a collision-free per-server prefix so `invoke_tool` can route to the owner.
+ *
+ * With `autoReconnect` enabled, a backend that crashes mid-session is restarted
+ * by its TargetManager (min-uptime / retry-cap rules apply) and its `connected`
+ * flag tracks the live state, so the proxy can report a backend as down instead
+ * of silently dropping its tools.
  */
 export class TargetPool {
   readonly servers: PooledServer[];
@@ -35,6 +40,8 @@ export class TargetPool {
     shared: {
       sandbox?: "auto" | "docker" | "native" | "audit" | "none";
       transport?: "auto" | "http" | "sse";
+      /** Auto-restart backends that crash after a stable start (proxy mode). */
+      autoReconnect?: boolean;
     } = {},
   ) {
     const usedPrefixes = new Set<string>();
@@ -45,7 +52,7 @@ export class TargetPool {
       while (usedPrefixes.has(prefix)) prefix = `${normalizeServerName(cfg.name)}_${n++}`;
       usedPrefixes.add(prefix);
 
-      return {
+      const server: PooledServer = {
         name: cfg.name,
         prefix,
         description: cfg.description,
@@ -56,6 +63,25 @@ export class TargetPool {
         }),
         connected: false,
       };
+
+      if (shared.autoReconnect) server.target.enableAutoReconnect();
+
+      // Track live connection state so prefix resolution and the server
+      // overview reflect reality, not the startup snapshot.
+      server.target.on("connected", () => {
+        server.connected = true;
+        server.error = undefined;
+      });
+      server.target.on("disconnected", () => {
+        server.connected = false;
+        server.error = "backend disconnected unexpectedly";
+      });
+      server.target.on("reconnect_failed", ({ message }: { message: string }) => {
+        server.connected = false;
+        server.error = message;
+      });
+
+      return server;
     });
   }
 
@@ -76,14 +102,18 @@ export class TargetPool {
     );
   }
 
-  /** The backends that connected successfully. */
+  /** The backends that are currently connected. */
   connectedServers(): PooledServer[] {
     return this.servers.filter((s) => s.connected);
   }
 
-  /** Resolve a `prefix` back to its connected server. */
+  /**
+   * Resolve a `prefix` to its server, connected or not — callers distinguish
+   * "unknown server" (undefined) from "known but down" (`!server.connected`)
+   * so agents get an honest "backend down" instead of "tool not found".
+   */
   serverByPrefix(prefix: string): PooledServer | undefined {
-    return this.servers.find((s) => s.connected && s.prefix === prefix);
+    return this.servers.find((s) => s.prefix === prefix);
   }
 
   async close(): Promise<void> {

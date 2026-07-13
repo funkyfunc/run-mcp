@@ -10,6 +10,7 @@ import {
   coerceStructuredArgs,
   normalizeServerName,
   applyToolFilters,
+  fitCatalogLevel,
   type BackendTool,
 } from "../src/compression.js";
 
@@ -37,6 +38,18 @@ describe("toolSignature / firstSentence", () => {
   it("takes the first sentence up to the first period", () => {
     expect(firstSentence("Echo a message. Returns it unchanged.")).toBe("Echo a message");
     expect(firstSentence("No period here")).toBe("No period here");
+  });
+  it("does not truncate at versions, URLs, or abbreviations", () => {
+    expect(firstSentence("Query the v1.2 API for records")).toBe("Query the v1.2 API for records");
+    expect(firstSentence("Fetch https://example.com/x.json and parse it")).toBe(
+      "Fetch https://example.com/x.json and parse it",
+    );
+    expect(firstSentence("Search items (e.g. issues, PRs) by keyword. Slow.")).toBe(
+      "Search items (e.g. issues, PRs) by keyword",
+    );
+    expect(firstSentence("Lists files, dirs, etc. from the root. Recursive.")).toBe(
+      "Lists files, dirs, etc. from the root",
+    );
   });
 });
 
@@ -120,6 +133,11 @@ describe("normalizeServerName / applyToolFilters", () => {
     expect(normalizeServerName("My Server!")).toBe("my_server");
     expect(normalizeServerName(undefined)).toBe("tools");
   });
+  it("collapses underscore runs so prefixes never contain the __ separator", () => {
+    expect(normalizeServerName("my__server")).toBe("my_server");
+    expect(normalizeServerName("a - b")).toBe("a_b");
+    expect(normalizeServerName("___")).toBe("tools");
+  });
   it("applies include then exclude filters", () => {
     const tools = [echo, add, { name: "danger" }];
     expect(applyToolFilters(tools, { include: ["echo", "add"] }).map((t) => t.name)).toEqual([
@@ -138,5 +156,31 @@ describe("buildCatalog", () => {
     expect(buildCatalog([echo, add], "high")).toBe(
       "<tool>echo(message)</tool>\n<tool>add(a, b)</tool>",
     );
+  });
+});
+
+describe("fitCatalogLevel", () => {
+  const bigTools: BackendTool[] = Array.from({ length: 40 }, (_, i) => ({
+    name: `tool_${i}`,
+    description: "x".repeat(200) + ". More detail follows here.",
+    inputSchema: { type: "object", properties: { a: { type: "string" } } },
+  }));
+
+  it("keeps the requested level when the catalog fits", () => {
+    const { level, escalated } = fitCatalogLevel(bigTools.slice(0, 2), "medium");
+    expect(level).toBe("medium");
+    expect(escalated).toBe(false);
+  });
+
+  it("escalates until the catalog fits under the ceiling", () => {
+    const { level, escalated } = fitCatalogLevel(bigTools, "low", 500);
+    expect(escalated).toBe(true);
+    expect(level).toBe("max");
+  });
+
+  it("stops escalating once a level fits", () => {
+    // High (names+args only) fits in 4KB for 40 small tools; max not needed.
+    const { level } = fitCatalogLevel(bigTools, "low", 4000);
+    expect(level).toBe("high");
   });
 });

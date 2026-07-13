@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TargetManager } from "../src/target-manager.js";
-import { MOCK_SERVER_ARGS, MOCK_SERVER_CMD } from "./helpers.js";
+import { MOCK_SERVER_ARGS, MOCK_SERVER_CMD, waitFor } from "./helpers.js";
 import { SandboxPolicy } from "../src/settings.js";
 import { join } from "node:path";
 
@@ -374,6 +374,37 @@ describe("auto-reconnect", () => {
     // (connect itself throws, so _maybeReconnect never fires)
     expect(events).toEqual([]);
   }, 10_000);
+
+  it("reconnects after a stable-uptime crash and serves calls again (success path)", async () => {
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
+    target.enableAutoReconnect();
+
+    const events: string[] = [];
+    target.on("reconnecting", () => events.push("reconnecting"));
+    target.on("reconnected", () => events.push("reconnected"));
+    target.on("reconnect_failed", () => events.push("reconnect_failed"));
+
+    await target.connect();
+    const firstPid = target.getStatus().pid!;
+
+    // Survive past the 5s min-uptime guard so the crash counts as transient
+    // (not a startup bug) and qualifies for a reconnect attempt.
+    await new Promise((resolve) => setTimeout(resolve, 5_200));
+    process.kill(firstPid, "SIGKILL");
+
+    await waitFor(() => events.includes("reconnected"), 15_000, "reconnected event");
+    expect(events[0]).toBe("reconnecting");
+    expect(events).not.toContain("reconnect_failed");
+
+    const status = target.getStatus();
+    expect(status.connected).toBe(true);
+    expect(status.pid).not.toBe(firstPid);
+    expect(status.reconnectAttempts).toBe(1);
+
+    // The revived connection actually serves requests.
+    const res = await target.callTool("echo", { text: "back from the dead" });
+    expect((res as any).content[0].text).toBe("back from the dead");
+  }, 30_000);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -382,14 +413,27 @@ describe("auto-reconnect", () => {
 
 describe("sandboxing", () => {
   it("runs the mock server without sandboxing and allows file write and network", async () => {
-    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS, { sandbox: "none" });
-    await target.connect();
+    // Hermetic: point the net test at a local in-process server instead of
+    // making a real request to example.com (fails offline / air-gapped CI).
+    const { createServer } = await import("node:http");
+    const localServer = createServer((_req, res) => res.end("ok"));
+    await new Promise<void>((resolve) => localServer.listen(0, "127.0.0.1", resolve));
+    const port = (localServer.address() as any).port;
 
-    const writeRes = await target.callTool("sandbox_write_test", {});
-    expect((writeRes as any).content[0].text).toBe("success");
+    try {
+      target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS, { sandbox: "none" });
+      await target.connect();
 
-    const netRes = await target.callTool("sandbox_net_test", {});
-    expect((netRes as any).content[0].text).toBe("success");
+      const writeRes = await target.callTool("sandbox_write_test", {});
+      expect((writeRes as any).content[0].text).toBe("success");
+
+      const netRes = await target.callTool("sandbox_net_test", {
+        url: `http://127.0.0.1:${port}/`,
+      });
+      expect((netRes as any).content[0].text).toBe("success");
+    } finally {
+      localServer.close();
+    }
   }, 15_000);
 
   it("runs the mock server with native sandboxing and blocks write and network", async () => {

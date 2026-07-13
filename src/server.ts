@@ -76,6 +76,13 @@ export async function startServer(opts: ServerOptions): Promise<void> {
   let previousSnapshot: Snapshot | null = null;
   let cachedSpawnConfig: { command: string; args: string[]; env?: Record<string, string> } | null =
     null;
+  /**
+   * Cached tools/list of the CURRENT target, used by call_mcp_primitive's
+   * pre-call validation so every tool call doesn't pay an extra round trip.
+   * Invalidated on connect/disconnect and on tools/list_changed; a lookup miss
+   * forces one fresh fetch before erroring (see getToolsForValidation).
+   */
+  let cachedToolList: any[] | null = null;
 
   const auditLogger = opts.auditLogPath ? new AuditLogger(opts.auditLogPath) : null;
 
@@ -160,6 +167,9 @@ export async function startServer(opts: ServerOptions): Promise<void> {
     });
 
     t.on("notification", (record: any) => {
+      if (record.method === "notifications/tools/list_changed") {
+        cachedToolList = null;
+      }
       mcpServer.server
         .notification({
           method: record.method,
@@ -232,6 +242,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       await target.close();
       target = null;
     }
+    cachedToolList = null;
 
     target = new TargetManager(cmdToUse, argsToUse ?? [], {
       sandbox: opts.sandbox,
@@ -254,6 +265,14 @@ export async function startServer(opts: ServerOptions): Promise<void> {
     }
     cachedSpawnConfig = { command: cmdToUse, args: argsToUse ?? [], env: envToUse };
     return null;
+  }
+
+  /** Tools list for pre-call validation, cached per connection. */
+  async function getToolsForValidation(): Promise<any[]> {
+    if (cachedToolList) return cachedToolList;
+    const { tools } = await target!.listTools();
+    cachedToolList = tools as any[];
+    return cachedToolList;
   }
 
   /** Build include data for connect response. */
@@ -412,6 +431,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         await target.close();
         target = null;
       }
+      cachedToolList = null;
 
       try {
         target = new TargetManager(command, args ?? [], {
@@ -526,6 +546,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       const status = target.getStatus();
       await target.close();
       target = null;
+      cachedToolList = null;
 
       return {
         content: [
@@ -1020,11 +1041,17 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       try {
         switch (primitiveType) {
           case "tool": {
-            // Best-effort pre-call validation
+            // Best-effort pre-call validation (cached tools list — no extra
+            // round trip on the happy path; one forced refetch on a miss)
             try {
-              const { tools } = await target!.listTools();
+              let tools = await getToolsForValidation();
+              let matchedTool = tools.find((t: any) => t.name === name);
+              if (!matchedTool) {
+                cachedToolList = null;
+                tools = await getToolsForValidation();
+                matchedTool = tools.find((t: any) => t.name === name);
+              }
               const toolNames = tools.map((t: any) => t.name);
-              const matchedTool = tools.find((t: any) => t.name === name);
 
               if (!matchedTool) {
                 const suggestion = suggestCommand(name, toolNames);
@@ -1234,6 +1261,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         previousSnapshot = await takeSnapshot();
         await target.close();
         target = null;
+        cachedToolList = null;
       }
 
       return result;

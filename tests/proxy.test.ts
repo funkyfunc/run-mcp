@@ -3,6 +3,8 @@ import { resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import {
+  CRASHY_SERVER_ARGS,
+  CRASHY_SERVER_CMD,
   MOCK_SERVER_ARGS,
   MOCK_SERVER_CMD,
   POISONED_SERVER_ARGS,
@@ -180,4 +182,73 @@ describe("multiplexing proxy (B2)", () => {
     const res: any = await c.callTool({ name: "list_server_tools", arguments: { server: "beta" } });
     expect(res.content[0].text).toContain("beta__lookup");
   }, 20_000);
+
+  it("names an unknown server explicitly when routing fails", async () => {
+    const c = await startMultiplex();
+    const res: any = await c.callTool({
+      name: "invoke_tool",
+      arguments: { name: "ghost__echo", input: {} },
+    });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('Server "ghost" not found');
+  }, 20_000);
+
+  it("reports a crashed backend as down and keeps healthy backends serving", async () => {
+    transport = new StdioClientTransport({
+      command: "node",
+      args: [
+        CLI,
+        "proxy",
+        "-c",
+        "medium",
+        "--multi-server",
+        `alpha=${MOCK_SERVER_CMD} ${MOCK_SERVER_ARGS.join(" ")}`,
+        `crashy=${CRASHY_SERVER_CMD} ${CRASHY_SERVER_ARGS.join(" ")}`,
+      ],
+      stderr: "pipe",
+    });
+    client = new Client({ name: "mux-test", version: "1.0.0" }, { capabilities: {} });
+    await client.connect(transport);
+    const c = client;
+
+    // The crashy backend serves before the crash.
+    const before: any = await c.callTool({
+      name: "invoke_tool",
+      arguments: { name: "crashy__echo", input: { text: "up" } },
+    });
+    expect(before.content[0].text).toBe("up");
+
+    // Crash it. (It dies within its min-uptime window, so auto-reconnect
+    // classifies the crash as a startup bug and the backend stays down.)
+    await c.callTool({ name: "invoke_tool", arguments: { name: "crashy__die", input: {} } });
+
+    // Poll until the disconnect propagates: the proxy must say the BACKEND is
+    // down — not "tool not found".
+    const deadline = Date.now() + 10_000;
+    let downRes: any;
+    for (;;) {
+      downRes = await c.callTool({
+        name: "invoke_tool",
+        arguments: { name: "crashy__echo", input: { text: "again" } },
+      });
+      const text = String(downRes.content?.[0]?.text ?? "");
+      if (downRes.isError && text.includes("down")) break;
+      if (Date.now() > deadline) {
+        throw new Error(`backend never reported down; last response: ${text}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    expect(downRes.content[0].text).toContain('Backend server "crashy" is down');
+
+    // list_servers reflects the outage.
+    const overview: any = await c.callTool({ name: "list_servers", arguments: {} });
+    expect(overview.content[0].text).toContain("DOWN");
+
+    // The healthy backend is unaffected.
+    const alpha: any = await c.callTool({
+      name: "invoke_tool",
+      arguments: { name: "alpha__echo", input: { text: "alive" } },
+    });
+    expect(alpha.content[0].text).toBe("alive");
+  }, 30_000);
 });

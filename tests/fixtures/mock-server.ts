@@ -295,19 +295,26 @@ server.registerTool(
   "sandbox_net_test",
   {
     description: "Attempts to make an HTTP request to test sandboxing network restrictions",
+    inputSchema: {
+      url: z
+        .string()
+        .optional()
+        .describe("Target URL (default http://example.com — pass a local URL for hermetic tests)"),
+    },
   },
-  async () => {
+  async ({ url }) => {
+    const targetUrl = url ?? "http://example.com";
     return new Promise((resolve) => {
-      let options: any = "http://example.com";
+      let options: any = targetUrl;
       if (process.env.http_proxy) {
         try {
           const proxyUrl = new URL(process.env.http_proxy);
           options = {
             host: proxyUrl.hostname,
             port: proxyUrl.port,
-            path: "http://example.com/",
+            path: targetUrl,
             headers: {
-              Host: "example.com",
+              Host: new URL(targetUrl).host,
             },
           };
         } catch {

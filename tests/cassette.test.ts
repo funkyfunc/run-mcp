@@ -1,16 +1,12 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { existsSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { Cassette, stableStringify } from "../src/cassette.js";
 import { ResponseInterceptor } from "../src/interceptor.js";
+import { mockTarget, tmpPath } from "./helpers.js";
 
 let cassettePath: string | null = null;
 function tmpCassette(): string {
-  cassettePath = join(
-    tmpdir(),
-    `run-mcp-cassette-${Date.now()}-${Math.random().toString(36).slice(2)}.json`,
-  );
+  cassettePath = tmpPath("run-mcp-cassette", ".json");
   return cassettePath;
 }
 
@@ -18,10 +14,6 @@ afterEach(() => {
   if (cassettePath && existsSync(cassettePath)) rmSync(cassettePath, { force: true });
   cassettePath = null;
 });
-
-function mockTarget(response: Record<string, unknown>) {
-  return { callTool: vi.fn().mockResolvedValue(response) } as any;
-}
 
 describe("stableStringify", () => {
   it("is independent of object key order", () => {
@@ -41,10 +33,12 @@ describe("Cassette", () => {
     expect(c.match("tool", "echo", { a: 9 })).toBeUndefined();
   });
 
-  it("persists to disk and reloads", () => {
+  it("persists to disk (after flush) and reloads", () => {
     const path = tmpCassette();
     const c1 = new Cassette(path, "auto");
     c1.record("tool", "greet", { name: "Ada" }, { content: [] }, "t0");
+    // Writes are debounced; flush persists immediately (exit hook covers real runs).
+    c1.flush();
     expect(existsSync(path)).toBe(true);
 
     const c2 = new Cassette(path, "replay");
@@ -56,6 +50,7 @@ describe("Cassette", () => {
     const path = tmpCassette();
     const rec = new Cassette(path, "record");
     rec.record("tool", "x", {}, { content: [{ type: "text", text: "v1" }] }, "t0");
+    rec.flush();
     // record mode: match returns undefined even though an entry exists
     expect(rec.match("tool", "x", {})).toBeUndefined();
 
@@ -74,10 +69,12 @@ describe("interceptor with cassette", () => {
     const response = { content: [{ type: "text", text: "live" }] };
     const target = mockTarget(response);
 
-    const rec = new ResponseInterceptor({ cassette: new Cassette(path, "auto") });
+    const recording = new Cassette(path, "auto");
+    const rec = new ResponseInterceptor({ cassette: recording });
     const first = await rec.callTool(target, "echo", { text: "hi" });
     expect(first).toEqual(response);
     expect(target.callTool).toHaveBeenCalledTimes(1);
+    recording.flush();
 
     // A fresh interceptor in replay mode should serve from disk, no target call.
     const replayTarget = mockTarget({ content: [{ type: "text", text: "SHOULD NOT APPEAR" }] });
