@@ -1,92 +1,133 @@
 # run-mcp — Roadmap & Session Handoff
 
-> **Read this first if you're a fresh session.** This file is a self-contained
-> handoff written to survive a total loss of conversational context. It records
-> what run-mcp is, the strategic decisions already made, what has been built,
-> how the code fits together, the non-obvious gotchas, and every remaining
-> roadmap item with enough detail to execute. When in doubt, also read
-> `analysis-report.md` (the independent deep-dive) and `recommendations.md` (the
-> gap-mapping + tiered roadmap). The ecosystem research lives in
-> `docs/research/` (the "MCP Critiques, Solutions, and Gaps" file is large —
-> grep its headings rather than reading whole).
+> **Read this first if you're a fresh session.** This file is the single source
+> of truth for scope and direction. It supersedes the tiered roadmaps in
+> `fable-recommendations.md` and `recommendations.md` (kept as historical
+> records) after the **July 2026 refocus** — see §1 for the scope rule that
+> now governs all new work.
 
 ---
 
-## 1. What run-mcp is (orientation)
+## 1. What run-mcp is — and the scope rule
 
-`run-mcp` is a smart proxy / interactive REPL / live test harness for Model
-Context Protocol (MCP) servers. **Three interfaces, one pipeline** — all three
-feed a shared `TargetManager` → `ResponseInterceptor` core:
+`run-mcp` exists so that **agents (and humans) can dynamically interact with
+MCP servers — above all, servers being developed locally.** It was created so
+an agent building an MCP server can spawn it, poke it, read its stderr, fix it,
+and reconnect — without editing client config files. Everything else is
+secondary.
 
-1. **Interactive REPL** — `run-mcp -- node server.js` (human dev testing, readline).
-2. **Headless CLI** — `run-mcp call|list-tools|read|...` (clean JSON to stdout for CI/jq).
-3. **Agent MCP Server** — `run-mcp` (no args) or `run-mcp --mcp`. run-mcp is
-   *itself* an MCP server exposing meta-tools (`connect_to_mcp`,
-   `call_mcp_primitive`, `find_tools`, …) so an AI agent can dynamically spawn
-   and test local MCP servers without editing config files.
+Three interfaces, one pipeline (`TargetManager` → `ResponseInterceptor`):
 
-The differentiator (established during analysis): run-mcp's real asset is the
-**interceptor pipeline + its man-in-the-middle position in the stdio pipe**, not
-"another test tool." The ecosystem research names exactly this gap (the
-"interceptor framework gap" / SEP-1763) and the "lightweight local sandbox" gap
-as unfilled. The strategy is to make the interceptor the product, reached
-deliberately.
+1. **Agent MCP Server** (`run-mcp` / `--mcp`) — meta-tools (`connect_to_mcp`,
+   `call_mcp_primitive`, `find_tools`, …) so an agent can test local servers.
+2. **Interactive REPL** (`run-mcp -- node server.js`) — humans doing the same.
+3. **Headless CLI** (`run-mcp call`, `list-tools`, …) — CI/scripts/jq.
 
-### Strategic decisions already locked (do not re-litigate without the user)
-From an interview with the creator (see `recommendations.md` §4):
-1. **Identity → Both, staged.** Keep the test/dev tool sharp *and* evolve toward
-   a runtime interceptor that sits in the live agent↔server path. Reach it in stages.
-2. **Context bloat → run-mcp facade mode** (not a spin-off). The "Tools Tax"
-   lazy-loading work belongs *in* run-mcp. (Tier 3 facade — already started, see §3.)
-3. **Security → Fix then extend.** Land sandbox bug fixes first (done in Tier 1),
-   then build interceptor-layer security (scanner/DLP/audit — done in Tier 2).
-4. **Library form factor → Later, gated on the interceptor.** Do NOT ship an
-   importable library as a standalone goal. Build the middleware plugin framework
-   first (done); the library falls out as a thin `wrapClient(client, [plugins])`
-   wrapper *only once there's a real external consumer*. Verified fact: the
-   official `@modelcontextprotocol/sdk` (workspace copy under
-   `.invisible/typescript-sdk`, v2.0.0-alpha at time of writing) has **no**
-   interceptor/middleware/transform hook — the gap is real.
+**The scope rule (July 2026 refocus):** every new feature must make this dev
+loop better for a user we can name, and the evidence bar is *actual use* — not
+research reports, industry zeitgeist, or "strategic positioning." The project
+drifted toward a second product (a production compression proxy) on zero user
+evidence; that work is now frozen (§4). When in doubt, ask: *does the person
+developing an MCP server locally touch this?* If not, it doesn't go in.
 
 ---
 
-## 2. Current state (as of this handoff)
+## 2. Current state
 
-- **Branch:** `main` (the tier work above has landed, through Stage B2 — the
-  multiplexing compressing proxy — plus the July 2026 reliability hardening).
-- **Fresh-eyes strategic review (July 2026):** see **`fable-analysis.md`** and
-  **`fable-recommendations.md`** at the repo root — they supersede
-  `analysis-report.md`/`recommendations.md` and contain the current tiered
-  roadmap (Fix Now / Build Next / Strategic Bets / Spin-offs) plus six
-  interview-locked decisions (passthrough-first proxy, local-sidecar deployment,
-  OAuth in Tier 2, unified B1/B2 surface, REPL in maintenance mode).
-- **Tier 1 "Fix Now" hardening is DONE** (this session): interceptor timeout
-  timers cleared on settle; debounced cassette writes (`flush()` + exit hook);
-  `TargetManager._instances` no longer leaks closed instances; history results
-  size-capped in memory; bounded-grace SIGINT/SIGTERM shutdown; lazy ajv
-  compilation; proxy per-backend tool-list cache (`src/tool-cache.ts`,
-  invalidated by `tools/list_changed` + TTL) with pagination-complete
-  `listAllTools()`; proxy sampling/elicitation forwarding; backend
-  auto-reconnect + live status in `list_servers` and honest "backend down"
-  errors; catalog descriptions refresh cache-stably via `RegisteredTool.update`;
-  `normalizeServerName` collapses `__`; smarter `firstSentence`;
-  `fitCatalogLevel` size guard; `call_mcp_primitive` validation uses a cached
-  tools list; hermetic net test (no example.com egress in-scope), shared test
-  helpers (`mockTarget`/`tmpPath`/`waitFor`), reconnect success-path and
-  dead-backend tests (`tests/fixtures/crashy-server.ts`).
-- **Tests:** 381 passing across 24 files. `npm test` runs `pretest` (tsup build +
-  build:fixtures) then vitest. Full run is ~100s (integration tests spawn real
-  child processes; `fileParallelism: false` — do NOT change).
-- **Gate:** a `simple-git-hooks` pre-commit hook runs
-  `npm run format && npm run lint && npm run typecheck && npm test` on every
-  commit. Expect every commit to take ~90s+. All four must pass.
+- **Branch:** `main`, clean. **Tests:** 381 across 24 files (`npm test` ≈ 100s;
+  integration tests spawn real child processes; `fileParallelism: false` — do
+  NOT change).
+- Spec pinned to `2025-11-25`; SDK 1.29.x; pure ESM; single bundled
+  `dist/index.js` (~424KB).
+- Historical review docs at the repo root: `fable-analysis.md` (architecture
+  deep-dive — still accurate and worth reading) and `fable-recommendations.md`
+  (its roadmap tiers are superseded by this file), plus the older
+  `analysis-report.md`/`recommendations.md` pass.
 
-### Build / test / run quickref
+---
+
+## 3. What stays — the product
+
+Each of these is used directly in the local dev loop:
+
+| Surface | Who touches it |
+|---|---|
+| **Agent MCP server** (10 tools: connect/call/list/find/status/stderr/validate/discover/search) | The agent developing a server |
+| **REPL** (commands, explore menu, wizard, watch mode `-w` + reconnect diff) | The human developing a server. *Maintenance mode* — keep working, no structural investment |
+| **Headless CLI** (`call`/`list-tools`/`describe`/…, sessions, script mode, `$LAST`, `@expect-error`) | CI and shell workflows |
+| **Interceptor** (timeouts, media→disk, truncation, plugin hooks) | Protects the consuming agent's context on every call |
+| **Validator** (`validate --deep`, schema-pinned) | "Is my server spec-compliant?" |
+| **Cassettes** (record/replay, offline headless) | Deterministic CI tests of your server; offline agent dev |
+| **Snapshot diffing** (reconnect/watch "what changed") | The edit-test loop |
+| **Config scanner / picker** | Finding local servers to point at |
+| **Streamable HTTP + SSE fallback** | Testing remote-transport servers |
+| **`find_tools` (BM25) in the agent server** | Agents navigating a large server under test |
+| **Security layer** (sandboxing, poisoning scanner, DLP, audit) | Handled; out of band of this roadmap |
+| **`--compress-output`** (lossless minify plugin) | Marginal but tiny and harmless; keep |
+
+---
+
+## 4. Frozen: the compressing proxy (`run-mcp proxy`, B1/B2)
+
+**What it is:** single-backend `get_tool_schema`/`invoke_tool` surface (B1) and
+the multi-backend Dynamic-Context-Loading multiplexer (B2), with tool-list
+caching, backend auto-reconnect, sampling/elicitation forwarding, and catalog
+guards (`src/proxy.ts`, `src/compression.ts`, `src/target-pool.ts`,
+`src/tool-cache.ts`).
+
+**Status: frozen, not deleted.** It works, it's tested (proxy/target-pool/
+tool-cache/compression suites), and it costs nothing sitting still. But its
+user — an agent *operator* fronting a fleet of servers in daily use — is not
+this package's user, and no such user has materialized. Meanwhile the platform
+eats the thin version (model-side tool search) and Atlassian's mcp-compressor
+owns the dedicated-proxy shape.
+
+**Frozen means:** fix bugs, keep tests green, accept no new proxy features.
+The follow-on plans that were queued behind it — full passthrough substrate,
+OAuth, owned config file, stats, era bridging, task shims, Code Mode, skills
+bridge, embeddings, every spin-off — are **out of the plan entirely** (the
+sketches survive in `fable-recommendations.md` for the record).
+
+**Unfreeze trigger (either):** (a) it earns a permanent place in the creator's
+own agent configuration after real dogfooding, or (b) an external user shows up
+asking for it. Demand reopens it; nothing else does.
+
+---
+
+## 5. The work list (short, mission-anchored)
+
+Bug fixes and dev-loop polish always qualify. Beyond that, only three items
+are scheduled:
+
+1. **Result spill-to-disk + `read_result`.** Extend the interceptor's existing
+   media pattern ("save to disk, return a handle") to oversized text/JSON
+   results: write the full payload to `outDir`, return the head + item count +
+   a handle; a `read_result(handle, range)` tool (agent server) / REPL command
+   lets the consumer navigate instead of losing the tail to truncation. This is
+   the original mission — protecting the agent's context while it tests verbose
+   servers — and today's truncation is destructive where this is navigable.
+2. **`outputSchema` conformance checking** in the validator (and surfaced in
+   `validate_mcp_server --deep`): flag tools that declare an `outputSchema`
+   whose `structuredContent` doesn't validate against it. Structured output is
+   now mainstream spec surface; a server dev has no other local way to catch
+   this.
+3. **Extract the REPL sampling/elicitation approval logic** into a testable
+   module (`repl/index.ts` inline closures today). It's protocol behavior with
+   zero coverage — the one exception to REPL maintenance mode.
+
+Candidate, unscheduled (build only if pulled): an **eval harness** ("does my
+server actually work with a model" — scripted agent loop + cassettes, graded).
+It fits the mission but is large; wait for the need to be felt in real use.
+
+---
+
+## 6. Build / test / run quickref
+
 ```bash
-npm run build       # tsup → dist/index.js  (also regenerates README help tables)
+npm run build       # tsup → dist/index.js (also regenerates README help tables)
 npm run typecheck   # tsc --noEmit
 npm run lint        # eslint src tests
-npm test            # pretest (build + fixtures) then vitest run  (~90s)
+npm test            # pretest (build + fixtures) then vitest run (~100s)
 npx vitest run tests/foo.test.ts        # single file, no rebuild
 npx vitest run tests/foo.test.ts -t "x" # filter by name
 # Drive the REPL manually against the mock server:
@@ -95,314 +136,49 @@ npm run start -- -- node --import tsx tests/fixtures/mock-server.ts
 
 ---
 
-## 3. What has been built (so you don't redo it)
+## 7. Non-obvious gotchas (READ before editing)
 
-### Tier 1 — security / correctness / test integrity (commit 37c922b)
-- **SBPL (Seatbelt) profile injection fixed** — `src/settings.ts` now has
-  `escapeSbplString()` / `hasControlChar()`; every config-supplied path
-  interpolated into the macOS `.sb` profile is escaped, and unsafe Docker `-v`
-  mount paths fail closed (`src/target-manager.ts`). Was a sandbox-escape via a
-  crafted project-scoped `.run-mcp/settings.json`.
-- **Network proxy now ENFORCES** — `src/proxy-audit.ts` `NetworkAuditProxy`
-  takes an `isAllowed(host)` predicate (wired from `SandboxPolicy.isNetworkAllowed`
-  in `target-manager.ts`) and returns 403 / refuses CONNECT for disallowed hosts.
-  Previously it only logged (docs claimed enforcement that didn't exist).
-- **ANSI/OSC terminal-injection sanitized** — `src/repl/ui.ts` `sanitizeServerText()`
-  (+ `stripAnsi`, both imperative, no regex control-byte literals) applied to all
-  server-sourced text printed by the REPL (tool names/descriptions/results,
-  resource/prompt text, notifications, banner). Neutralizes OSC 52 clipboard
-  hijack, prompt spoofing, etc.
-- **`process.env` leak fixed** — custom env is now threaded into the child via a
-  new `env` option on `TargetManager` (merged in `_getDefaultEnvironment`), not
-  mutated onto the parent process. Applied in `server.ts`, `validator.ts`. This
-  also fixed a latent bug: custom env never actually reached the child before.
-- **Correctness bugs:** case-insensitive bare-tool-name dispatch (repl),
-  `--clear` no longer corrupts JSON payloads, `splitArgs` preserves Windows
-  backslashes, keypress-listener leak removed, `view`/`--open-media` use
-  `execFile` (no shell).
-- **Session daemon hardened** — forwards the full `--allow-*/--deny-*` policy (was
-  dropping it) and writes session files at mode 0600 / dir 0700.
-- **Test integrity** — `tests/sandbox-enforcement.test.ts` runs the real hostile
-  fixture (`tests/fixtures/vulnerable-stdio-server.ts`) with a VISIBLE
-  `describe.skipIf` (ends the silent "vacuous green" skips). NOTE: the *old*
-  silent-`return` skips in `tests/target-manager.test.ts` still exist — they're
-  now backstopped by the new file but could still be cleaned up (see §5 follow-ups).
-- **Docs drift fixed** — AGENTS.md bundle-size claims, `scripts/update-schema.js`
-  stale fallback (bumped to 2025-11-25 + renamed spec repo URL), and
-  `@microsoft/mxc-sdk` declared as `optionalDependencies`.
-
-### Tier 2 — interceptor as a product (commits f92276e, 3b872b0)
-- **Plugin framework** — `src/plugins.ts`. `ResponseInterceptor` is now an ordered
-  middleware pipeline. Key API:
-  - `InterceptorOptions.plugins?: InterceptorPlugin[]` and `.cassette?`.
-  - `interceptor.processToolList(tools) → { tools, findings }` runs `onToolsList`
-    hooks (the tools/list transform point — used for tool-poisoning scanning).
-  - Result hooks `onToolResult` / `onResourceResult` / `onPromptResult` run after
-    the built-in media/truncation processing, threading `PluginFinding[]` into
-    `InterceptionMetadata.findings`.
-  - Backward-compatible: no plugins = passthrough.
-- **Tool-poisoning scanner** (`toolPoisoningScanner()`) — strips invisible/bidi/
-  Unicode-Tag chars from tools/list metadata and flags injection phrasing;
-  findings surfaced to the agent as a "Tool Safety Findings" block. **Default ON
-  in the agent server only** (opt out `--no-scan-tools`). Verified e2e with
-  `tests/fixtures/poisoned-server.ts`.
-- **DLP / secret redaction** (`secretRedactionPlugin({ redactEmails })`) — redacts
-  recognizable secret formats from tool/resource/prompt result text. **Opt-in**
-  (`--redact-secrets [--redact-emails]`) because it mutates content.
-- **JSONL audit log** — `src/audit.ts` `AuditLogger`; `TargetManager` emits a
-  `history` event on every request; wired in the agent server via `--audit-log <file>`.
-- **Record & replay ("VCR for MCP")** — `src/cassette.ts` `Cassette`. Modes
-  `record` / `replay` / `auto`; keyed by canonical `(primitive, name, args)` hash
-  (`stableStringify`). **Replay short-circuits the target entirely** — which is
-  WHY it's a first-class interceptor capability and NOT a plugin (plugins run
-  after the call and can't skip it). Wired into headless: `--cassette <file>` /
-  `--record` / `--replay`; in replay mode call/read/get-prompt run fully OFFLINE
-  (no target command needed).
-
-### Tier 3 — context-firewall facade (commit 3bb61a4)
-- **`src/ranking.ts`** — pure lexical token-overlap ranking (`rankTools`,
-  `tokenize`, `scoreTool`). Name weighted over description; whole-query substring
-  bonus; stopword filter. **Deliberately NOT embeddings** (a zero-dep local CLI
-  can't ship a model — documented tradeoff; the module is separable so an
-  embedding backend can drop in later).
-- **`find_tools` agent tool** (`src/server.ts`) — completes Dynamic Context
-  Loading so agents avoid the "Tools Tax": Level 1 `list_available_mcp_servers`
-  → Level 2 `find_tools` (ranked compact summaries, **no schemas by default**) →
-  Level 3 `list_mcp_primitives(name=…)` (one full schema) → `call_mcp_primitive`.
-  The agent server now exposes **10 tools**.
-
-### Deliverable docs produced
-- `analysis-report.md`, `recommendations.md` (root). If you regenerate/split
-  these, keep them in sync with reality.
+1. **`npx vitest run` does not rebuild `dist/`.** Tests that spawn the CLI
+   (proxy, server, headless suites) run the stale bundle after `src/` edits —
+   `npm run build` first, or use `npm test` (its pretest builds).
+2. **The Edit tool mangles regex control-byte literals** (`/[\x00-\x1f]/`).
+   Use imperative char-code scans or `String.fromCodePoint` — never paste raw
+   escapes into edit strings.
+3. **Pre-commit hook runs the FULL suite** (format+lint+typecheck+test, ~2min)
+   on every commit. Don't `--no-verify`.
+4. **README is auto-generated by `npm run build`** (root CLI options + agent
+   tools list). `prepublishOnly` runs only tsup — run a full build before
+   publishing or README ships stale.
+5. **Cassette writes are debounced.** `record()` schedules a flush; call
+   `flush()` in tests that reload the file, and know the process-exit hook
+   covers real runs. Replay can't be a plugin (plugins run post-call; replay
+   must skip the call) — it stays built into the interceptor.
+6. **Interceptor findings surface only via `include_metadata`/`processToolList`** —
+   plain `callTool` discards them.
+7. **`tests/server.test.ts` asserts exact tool counts** (10 agent tools;
+   mock server "Tools Count: 15"). Adding/removing tools means updating those
+   assertions, the `--help` agent-tools list, and AGENTS.md.
+8. **`@microsoft/mxc-sdk`** is a string-indirected dynamic import
+   (optionalDependency, Windows sandbox only); absence is handled.
+9. **Proxy tool-list caching:** backend catalogs are cached
+   (`src/tool-cache.ts`) and invalidated by `tools/list_changed` + TTL; catalog
+   descriptions update via `RegisteredTool.update` only on real change. Bug
+   fixes here must preserve that prompt-cache stability.
+10. **TargetManager cleanup is a static set** — instances remove themselves on
+    `close()`; signal handlers are registered once with a bounded 500ms grace.
+    Don't add per-instance process listeners.
 
 ---
 
-## 4. Architecture cheat-sheet (module map)
+## 8. How to verify changes
 
-Source under `src/`. Prefer describing by module/function; line numbers drift.
-
-| Module | Responsibility |
-|---|---|
-| `index.ts` | Commander CLI entry. Routes to REPL / headless subcommands / agent server. Registers headless subcommands via `registerHeadlessCommand()`. Pre-processes `--` into `activeTargetCommand`. Session daemon lives here. |
-| `target-manager.ts` | Spawns target MCP server, MCP Client lifecycle (stdio/SSE), sandbox wrapping (`_maybeWrapCommand`), auto-reconnect, stderr capture, request history (emits `history`), env threading (`_getDefaultEnvironment`). |
-| `interceptor.ts` | `ResponseInterceptor`: timeouts (Promise.race), media→disk, truncation, base64 detection, PLUS the plugin pipeline (`processToolList`, result hooks) and cassette record/replay. |
-| `plugins.ts` | Plugin framework + `toolPoisoningScanner` + `secretRedactionPlugin`. |
-| `cassette.ts` | Record/replay store. |
-| `ranking.ts` | Lexical tool ranking for `find_tools`. |
-| `audit.ts` | JSONL `AuditLogger`. |
-| `settings.ts` | Hierarchical sandbox config + `SandboxPolicy` (deny-wins) + Seatbelt profile generation + SBPL escaping. |
-| `proxy-audit.ts` | Local network proxy: audits AND enforces per-policy. |
-| `server.ts` | Agent-mode MCP server (10 tools). Constructs the interceptor with plugins; wires audit logger; `find_tools`. |
-| `headless.ts` | Single-shot executor. Builds cassette; offline replay. |
-| `repl/*` | Interactive readline UI. `commands.ts` (dispatch), `index.ts` (loop/events), `completer.ts`, `wizard.ts`, `ui.ts` (incl. sanitizer), `state.ts` (module-singleton state), `history.ts`. |
-| `snapshot.ts` | Reconnect diffing (tools/resources/prompts added/removed/modified). |
-| `watcher.ts` | `--watch` file watcher (fs.watch recursive). |
-| `config-scanner.ts` | Discovers MCP servers across 15 client config formats. |
-| `parsing.ts` | Pure helpers (command parsing, HTTPie args, JSON colorize, Levenshtein, scaffolding). Well unit-tested; the pattern to follow. |
-| `validator.ts` | Protocol-compliance validator (`run-mcp validate`), uses ajv + pinned schema. |
-| `colors.ts` | Color precedence (`--color`>`CLICOLOR_FORCE`>`NO_COLOR`>`CLICOLOR`>isatty). |
-
-**Where the security/interceptor features are (and AREN'T) wired — important:**
-- Tool-poisoning scanner: **agent server only** (default on). NOT in REPL or headless.
-- DLP redaction: **agent server only** (opt-in). NOT in REPL or headless.
-- Audit log: **agent server only** (`--audit-log`).
-- Cassette record/replay: **headless only** (`--cassette`). NOT in agent server or REPL.
-- `find_tools`: **agent server only**.
-- ANSI sanitization: **REPL only** (that's where a TTY is; agent/headless emit JSON).
-
----
-
-## 5. Non-obvious gotchas (READ before editing — these will bite you)
-
-1. **The Edit tool mangles regex control-byte literals.** Writing a regex like
-   `/[\x00-\x1f]/` or `/[: \x00-\x1f]/` in an Edit `new_string` can insert LITERAL
-   control bytes into the file (unreadable, unmaintainable, and the exact-match
-   for future edits breaks). This happened repeatedly. **Fix pattern used
-   everywhere:** imperative char-code scans (`hasControlChar`, the `ui.ts`
-   sanitizer, `stripInvisible` via `codePointAt`) or `new RegExp` built from
-   `String.fromCodePoint(...)`. In tests, build control chars with
-   `String.fromCodePoint(0x1b)` etc. Do NOT paste raw escapes into Edit strings.
-2. **Pre-commit hook runs the FULL ~90s suite.** Every `git commit` pays it. Don't
-   be surprised; don't `--no-verify` (the user wants the gate).
-3. **`fileParallelism: false`** in vitest — integration tests spawn stdio child
-   processes; parallel runs collide. Leave it.
-4. **README is auto-generated by `npm run build`** (`scripts/update-readme-help.js`
-   scrapes `node dist/index.js --help` between HTML-comment markers). If you add a
-   root CLI flag or an "Agent Mode Tools:" line in `index.ts`'s `addHelpText`,
-   rebuild so README stays in sync. Headless-subcommand-specific options
-   (`--cassette`, etc.) are NOT scraped into README (only root options are).
-5. **`prepublishOnly` runs only `tsup`**, not the README refresh — a publish can
-   ship stale README tables. Run `npm run build` before publishing.
-6. **Replay can't be a plugin.** Plugins run *after* the target call; replay must
-   skip it. That's why cassette is built into the interceptor's call methods.
-7. **Interceptor findings surface only via `include_metadata`/`processToolList`.**
-   `callTool` (no metadata) discards findings.
-8. **Server test asserts an exact tool count** (`toHaveLength(10)` in
-   `tests/server.test.ts`). If you add/remove an agent tool, update it and the
-   name assertions and the `--help` "Agent Mode Tools" list and AGENTS.md.
-9. **`@microsoft/mxc-sdk`** is loaded via string-indirected dynamic import in
-   `target-manager.ts` so the bundler can't see it; it's an `optionalDependency`
-   (Windows sandbox only). Absence is handled gracefully.
-10. **MCP spec/SDK are current** — schema pinned to `2025-11-25`, SDK 1.29.x
-    installed (floor `^1.12.1`). The pinned schema DOES include elicitation,
-    structured output (`outputSchema`/`structuredContent`), and Tasks.
-
----
-
-## 6. Remaining roadmap items (the actual work list)
-
-Ordered roughly by value/fit. Each has enough context to start cold.
-
-### 6.1 — Tier 2 leftover: Streamable HTTP transport  ✅ DONE (this session)
-- Implemented in `target-manager.ts`: http(s) targets default to
-  `StreamableHTTPClientTransport`; a `transport` constructor option / `--transport
-  auto|http|sse` flag selects the mode. `auto` (default) tries Streamable HTTP and
-  falls back to legacy SSE on failure (`_selectHttpTransportKind`, `_connect`
-  fallback). Threaded through REPL/headless/agent-server.
-- Tested in `tests/streamable-http.test.ts` with in-process stateless Streamable
-  HTTP + SSE-only servers (ephemeral ports) — covers http connect/call, auto
-  selection, and the auto→SSE fallback. (Note: `vulnerable-http-server.ts` remains
-  unused/orphaned; the new tests use in-process servers instead.)
-
-### 6.2 — Tier 2 leftover: test hardening  ◑ PARTIALLY DONE (this session)
-Done this session:
-- Mock server now simulates **sampling** and **elicitation** (`request_sampling`,
-  `request_elicitation` tools) → `tests/target-manager.test.ts` covers the
-  `sampling_request` / `elicitation_request` forwarding events.
-- Added unit tests: `snapshot.ts` (diff add/modify/remove paths),
-  `colors.ts` (full precedence hierarchy), `config-scanner.ts` (scan walk-up +
-  malformed/skip handling), `watcher.ts` (relativePath, start/stop, debounced
-  change with platform-unsupported fallback).
-- Covered untested TargetManager surface: `ping`, `listResourceTemplates`,
-  `getPrompt`, history buffer get/clear, roots add/list/remove.
-
-Still open:
-- Mock server STILL does NOT simulate: resource subscriptions, real pagination
-  (ignores `cursor`, never returns `nextCursor`), progress notifications,
-  cancellation, completion, list_changed, structured/`outputSchema` output.
-- `repl/*` remains ZERO-coverage (entire interactive surface incl. sampling/
-  elicitation approval prompts, watch mode). Hard to test due to the
-  module-singleton state in `repl/state.ts` — refactor that for testability or
-  extract more pure logic à la `parsing.ts`.
-- Untested TargetManager: successful auto-reconnect (only no-reconnect paths),
-  subscribe/unsubscribe, setLoggingLevel, complete, notification buffers.
-- **Flakiness to clean:** sleep-based sync in `server.test.ts` /
-  `target-manager.test.ts`; `settings.test.ts` uses a repo-root temp dir + touches
-  the real `~/.ssh` resolution; fixed session name/port in headless session test.
-- **Old silent sandbox skips:** the `return;` skips in the sandbox `describe` of
-  `tests/target-manager.test.ts` are entangled with a module-level `vi.mock` of
-  `node:child_process.execSync` that fakes bwrap presence — computing availability
-  at import time would hit the mock and never skip honestly. Left as-is; the Tier 1
-  `tests/sandbox-enforcement.test.ts` already provides honest visible-skip coverage
-  against the real hostile server. Untangle only if you also de-mock that file.
-
-### 6.3 — Consistency follow-ups  ✅ DONE (this session)
-- **Tool-poisoning scanner now runs in REPL + headless** (was agent-server only):
-  `processToolList` wired into `repl/commands.ts` `cmdToolsList`/`cmdToolsDescribe`
-  (+ new `find`), headless `list-tools`/`describe` (findings → stderr, clean JSON
-  → stdout), and the session daemon. Default on; `--no-scan-tools` opt-out in
-  headless too. (DLP redaction remains agent-server-only by design — it mutates
-  result content and is opt-in there.)
-- **REPL custom-env fixed:** `ReplOptions.env` threaded into `TargetManager`; the
-  no-arg picker no longer mutates `process.env` (passes `selected.config.env`).
-- **`find <query>` REPL command** added over `rankTools` (parity with the agent
-  server's `find_tools`); in KNOWN_COMMANDS, help, and README.
-- **Reconnect temp-file leak fixed:** extracted `_cleanupTempFiles()` and call it
-  in `_maybeReconnect` before reconnecting so the prior Seatbelt `.sb` / docker
-  mask dirs are removed instead of leaking until exit.
-
-### 6.3b — Token-bloat mitigation (from the Context-Bloat research report)
-Driven by `docs/research/Researching MCP Context Bloat Mitigations.md`. Decisions:
-build in run-mcp (extract later), staged A→B, heavy layers (semantic routing /
-Code Mode) deferred + opt-in. Full plan in the plan file.
-- **Stage A — output-compression plugin ✅ DONE (this session):**
-  `outputCompressionPlugin` in `src/plugins.ts` — lossless JSON minify by default,
-  opt-in aggressive whitespace collapse, char-length inflation guard, reports
-  savings. Opt-in via `--compress-output` [`--compress-aggressive`] in the agent
-  server + headless (registered after DLP; not in the REPL). Tests: unit +
-  headless e2e (lossless JSON minify, non-JSON untouched).
-- **Stage B1 — single-backend transparent compressing proxy ✅ DONE (this session):**
-  `run-mcp proxy [-c low|medium|high|max] [--include-tools] [--exclude-tools]
-  [--compress-output] -- <backend>`. New `src/compression.ts` (pure helpers:
-  `<tool>name(args): summary</tool>` catalog per level, schema response, result
-  flatten, arg coercion, filters) + `src/proxy.ts` (`startProxyServer`: McpServer
-  exposing `get_tool_schema` + `invoke_tool` [+ `list_tools` at max], catalog in the
-  get_tool_schema description, routes invoke_tool through the interceptor). README
-  "Proxy Mode" section rewritten (was stale). Tests: `tests/compression.test.ts`
-  (unit) + `tests/proxy.test.ts` (e2e via real MCP Client).
-- **Stage B2 — multiplexer ✅ DONE (this session):** `run-mcp proxy --config mcp.json`
-  / `--multi-server "name=cmd"`. `src/target-pool.ts` (`TargetPool`: spawn from
-  config, eager connect + failure isolation, collision-free per-server prefixes).
-  Multi-backend proxy exposes the Dynamic-Context-Loading surface — `list_servers`
-  (Level-1 overview free in its description; descriptions from server `instructions`
-  / tool-catalog heuristic / optional config `description`), `find_tools`
-  (cross-server BM25), `list_server_tools` (Level 2), namespaced
-  `get_tool_schema`/`invoke_tool` (Level 3, routes to the owning backend). Single
-  backend keeps the B1 2-tier surface. `rankTools` upgraded to **BM25** (validated
-  by Anthropic's tool-search tool, which defaults to regex/BM25 — embeddings only
-  optional). `McpServerConfig` gained optional `description` + `url`. Tests:
-  `tests/target-pool.test.ts` + multiplex e2e in `tests/proxy.test.ts`.
-- **Stage C (deferred, opt-in):** embeddings (transformers.js MiniLM q8, ~22MB) for
-  semantic routing — Anthropic treats this as the optional upgrade too; add only if
-  lexical BM25 routing proves weak in practice.
-- **Deferred/opt-in:** C semantic routing (transformers.js ~22MB), D Code Mode
-  (`isolated-vm`). Extraction to a standalone package after B proves the API.
-
-### 6.4 — Tier 3: MCP multiplexer / aggregator
-- **Idea:** run-mcp connects to SEVERAL target servers and exposes a single
-  unified, namespaced, searchable facade (`serverA.toolX`). Addresses the "too many
-  endpoints" problem. Reuses `rankTools` (search across all) and the plugin
-  pipeline (scan all). Natural extension of the context-firewall facade.
-- **Scope call:** could be a run-mcp *mode* or edge toward a spin-off product;
-  discuss with the user before committing — it changes run-mcp from single-target
-  to multi-target, touching `TargetManager` ownership (probably a `TargetPool`).
-
-### 6.5 — Tier 3: importable middleware library (GATED)
-- Only once the plugin framework has ≥1 real external consumer. Would export
-  `wrapClient(client, [injectionScan, redact, lazyLoad, audit])` over the SDK
-  `Client`. Requires committing to a stable public API + semver + docs. Don't
-  start speculatively (locked decision #4).
-
-### 6.6 — Tier 3: eval / CI harness
-- Run an agent loop against a target MCP server and grade tool selection / latency
-  / errors ("does my server actually work with a model"). Fits the testing
-  identity. Pairs well with record/replay (deterministic evals).
-
-### 6.7 — Tier 4: NEW PROJECTS (spin-offs, not run-mcp scope)
-- **Enterprise MCP gateway** — OAuth 2.1/PKCE, RBAC, JWT validation, remote
-  topology. Different product/buyer; Kong/TrueFoundry already occupy this. Only if
-  the user explicitly wants to pivot.
-- **Cloud sandbox execution** (E2B/Modal-style) — contradicts run-mcp's local-first,
-  zero-daemon identity.
-- **Always-on "MCP context proxy"** — the maximal facade+scanner+DLP+audit product
-  every agent points at. A rename/spin-off of the whole project, not a mode.
-
----
-
-## 7. How to verify changes (this project's expectations)
-- Run `npm run typecheck && npm run lint` continuously; `npm test` before commit.
+- `npm run typecheck && npm run lint` continuously; `npm test` before commit.
 - For behavior changes, **drive the real flow**, don't just unit-test:
-  - REPL: `npm run start -- -- node --import tsx tests/fixtures/mock-server.ts`,
-    then type commands and read the output.
-  - Agent server e2e: connect a real MCP `Client` to `dist/index.js --mcp` (see
-    `tests/server.test.ts` `startRunMcpServer`).
-  - Headless: spawn `dist/index.js <subcommand> ... -- <target>` (see
-    `tests/headless.test.ts` `runCli`).
-- For security features, point tests at the hostile fixtures
-  (`vulnerable-stdio-server.ts`, `poisoned-server.ts`) and assert denial/flagging.
-- Follow the coding conventions in `AGENTS.md` (intent-based naming, aggressive
-  early returns, extract pure logic for testability, coaching error messages,
-  never add a dependency not already in the lockfile without authorization).
-
----
-
-## 8. Suggested next step
-The user has been working tier-by-tier and committing each chunk (each commit
-passes the full gate). Good next moves, in order of recommendation:
-1. **Open a PR** for the four branch commits (nothing is pushed yet) — this is a
-   natural checkpoint after Tiers 1–3.
-2. **Streamable HTTP transport** (§6.1) — the clearest remaining Tier 2 item.
-3. **Test hardening** (§6.2) or the **consistency follow-ups** (§6.3).
-
-Confirm direction with the user; don't assume a PR is wanted (they may keep
-stacking commits on the branch).
+  - REPL: `npm run start -- -- node --import tsx tests/fixtures/mock-server.ts`
+  - Agent server: connect a real MCP `Client` to `dist/index.js --mcp`
+    (see `tests/server.test.ts` `startRunMcpServer`).
+  - Headless: spawn `dist/index.js <subcommand> ... -- <target>`
+    (see `tests/headless.test.ts` `runCli`).
+- Follow AGENTS.md conventions: intent-based naming, aggressive early returns,
+  extract pure logic for testability, coaching error messages, no new
+  dependencies without authorization.

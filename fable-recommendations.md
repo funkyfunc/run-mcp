@@ -1,5 +1,12 @@
 # run-mcp — Recommendations & Prioritized Roadmap
 
+> **HISTORICAL — superseded by `ROADMAP.md` (July 2026 refocus).** The tiered
+> roadmap below (and the §4 interview decisions) assumed a "production proxy"
+> user that never materialized. The project has since refocused on its actual
+> mission — the local MCP dev loop — and frozen the proxy pending real demand.
+> `ROADMAP.md` is the live plan; this file is kept as the record of what was
+> considered and why, and as the parts bin if the proxy is ever unfrozen.
+
 *Phase-3 synthesis: my independent findings (`fable-analysis.md`) × your ideas (`.invisible/ideas.md`) × the two research reports (in-scope sections). Reactions first, then the tiered roadmap.*
 
 ---
