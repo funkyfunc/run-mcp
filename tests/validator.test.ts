@@ -19,6 +19,72 @@ describe("Protocol Validator", () => {
     const tools = report.checks.find((c) => c.name === "tools_capability");
     expect(tools?.status).toBe("PASS");
     expect(tools?.message).toContain("valid tool(s)");
+
+    // json_data declares structured output — the static audit should pass it.
+    const outputSchemas = report.checks.find((c) => c.name === "tool_output_schema_validation");
+    expect(outputSchemas?.status).toBe("PASS");
+    expect(outputSchemas?.message).toContain("declare structured output");
+  }, 15_000);
+
+  it("flags broken outputSchemas (invalid schema, required prop not in properties)", async () => {
+    const scriptPath = join(tmpdir(), `bad-output-schema-server-${Date.now()}.mjs`);
+    const code = `
+      import readline from "readline";
+      const rl = readline.createInterface({ input: process.stdin, terminal: false });
+      rl.on("line", (line) => {
+        const req = JSON.parse(line);
+        if (req.method === "initialize") {
+          process.stdout.write(JSON.stringify({
+            jsonrpc: "2.0", id: req.id,
+            result: {
+              protocolVersion: "2024-11-05",
+              capabilities: { tools: {} },
+              serverInfo: { name: "bad-output-schema", version: "1.0.0" }
+            }
+          }) + "\\n");
+        } else if (req.method === "tools/list") {
+          process.stdout.write(JSON.stringify({
+            jsonrpc: "2.0", id: req.id,
+            result: {
+              tools: [
+                {
+                  name: "broken_schema",
+                  description: "outputSchema is not valid JSON Schema",
+                  inputSchema: { type: "object", properties: {} },
+                  outputSchema: { type: "object", properties: { a: { type: "bananas" } } }
+                },
+                {
+                  name: "missing_required",
+                  description: "outputSchema requires a property it never defines",
+                  inputSchema: { type: "object", properties: {} },
+                  outputSchema: { type: "object", properties: { a: { type: "string" } }, required: ["a", "ghost"] }
+                }
+              ]
+            }
+          }) + "\\n");
+        }
+      });
+    `;
+    writeFileSync(scriptPath, code, "utf8");
+
+    try {
+      const report = await validateProtocol("node", [scriptPath]);
+      expect(report.success).toBe(false);
+
+      const outputChecks = report.checks.filter(
+        (c) => c.name === "tool_output_schema_validation" && c.status === "FAIL",
+      );
+      expect(
+        outputChecks.some((c) => c.message?.includes('"broken_schema" outputSchema is not a valid')),
+      ).toBe(true);
+      expect(
+        outputChecks.some(
+          (c) => c.message?.includes('"missing_required"') && c.message?.includes('"ghost"'),
+        ),
+      ).toBe(true);
+    } finally {
+      rmSync(scriptPath, { force: true });
+    }
   }, 15_000);
 
   it("fails validation gracefully for a non-existent command", async () => {

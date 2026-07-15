@@ -341,19 +341,21 @@ server.registerTool(
   "json_data",
   {
     description: "Returns a pretty-printed JSON object (for output-compression testing)",
+    // Declares structured output so tests exercise the outputSchema path
+    // (validator static checks + SDK client-side conformance validation).
+    outputSchema: {
+      status: z.string(),
+      items: z.array(z.number()),
+      nested: z.object({ a: z.boolean(), b: z.string() }),
+    },
   },
-  async () => ({
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify(
-          { status: "ok", items: [1, 2, 3], nested: { a: true, b: "value" } },
-          null,
-          2,
-        ),
-      },
-    ],
-  }),
+  async () => {
+    const data = { status: "ok", items: [1, 2, 3], nested: { a: true, b: "value" } };
+    return {
+      content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+      structuredContent: data,
+    };
+  },
 );
 
 // ─── Tool: request_sampling (server → client sampling round-trip) ──────────

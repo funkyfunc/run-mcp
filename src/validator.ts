@@ -35,6 +35,29 @@ function getValidators(): CompiledValidators {
   return compiledValidators;
 }
 
+/**
+ * Check that an arbitrary tool-supplied schema is itself a valid, compilable
+ * JSON Schema. Uses a fresh ajv instance so ad-hoc schemas (possibly carrying
+ * $id collisions or garbage keywords) can never pollute the pinned spec store.
+ */
+export function checkJsonSchemaCompiles(schema: unknown): { ok: boolean; error?: string } {
+  try {
+    // Drop the $schema dialect pointer before compiling: the TypeScript SDK
+    // stamps zod-derived schemas with draft-07, which Ajv2020 can't resolve.
+    // We're checking structural validity, not dialect conformance.
+    const candidate =
+      schema && typeof schema === "object" && !Array.isArray(schema)
+        ? Object.fromEntries(Object.entries(schema).filter(([key]) => key !== "$schema"))
+        : schema;
+    const ajv = new Ajv2020({ allErrors: true, strict: false });
+    (addFormats as any)(ajv);
+    ajv.compile(candidate as any);
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? String(err) };
+  }
+}
+
 export interface ValidationCheck {
   name: string;
   status: "PASS" | "WARN" | "FAIL";
@@ -176,6 +199,7 @@ export async function validateProtocol(
           );
 
           // Audit individual tools
+          let declaredOutputSchemas = 0;
           for (const tool of toolsResult.tools) {
             const toolName = tool.name;
             if (!toolName || typeof toolName !== "string") {
@@ -226,6 +250,61 @@ export async function validateProtocol(
                 }
               }
             }
+
+            // Structured output: audit the declared outputSchema statically.
+            // (Conformance of actual structuredContent is enforced at call
+            // time by the SDK client — this catches schemas that are broken
+            // before any call is made.)
+            if (tool.outputSchema !== undefined) {
+              declaredOutputSchemas++;
+              const outSchema = tool.outputSchema;
+              if (!outSchema || typeof outSchema !== "object") {
+                addCheck(
+                  "tool_output_schema_validation",
+                  "FAIL",
+                  `Tool "${toolName}" has a non-object outputSchema.`,
+                );
+                continue;
+              }
+              if (outSchema.type !== "object") {
+                addCheck(
+                  "tool_output_schema_validation",
+                  "WARN",
+                  `Tool "${toolName}" outputSchema type is "${outSchema.type}" instead of "object" (structuredContent must be an object).`,
+                );
+              }
+              const compiled = checkJsonSchemaCompiles(outSchema);
+              if (!compiled.ok) {
+                addCheck(
+                  "tool_output_schema_validation",
+                  "FAIL",
+                  `Tool "${toolName}" outputSchema is not a valid JSON Schema: ${compiled.error}`,
+                );
+              }
+              if (Array.isArray(outSchema.required)) {
+                const outProps = outSchema.properties || {};
+                for (const reqProp of outSchema.required) {
+                  if (!outProps[reqProp]) {
+                    addCheck(
+                      "tool_output_schema_validation",
+                      "FAIL",
+                      `Tool "${toolName}" outputSchema requires property "${reqProp}" but it is not defined under properties.`,
+                    );
+                  }
+                }
+              }
+            }
+          }
+
+          if (
+            declaredOutputSchemas > 0 &&
+            !checks.some((c) => c.name === "tool_output_schema_validation")
+          ) {
+            addCheck(
+              "tool_output_schema_validation",
+              "PASS",
+              `${declaredOutputSchemas} tool(s) declare structured output; all outputSchemas are valid JSON Schema.`,
+            );
           }
         } else {
           const errors = v.ajv.errorsText(v.listToolsResult.errors);
