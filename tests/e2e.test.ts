@@ -85,7 +85,7 @@ describe("end-to-end: interceptor with real target", () => {
 
     const text = content[0].text;
     expect(text.length).toBeLessThan(80_000);
-    expect(text).toContain("... (truncated, 80,000 chars total)");
+    expect(text).toContain("... [truncated at 50,000 of 80,000 chars");
   }, 15_000);
 
   it("enforces timeout on slow tool call", async () => {

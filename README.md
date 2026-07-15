@@ -213,6 +213,7 @@ Then use these tools from your agent:
 | `call_mcp_primitive` | Call a tool, read a resource, or get a prompt (auto-connects) |
 | `list_mcp_primitives` | List tools, resources, and/or prompts |
 | `find_tools` | Search tools by relevance (compact, avoids the tools tax) |
+| `read_result` | Page through an oversized result spilled to disk |
 | `disconnect_from_mcp` | Tear down and reconnect after changes |
 | `mcp_server_status` | Check connection status |
 | `get_mcp_server_stderr` | View target server stderr output |

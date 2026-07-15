@@ -66,6 +66,7 @@ export interface ServerOptions {
  *   call_mcp_primitive    → Call a tool, read a resource, or get a prompt (auto-connects if needed)
  *   list_mcp_primitives   → List tools, resources, and/or prompts
  *   find_tools            → Relevance-ranked, compact tool discovery (context firewall)
+ *   read_result           → Page through an oversized result spilled to disk
  *   get_mcp_server_stderr → View target server stderr output
  *   list_available_mcp_servers → Discover other local MCP servers from config files
  *
@@ -1131,6 +1132,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
                 meta.truncated = interceptionMeta.truncated;
                 meta.images_saved = interceptionMeta.imagesSaved;
                 meta.audio_saved = interceptionMeta.audioSaved;
+                meta.results_saved = interceptionMeta.resultsSaved;
                 meta.original_size_bytes = interceptionMeta.originalSizeBytes;
               }
               resultContent.unshift({
@@ -1265,6 +1267,58 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       }
 
       return result;
+    },
+  );
+
+  // ─── read_result ────────────────────────────────────────────────────────
+
+  mcpServer.registerTool(
+    "read_result",
+    {
+      title: "Read Spilled Result",
+      description:
+        "Read a slice of an oversized tool/resource result that was saved to disk. " +
+        "When a response is truncated, its note includes a result id (e.g. 'r2') — " +
+        "pass that id here with an offset to page through the full payload without " +
+        "needing filesystem access. Ids are per-session.",
+      inputSchema: {
+        id: z.string().describe("Result id from the truncation note (e.g. 'r2')"),
+        offset: z.number().optional().describe("Character offset to start from (default 0)"),
+        length: z
+          .number()
+          .optional()
+          .describe("Max characters to return (default: the configured max text length)"),
+      },
+    },
+    async ({ id, offset, length }) => {
+      const defaultLength = opts.maxTextLength ?? 50_000;
+      const requested = length && length > 0 ? Math.min(length, defaultLength) : defaultLength;
+      let slice;
+      try {
+        slice = await interceptor.readSpilledResult(id, offset ?? 0, requested);
+      } catch (err: any) {
+        return {
+          content: [{ type: "text" as const, text: `Error reading result: ${err.message}` }],
+          isError: true,
+        };
+      }
+      if (!slice) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text:
+                `Unknown result id "${id}". Ids come from truncation notes in this session ` +
+                `(e.g. "result id: r2") and don't survive a restart.`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      const end = slice.offset + slice.text.length;
+      const more = end < slice.totalChars ? ` — more available (continue at offset ${end})` : "";
+      const header = `[result ${id}: chars ${slice.offset.toLocaleString()}–${end.toLocaleString()} of ${slice.totalChars.toLocaleString()}${more}]`;
+      return { content: [{ type: "text" as const, text: `${header}\n${slice.text}` }] };
     },
   );
 

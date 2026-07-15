@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ResponseInterceptor } from "../src/interceptor.js";
 import { mockTarget } from "./helpers.js";
+import { readFileSync } from "node:fs";
 
 // Helper: create a slow mock target that takes N ms to respond
 function slowMockTarget(ms: number, response: Record<string, unknown>) {
@@ -274,8 +275,8 @@ describe("text truncation", () => {
     const text = (result as any).content[0].text;
 
     expect(text.length).toBeLessThan(bigText.length);
-    expect(text).toContain("... (truncated,");
-    expect(text).toContain("chars total)");
+    expect(text).toContain("... [truncated at 50,000 of");
+    expect(text).toContain("result id:");
     expect(text.startsWith("The quick brown fox.")).toBe(true);
   });
 
@@ -303,7 +304,7 @@ describe("text truncation", () => {
     });
 
     const result = await interceptor.callTool(target, "test", {});
-    expect((result as any).content[0].text).toContain("120,340 chars total");
+    expect((result as any).content[0].text).toContain("of 120,340 chars");
   });
 });
 
@@ -381,6 +382,36 @@ describe("callToolWithMetadata", () => {
     expect(metadata.imagesSaved).toBe(0);
   });
 
+  it("spills the full oversized text to disk and makes it navigable", async () => {
+    const interceptor = new ResponseInterceptor({ outDir: testOutDir, maxTextLength: 100 });
+    const bigText = "0123456789".repeat(50); // 500 chars
+    const target = mockTarget({ content: [{ type: "text", text: bigText }] });
+
+    const { result, metadata } = await interceptor.callToolWithMetadata(target, "big", {});
+    const text = (result as any).content[0].text as string;
+
+    // Head preserved, note carries a result id and a real file path.
+    expect(text.startsWith(bigText.slice(0, 100))).toBe(true);
+    expect(metadata.truncated).toBe(true);
+    expect(metadata.resultsSaved).toBe(1);
+    const id = text.match(/result id: (r\d+)/)?.[1];
+    expect(id).toBeTruthy();
+    const filepath = text.match(/saved to (\S+) \(result id/)?.[1];
+    expect(filepath).toBeTruthy();
+    expect(readFileSync(filepath!, "utf8")).toBe(bigText);
+
+    // read_result-style navigation: slices by offset/length.
+    const middle = await interceptor.readSpilledResult(id!, 100, 50);
+    expect(middle?.text).toBe(bigText.slice(100, 150));
+    expect(middle?.totalChars).toBe(500);
+
+    const tail = await interceptor.readSpilledResult(id!, 450, 999);
+    expect(tail?.text).toBe(bigText.slice(450));
+
+    // Unknown ids are undefined (per-session, not arbitrary paths).
+    expect(await interceptor.readSpilledResult("r999")).toBeUndefined();
+  });
+
   it("tracks truncation in metadata", async () => {
     const interceptor = new ResponseInterceptor({ outDir: testOutDir, maxTextLength: 100 });
     const bigText = "Hello world. ".repeat(50); // ~650 chars
@@ -416,7 +447,7 @@ describe("resource and prompt interception", () => {
     const result = (await interceptor.readResource(target, { uri: "docs://test" })) as any;
     expect(result.contents).toHaveLength(3);
     expect(result.contents[0].text).toBe("hello");
-    expect(result.contents[1].text).toContain("(truncated");
+    expect(result.contents[1].text).toContain("truncated");
     expect(result.contents[2].text).toMatch(/\[Image saved to/);
     expect(result.contents[2].blob).toBeUndefined(); // saved to disk
   });
@@ -437,7 +468,7 @@ describe("resource and prompt interception", () => {
 
     const result = (await interceptor.getPrompt(target, { name: "test-prompt" })) as any;
     expect(result.messages[0].content.text).toBe("short");
-    expect(result.messages[1].content[0].text).toContain("(truncated");
+    expect(result.messages[1].content[0].text).toContain("truncated");
   });
 });
 
@@ -453,7 +484,7 @@ describe("custom limits and media threshold", () => {
     });
 
     const result = await interceptor.callTool(target, "echo", {}, undefined, 5);
-    expect((result as any).content[0].text).toContain("(truncated");
+    expect((result as any).content[0].text).toContain("truncated");
   });
 
   it("allows keeping media inline when below threshold", async () => {

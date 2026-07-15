@@ -36,6 +36,8 @@ export interface InterceptionMetadata {
   truncated: boolean;
   imagesSaved: number;
   audioSaved: number;
+  /** Oversized text results spilled to disk (navigable via read_result). */
+  resultsSaved: number;
   originalSizeBytes: number;
   /** Findings surfaced by interceptor plugins while processing this result. */
   findings: PluginFinding[];
@@ -80,7 +82,14 @@ export class ResponseInterceptor {
 
   /** Empty interception metadata (used for replayed results). */
   private _emptyMetadata(): InterceptionMetadata {
-    return { truncated: false, imagesSaved: 0, audioSaved: 0, originalSizeBytes: 0, findings: [] };
+    return {
+      truncated: false,
+      imagesSaved: 0,
+      audioSaved: 0,
+      resultsSaved: 0,
+      originalSizeBytes: 0,
+      findings: [],
+    };
   }
 
   /**
@@ -192,6 +201,7 @@ export class ResponseInterceptor {
       truncated: false,
       imagesSaved: 0,
       audioSaved: 0,
+      resultsSaved: 0,
       originalSizeBytes: 0,
       findings: [],
     };
@@ -244,6 +254,7 @@ export class ResponseInterceptor {
       truncated: false,
       imagesSaved: 0,
       audioSaved: 0,
+      resultsSaved: 0,
       originalSizeBytes: 0,
       findings: [],
     };
@@ -319,6 +330,7 @@ export class ResponseInterceptor {
       truncated: false,
       imagesSaved: 0,
       audioSaved: 0,
+      resultsSaved: 0,
       originalSizeBytes: 0,
       findings: [],
     };
@@ -417,17 +429,11 @@ export class ResponseInterceptor {
       return this._saveMedia(item.text.trim(), "image/png", "image");
     }
 
-    // Case 4: Truncate oversized text
+    // Case 4: Oversized text — spill the full payload to disk and return a
+    // navigable head instead of destroying the tail.
     const limit = maxTextLength ?? this.maxTextLength;
     if (item.type === "text" && item.text && limit !== -1 && item.text.length > limit) {
-      const totalLength = item.text.length;
-      metadata.truncated = true;
-      return {
-        ...item,
-        text:
-          item.text.slice(0, limit) +
-          `\n... (truncated, ${totalLength.toLocaleString()} chars total)`,
-      };
+      return { ...item, text: await this._spillOversizedText(item.text, metadata, limit) };
     }
 
     // Default: pass through unchanged (resource, resource_link, etc.)
@@ -466,17 +472,80 @@ export class ResponseInterceptor {
 
     const limit = maxTextLength ?? this.maxTextLength;
     if (item.text && limit !== -1 && item.text.length > limit) {
-      const totalLength = item.text.length;
-      metadata.truncated = true;
-      return {
-        ...item,
-        text:
-          item.text.slice(0, limit) +
-          `\n... (truncated, ${totalLength.toLocaleString()} chars total)`,
-      };
+      return { ...item, text: await this._spillOversizedText(item.text, metadata, limit) };
     }
 
     return item;
+  }
+
+  // ─── Oversized-result spill ("save to disk, return a handle") ─────────────
+
+  /** Spilled results by id, so read_result can navigate them without exposing arbitrary paths. */
+  private readonly _spilledResults = new Map<string, { filepath: string; totalChars: number }>();
+  private spillCounter = 0;
+
+  /**
+   * Write the full oversized text to outDir (the same move the interceptor
+   * already makes for media) and return the head plus a note carrying a result
+   * id and the file path. Truncation becomes navigation: the consumer fetches
+   * more via `read_result` (agent mode) or by reading the file directly.
+   * Falls back to plain truncation if the write fails — never breaks the call.
+   */
+  private async _spillOversizedText(
+    text: string,
+    metadata: InterceptionMetadata,
+    limit: number,
+  ): Promise<string> {
+    metadata.truncated = true;
+    const head = text.slice(0, limit);
+    const totalChars = text.length;
+
+    try {
+      await mkdir(this.outDir, { recursive: true });
+      const trimmed = text.trimStart();
+      const ext = trimmed.startsWith("{") || trimmed.startsWith("[") ? ".json" : ".txt";
+      const filename = `result_${Date.now()}_${this.fileCounter++}${ext}`;
+      const filepath = join(this.outDir, filename);
+      await writeFile(filepath, text, "utf8");
+
+      const id = `r${++this.spillCounter}`;
+      this._spilledResults.set(id, { filepath, totalChars });
+      metadata.resultsSaved++;
+
+      return (
+        head +
+        `\n... [truncated at ${limit.toLocaleString()} of ${totalChars.toLocaleString()} chars — ` +
+        `full result saved to ${filepath} (result id: ${id}). ` +
+        `Use read_result with this id, or read the file, to fetch the rest.]`
+      );
+    } catch {
+      // Disk unavailable — degrade to the old destructive truncation.
+      return head + `\n... (truncated, ${totalChars.toLocaleString()} chars total)`;
+    }
+  }
+
+  /**
+   * Read a slice of a previously spilled result by id. Returns undefined for
+   * unknown ids (they are per-session). Only files this interceptor wrote are
+   * reachable — ids, not paths, so this is not an arbitrary-file-read.
+   */
+  async readSpilledResult(
+    id: string,
+    offsetChars = 0,
+    maxChars = DEFAULT_MAX_TEXT_LENGTH,
+  ): Promise<{ text: string; totalChars: number; offset: number; filepath: string } | undefined> {
+    const entry = this._spilledResults.get(id);
+    if (!entry) return undefined;
+    const { readFile } = await import("node:fs/promises");
+    const full = await readFile(entry.filepath, "utf8");
+    const offset = Math.max(0, Math.floor(offsetChars));
+    const length = Math.max(1, Math.floor(maxChars));
+    return {
+      text: full.slice(offset, offset + length),
+      totalChars: full.length,
+      offset,
+      filepath: entry.filepath,
+    };
   }
 
   /**

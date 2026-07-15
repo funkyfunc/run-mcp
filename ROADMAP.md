@@ -52,7 +52,7 @@ Each of these is used directly in the local dev loop:
 
 | Surface | Who touches it |
 |---|---|
-| **Agent MCP server** (10 tools: connect/call/list/find/status/stderr/validate/discover/search) | The agent developing a server |
+| **Agent MCP server** (11 tools: connect/call/list/find/read_result/status/stderr/validate/discover/search) | The agent developing a server |
 | **REPL** (commands, explore menu, wizard, watch mode `-w` + reconnect diff) | The human developing a server. *Maintenance mode* — keep working, no structural investment |
 | **Headless CLI** (`call`/`list-tools`/`describe`/…, sessions, script mode, `$LAST`, `@expect-error`) | CI and shell workflows |
 | **Interceptor** (timeouts, media→disk, truncation, plugin hooks) | Protects the consuming agent's context on every call |
@@ -155,7 +155,7 @@ npm run start -- -- node --import tsx tests/fixtures/mock-server.ts
    must skip the call) — it stays built into the interceptor.
 6. **Interceptor findings surface only via `include_metadata`/`processToolList`** —
    plain `callTool` discards them.
-7. **`tests/server.test.ts` asserts exact tool counts** (10 agent tools;
+7. **`tests/server.test.ts` asserts exact tool counts** (11 agent tools;
    mock server "Tools Count: 15"). Adding/removing tools means updating those
    assertions, the `--help` agent-tools list, and AGENTS.md.
 8. **`@microsoft/mxc-sdk`** is a string-indirected dynamic import

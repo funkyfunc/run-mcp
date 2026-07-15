@@ -168,7 +168,8 @@ describe("server: tool discovery", () => {
     expect(names).toContain("list_available_mcp_servers");
     expect(names).toContain("validate_mcp_server");
     expect(names).toContain("search_all_local_mcp_servers");
-    expect(names).toHaveLength(10);
+    expect(names).toContain("read_result");
+    expect(names).toHaveLength(11);
   }, 15_000);
 
   it("tools have descriptions", async () => {
@@ -854,7 +855,42 @@ describe("server: advanced features and protocol compliance", () => {
     });
 
     const text = getText(result);
-    expect(text).toContain("(truncated, 100 chars total)");
+    expect(text).toContain("[truncated at 10 of 100 chars");
+  }, 20_000);
+
+  it("read_result pages through a spilled oversized result", async () => {
+    const c = await startRunMcpServer();
+    await connectToMockServer(c);
+
+    const truncated = await c.callTool({
+      name: "call_mcp_primitive",
+      arguments: {
+        type: "tool",
+        name: "big_response",
+        arguments: { size: 200 },
+        max_text_length: 50,
+      },
+    });
+    const note = getText(truncated);
+    const id = note.match(/result id: (r\d+)/)?.[1];
+    expect(id).toBeTruthy();
+
+    // Fetch the rest via the handle — no filesystem access needed.
+    const page = await c.callTool({
+      name: "read_result",
+      arguments: { id, offset: 50, length: 100 },
+    });
+    const pageText = getText(page);
+    expect(pageText).toContain(`[result ${id}: chars 50–150 of 200`);
+    expect(pageText).toContain("more available (continue at offset 150)");
+
+    // Unknown ids get a coaching error.
+    const missing: any = await c.callTool({
+      name: "read_result",
+      arguments: { id: "r999" },
+    });
+    expect(missing.isError).toBe(true);
+    expect(getText(missing)).toContain('Unknown result id "r999"');
   }, 20_000);
 
   it("normalizes 'args' to 'arguments' in call_mcp_primitive", async () => {
