@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-07-14
+
+### Added
+
+- **Result spill-to-disk + `read_result`**: oversized text responses are saved in full to the output directory (like images/audio); the truncated reply keeps the head plus a per-session result id and file path, and the new `read_result` agent tool pages through the full payload by id — truncation is now navigable instead of destructive
+- **Interceptor plugin framework**: ordered middleware hooks (`onToolsList`, `onToolResult`, `onResourceResult`, `onPromptResult`) with bundled plugins — tool-poisoning scanner (default on, `--no-scan-tools` to disable), secret/DLP redaction (`--redact-secrets`, `--redact-emails`), and lossless output compression (`--compress-output`, `--compress-aggressive`)
+- **Record & replay cassettes** ("VCR for MCP"): `--cassette <file>` / `--record` / `--replay` on headless subcommands; replay mode runs fully offline without spawning the target
+- **`find_tools` agent tool and `find` REPL command**: BM25 relevance-ranked, compact tool discovery that avoids loading full catalogs into context
+- **Streamable HTTP transport** for `http(s)` targets with automatic legacy-SSE fallback (`--transport auto|http|sse`)
+- **Compressing proxy mode** (`run-mcp proxy`): fronts one backend with a schema-on-demand surface (`get_tool_schema` + `invoke_tool`, compression levels `-c low|medium|high|max`) or a whole fleet (`--config` / `--multi-server`) with a discovery surface (`list_servers`, cross-server `find_tools`, namespaced invocation) — including per-backend tool-list caching, pagination-complete catalogs, backend auto-reconnect with honest "backend down" errors, and sampling/elicitation forwarding
+- **JSONL audit logging** (`--audit-log <file>`): append-only trail of every MCP request/response
+- **Validator: static `outputSchema` audits** — flags tools whose declared output schema isn't compilable JSON Schema or requires properties it never defines
+- `validate` headless subcommand with `--deep` protocol/schema compliance checks and `--json` output
+
+### Changed
+
+- Faster CLI startup: schema validators compile lazily instead of on every invocation
+- `call_mcp_primitive` pre-call validation uses a cached tools list (invalidated by `tools/list_changed`), removing an extra round trip per tool call
+- Cassette writes are debounced with an exit-time flush instead of rewriting the file per recording
+- SIGINT/SIGTERM shutdown waits (bounded) for child-process tree-kills to land
+
+### Fixed
+
+- Interceptor timeout timers are cleared when calls settle (previously leaked one live timer per call)
+- `TargetManager` instances are released from the cleanup registry on close; in-memory history caps oversized results
+- Server-name prefixes can no longer contain the `__` namespace separator (proxy routing)
+- Catalog summaries no longer truncate at abbreviations ("e.g."), version numbers, or URLs
+- Custom environment variables are threaded into the child process instead of mutating the parent environment
+
+### Security
+
+- Sandbox profile paths are escaped before interpolation into Seatbelt profiles; unsafe Docker mount paths fail closed
+- The network audit proxy now enforces the network policy (403 / refused CONNECT) instead of only logging
+- Server-sourced text printed by the REPL is sanitized against terminal escape injection (OSC/ANSI)
+
 ## [1.7.5] - 2026-07-08
 
 ### Fixed

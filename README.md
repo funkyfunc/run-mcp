@@ -14,7 +14,7 @@ To protect the CLI and parent agents from large payloads, `run-mcp` automaticall
 
 - **Saving images to disk** instead of passing multi-MB base64 strings through
 - **Enforcing timeouts** so a hung tool call doesn't block forever
-- **Truncating huge text** responses to protect context budgets
+- **Spilling huge text to disk**: oversized responses are saved in full, and the truncated reply carries a result id — page through the rest with the `read_result` tool (or just open the file)
 
 For humans, the REPL mode provides a quick way to test any MCP server without writing client code.
 
@@ -390,7 +390,7 @@ processed through the interceptor pipeline:
 | **Audio extraction** | `type: "audio"` responses with base64 data are saved to disk. Replaced with `[Audio saved to /path/to/audio.wav (12KB)]` |
 | **Base64 detection** | Text responses that are entirely base64-encoded (1000+ chars) are also saved as images                                   |
 | **Timeouts**         | Tool calls are wrapped in a configurable timeout (default 5 minutes, use `--timeout` to change)                          |
-| **Truncation**       | Text responses exceeding the limit (default 50K chars, use `--max-text` to change) are truncated                         |
+| **Truncation**       | Text exceeding the limit (default 50K chars, `--max-text` to change) is saved in full to disk; the reply keeps the head plus a result id, navigable via the `read_result` tool |
 
 ## Sandboxing & Outbound Data Exfiltration Protection
 

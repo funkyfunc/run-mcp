@@ -83,8 +83,8 @@ All three interfaces feed into the same interception pipeline. See `README.md` f
 | ----------------------- | ----------------------- | -------------- |
 | **CLI Entry**           | `src/index.ts`          | Commander-based CLI. Routes to REPL (target command provided), headless subcommands (`call`, `list-tools`, etc.), or Agent Server (no args / `--mcp`). Registers headless subcommands via `registerHeadlessCommand()`. |
 | **TargetManager**       | `src/target-manager.ts` | Spawns the target MCP server, manages MCP Client connection (stdio, or for http(s) URLs: Streamable HTTP with SSE fallback — `transport` option / `--transport`), sandbox enforcement (Seatbelt, bwrap, Docker, MXC), auto-reconnect with loop protection, captures stderr, tracks process lifecycle. |
-| **ResponseInterceptor** | `src/interceptor.ts`    | Wraps `callTool` with `Promise.race` timeouts, extracts base64 images/audio to disk, detects raw base64 text blobs, truncates oversized responses. Configurable via `InterceptorOptions`. |
-| **REPL**                | `src/repl/`             | Interactive readline interface across 7 files: `commands.ts` (command routing), `completer.ts` (tab completion), `history.ts` (persistent history), `index.ts` (entry point), `state.ts` (shared state + `KNOWN_COMMANDS`), `ui.ts` (formatting/output), `wizard.ts` (interactive arg scaffolding). `src/repl.ts` is a re-export barrel. |
+| **ResponseInterceptor** | `src/interceptor.ts`    | Wraps `callTool` with timeouts (timers cleared on settle), extracts base64 images/audio to disk, detects raw base64 text blobs, and spills oversized text to disk (full payload saved; reply keeps the head + a per-session result id, navigable via `read_result` / `readSpilledResult()`). Configurable via `InterceptorOptions`. |
+| **REPL**                | `src/repl/`             | Interactive readline interface across 8 files: `commands.ts` (command routing), `completer.ts` (tab completion), `history.ts` (persistent history), `index.ts` (entry point), `state.ts` (shared state + `KNOWN_COMMANDS`), `ui.ts` (formatting/output), `wizard.ts` (interactive arg scaffolding), `approval.ts` (pure sampling/elicitation approval decisions — unit-tested). `src/repl.ts` is a re-export barrel. |
 | **Agent Server**        | `src/server.ts`         | MCP Server exposing 11 tools (`connect_to_mcp`, `call_mcp_primitive`, `list_mcp_primitives`, `find_tools`, `read_result`, `disconnect_from_mcp`, `mcp_server_status`, `get_mcp_server_stderr`, `list_available_mcp_servers`, `validate_mcp_server`, `search_all_local_mcp_servers`) for dynamic MCP server testing. Uses `registerTool()` with Zod schemas. |
 | **Headless**            | `src/headless.ts`       | Single-shot executor for CLI subcommands. Connect → execute one operation → output JSON to stdout → exit. All status/progress to stderr for pipe-clean output. |
 | **Settings**            | `src/settings.ts`       | Hierarchical sandbox policy loader (managed → user → project → local scopes). `SandboxPolicy` class for file/network permission evaluation, path resolution (`~`, `$HOME`), and Seatbelt profile generation. |
@@ -101,6 +101,7 @@ All three interfaces feed into the same interception pipeline. See `README.md` f
 | **Compression**         | `src/compression.ts`    | Pure helpers for the compressing proxy: format a tool as `<tool>name(args): summary</tool>` per compression level (low/medium/high/max), build the `get_tool_schema` catalog + schema response, flatten MCP results to text, coerce JSON-string args, tool filters, tool-name namespacing (`server__tool`). |
 | **Ranking**             | `src/ranking.ts`        | BM25 relevance ranking (`rankTools`) over tool name + description + arg names/descriptions (Anthropic's tool-search fields), name-weighted. Powers `find_tools` in both the agent server and the multiplexing proxy. Pure/deterministic, no embedding model. |
 | **TargetPool**          | `src/target-pool.ts`    | Manages multiple backend `TargetManager`s for the multiplexing proxy: spawns from config, connects eagerly with failure isolation, assigns collision-free per-server prefixes, resolves prefix→backend. |
+| **ToolListCache**       | `src/tool-cache.ts`     | Cached backend tool lists for the proxy: invalidated by `tools/list_changed`, TTL fallback, coalesced fetches, stale-on-error. |
 | **Proxy**               | `src/proxy.ts`          | `run-mcp proxy` — the transparent compressing proxy. Single backend (B1): `get_tool_schema` + `invoke_tool` (+ `list_tools` at max). Multiple backends (B2): a Dynamic-Context-Loading surface (`list_servers`, `find_tools`, `list_server_tools`, namespaced `get_tool_schema`/`invoke_tool`). Routes calls through the interceptor. |
 
 ### Auto-Reconnect Logic (TargetManager)
@@ -128,7 +129,7 @@ If an AI Agent is trying to provide parameters to a mock tool and accidentally l
 ### TypeScript & ESM
 
 - **Pure ESM** — `"type": "module"` in package.json. All imports use `.js` extensions (TypeScript resolves them to `.ts` at compile time).
-- **tsup for bundling** — Produces a single `dist/index.js` (~360KB; ajv, ajv-formats, and @inquirer/prompts are bundled in, while `@modelcontextprotocol/sdk`, `commander`, `picocolors`, and `zod` stay external). No source maps in dist.
+- **tsup for bundling** — Produces a single `dist/index.js` (~424KB; ajv, ajv-formats, and @inquirer/prompts are bundled in, while `@modelcontextprotocol/sdk`, `commander`, `picocolors`, and `zod` stay external). No source maps in dist.
 - **tsc for type-checking only** — `tsconfig.json` has `noEmit: true`. Run `npm run typecheck`.
 - **Strict mode** — `strict: true` in tsconfig. No implicit any.
 
@@ -317,6 +318,7 @@ Tests run **sequentially** (`fileParallelism: false` in vitest.config.ts) becaus
 | `error_tool`    | Returns `isError: true` (error passthrough testing)                             |
 | `request_sampling` | Calls the client's `sampling/createMessage` (tests sampling forwarding)      |
 | `request_elicitation` | Calls the client's `elicitation/create` (tests elicitation forwarding)    |
+| `json_data`     | Returns pretty-printed JSON with declared `outputSchema` + `structuredContent` (compression + structured-output testing) |
 
 **Resources:**
 
@@ -374,7 +376,7 @@ The package is designed to work with `npx run-mcp`:
 - `"bin": { "run-mcp": "dist/index.js" }` — the shebang (`#!/usr/bin/env node`) is preserved by tsup.
 - `"files": ["dist"]` — only `dist/index.js` is published (no source, no tests, no source maps).
 - `"prepublishOnly": "tsup"` — auto-builds before `npm publish`. (Note: unlike `build`, this does not refresh the README help tables — run `npm run build` before publishing if CLI help changed.)
-- Bundled `dist/index.js` is ~360KB (ajv + @inquirer/prompts bundled); compressed tarball is a few tens of KB.
+- Bundled `dist/index.js` is ~424KB (ajv + @inquirer/prompts bundled); compressed tarball is a few tens of KB.
 
 ### MCP SDK Usage
 
