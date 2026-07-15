@@ -75,7 +75,9 @@ describe("Protocol Validator", () => {
         (c) => c.name === "tool_output_schema_validation" && c.status === "FAIL",
       );
       expect(
-        outputChecks.some((c) => c.message?.includes('"broken_schema" outputSchema is not a valid')),
+        outputChecks.some((c) =>
+          c.message?.includes('"broken_schema" outputSchema is not a valid'),
+        ),
       ).toBe(true);
       expect(
         outputChecks.some(

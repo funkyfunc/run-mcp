@@ -22,6 +22,7 @@ import {
 } from "./state.js";
 import { replHistory, loadHistory, appendToHistoryFile } from "./history.js";
 import { loadWizardDefaults } from "./wizard.js";
+import { elicitationDecisionFor, samplingDecisionFor } from "./approval.js";
 import { printBanner, sanitizeServerText } from "./ui.js";
 import { completer, refreshCaches, resetTabCycle } from "./completer.js";
 import { handleCommand, mainMenuLoop, AbortFlowError, question } from "./commands.js";
@@ -270,21 +271,11 @@ export async function startRepl(targetCommand: string[], opts: ReplOptions): Pro
       if (activeRl) {
         try {
           const answer = await question(activeRl, `  ${pc.bold("Approve? [y/N/text]:")} `);
-          const trimmed = answer.trim().toLowerCase();
-          if (trimmed === "y" || trimmed === "yes") {
-            respond({
-              model: "user-approved",
-              role: "assistant",
-              content: { type: "text", text: "Approved by user." },
-            });
-          } else if (trimmed === "n" || trimmed === "no" || trimmed === "") {
-            rejectFn(new Error("Sampling request rejected by user"));
+          const decision = samplingDecisionFor(answer);
+          if (decision.kind === "respond") {
+            respond(decision.result);
           } else {
-            respond({
-              model: "user-provided",
-              role: "assistant",
-              content: { type: "text", text: answer.trim() },
-            });
+            rejectFn(new Error(decision.reason));
           }
         } catch (err) {
           if (err instanceof AbortFlowError) {
@@ -312,16 +303,7 @@ export async function startRepl(targetCommand: string[], opts: ReplOptions): Pro
             activeRl,
             `  ${pc.bold("Your response (empty to decline):")} `,
           );
-          if (answer.trim() === "") {
-            respond({ action: "decline" });
-          } else {
-            try {
-              const parsed = JSON.parse(answer.trim());
-              respond({ action: "accept", content: parsed });
-            } catch {
-              respond({ action: "accept", content: { value: answer.trim() } });
-            }
-          }
+          respond(elicitationDecisionFor(answer));
         } catch (err) {
           if (err instanceof AbortFlowError) {
             respond({ action: "decline" });

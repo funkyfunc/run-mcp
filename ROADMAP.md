@@ -96,28 +96,32 @@ asking for it. Demand reopens it; nothing else does.
 
 ## 5. The work list (short, mission-anchored)
 
-Bug fixes and dev-loop polish always qualify. Beyond that, only three items
-are scheduled:
+Bug fixes and dev-loop polish always qualify. The three scheduled items are
+**✅ DONE** (July 2026):
 
-1. **Result spill-to-disk + `read_result`.** Extend the interceptor's existing
-   media pattern ("save to disk, return a handle") to oversized text/JSON
-   results: write the full payload to `outDir`, return the head + item count +
-   a handle; a `read_result(handle, range)` tool (agent server) / REPL command
-   lets the consumer navigate instead of losing the tail to truncation. This is
-   the original mission — protecting the agent's context while it tests verbose
-   servers — and today's truncation is destructive where this is navigable.
-2. **`outputSchema` conformance checking** in the validator (and surfaced in
-   `validate_mcp_server --deep`): flag tools that declare an `outputSchema`
-   whose `structuredContent` doesn't validate against it. Structured output is
-   now mainstream spec surface; a server dev has no other local way to catch
-   this.
-3. **Extract the REPL sampling/elicitation approval logic** into a testable
-   module (`repl/index.ts` inline closures today). It's protocol behavior with
-   zero coverage — the one exception to REPL maintenance mode.
+1. **Result spill-to-disk + `read_result` ✅** — oversized text results are
+   written in full to `outDir` (like media); the truncation note carries a
+   per-session result id + file path; the agent server's `read_result(id,
+   offset, length)` tool pages through the payload without filesystem access
+   (humans just open the file — the path is in the note). Interceptor:
+   `_spillOversizedText` / `readSpilledResult`; falls back to plain truncation
+   if the disk write fails.
+2. **`outputSchema` static audits in the validator ✅** — tools declaring an
+   `outputSchema` get it checked for compilable JSON Schema (dialect-agnostic:
+   `$schema` is stripped because the TS SDK stamps draft-07) and for `required`
+   props actually defined under `properties`. Runtime conformance of
+   `structuredContent` is already enforced by the SDK client at call time —
+   run-mcp surfaces those as call errors; the static audit catches broken
+   schemas before any call. The mock server's `json_data` now declares
+   structured output.
+3. **REPL approval logic extracted ✅** — `src/repl/approval.ts`
+   (`samplingDecisionFor` / `elicitationDecisionFor`) holds the pure
+   answer→MCP-payload mapping, unit-tested in `tests/repl-approval.test.ts`.
 
-Candidate, unscheduled (build only if pulled): an **eval harness** ("does my
-server actually work with a model" — scripted agent loop + cassettes, graded).
-It fits the mission but is large; wait for the need to be felt in real use.
+No further work is scheduled. Candidate, unscheduled (build only if pulled):
+an **eval harness** ("does my server actually work with a model" — scripted
+agent loop + cassettes, graded). It fits the mission but is large; wait for
+the need to be felt in real use.
 
 ---
 
