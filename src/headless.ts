@@ -17,12 +17,7 @@ import { ResponseInterceptor } from "./interceptor.js";
 import { parseHttpieArgs } from "./parsing.js";
 import { TargetManager } from "./target-manager.js";
 import { Cassette, type CassetteMode } from "./cassette.js";
-import {
-  type InterceptorPlugin,
-  type PluginFinding,
-  outputCompressionPlugin,
-  toolPoisoningScanner,
-} from "./plugins.js";
+import { type InterceptorPlugin, outputCompressionPlugin } from "./plugins.js";
 
 /** Default timeout for headless tool calls (30 seconds). */
 const DEFAULT_HEADLESS_TIMEOUT_MS = 30_000;
@@ -32,30 +27,13 @@ export interface HeadlessOptions {
   timeoutMs?: number;
   raw?: boolean;
   showStderr?: boolean;
-  sandbox?: "auto" | "docker" | "native" | "audit" | "none";
-  allowRead?: string[];
-  allowWrite?: string[];
-  allowNet?: string[];
-  denyRead?: string[];
-  denyWrite?: string[];
-  denyNet?: string[];
   cassettePath?: string;
   cassetteMode?: CassetteMode;
   transport?: "auto" | "http" | "sse";
-  /** Scan tools/list metadata for tool-poisoning (default: true). */
-  scanTools?: boolean;
   /** Compress verbose output text (lossless JSON minify by default). */
   compressOutput?: boolean;
   /** When compressing, also collapse blank lines / trailing whitespace (lossy). */
   compressAggressive?: boolean;
-}
-
-/** Write scanner findings to stderr so stdout stays pipe-clean JSON. */
-function reportFindings(findings: PluginFinding[]): void {
-  for (const f of findings) {
-    const loc = f.location ? ` [${f.location}]` : "";
-    process.stderr.write(`⚠️  tool-safety (${f.severity})${loc}: ${f.message}\n`);
-  }
 }
 
 export type HeadlessOperation =
@@ -80,13 +58,6 @@ export async function runHeadless(
 ): Promise<void> {
   const [command, ...args] = targetCommand;
   const target = new TargetManager(command, args, {
-    sandbox: opts.sandbox,
-    allowRead: opts.allowRead,
-    allowWrite: opts.allowWrite,
-    allowNet: opts.allowNet,
-    denyRead: opts.denyRead,
-    denyWrite: opts.denyWrite,
-    denyNet: opts.denyNet,
     transport: opts.transport,
   });
   const cassette = opts.cassettePath
@@ -98,7 +69,6 @@ export async function runHeadless(
     cassette,
     plugins: (() => {
       const p: InterceptorPlugin[] = [];
-      if (opts.scanTools !== false) p.push(toolPoisoningScanner());
       if (opts.compressOutput)
         p.push(outputCompressionPlugin({ aggressive: opts.compressAggressive }));
       return p;
@@ -212,9 +182,7 @@ export async function executeOperation(
 
     case "list-tools": {
       const { tools } = await target.listTools();
-      // Scan for tool-poisoning; strip invisible chars, report findings to stderr.
-      const { tools: scanned, findings } = await interceptor.processToolList(tools as any);
-      reportFindings(findings);
+      const { tools: scanned } = await interceptor.processToolList(tools as any);
       return { result: scanned, hasError: false };
     }
 
@@ -235,7 +203,7 @@ export async function executeOperation(
 
     case "describe": {
       const { tools } = await target.listTools();
-      const { tools: scanned, findings } = await interceptor.processToolList(tools as any);
+      const { tools: scanned } = await interceptor.processToolList(tools as any);
       const tool = (scanned as any[]).find((t) => t.name === operation.tool);
       if (!tool) {
         const available = (scanned as any[]).map((t) => t.name).join(", ");
@@ -244,8 +212,6 @@ export async function executeOperation(
         );
         process.exit(64);
       }
-      // Only report findings relevant to the described tool.
-      reportFindings(findings.filter((f) => !f.location || f.location.startsWith(operation.tool)));
       return { result: tool, hasError: false };
     }
 

@@ -3,13 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { discoverServers } from "./config-scanner.js";
 import { type InterceptionMetadata, ResponseInterceptor } from "./interceptor.js";
-import {
-  type InterceptorPlugin,
-  type PluginFinding,
-  outputCompressionPlugin,
-  secretRedactionPlugin,
-  toolPoisoningScanner,
-} from "./plugins.js";
+import { type InterceptorPlugin, outputCompressionPlugin } from "./plugins.js";
 import { suggestCommand } from "./parsing.js";
 import { rankTools } from "./ranking.js";
 import {
@@ -19,29 +13,13 @@ import {
 } from "./snapshot.js";
 import { TargetManager } from "./target-manager.js";
 import { validateProtocol } from "./validator.js";
-import { AuditLogger } from "./audit.js";
 
 export interface ServerOptions {
   outDir?: string;
   timeoutMs?: number;
   maxTextLength?: number;
   mediaThresholdKb?: number;
-  sandbox?: "auto" | "docker" | "native" | "audit" | "none";
-  allowRead?: string[];
-  allowWrite?: string[];
-  allowNet?: string[];
-  denyRead?: string[];
-  denyWrite?: string[];
-  denyNet?: string[];
   scan?: boolean;
-  /** Scan tools/list metadata for tool-poisoning (default: true). */
-  scanTools?: boolean;
-  /** Redact secrets from tool/resource/prompt result content (default: false). */
-  redactSecrets?: boolean;
-  /** When redacting, also redact email addresses (PII). */
-  redactEmails?: boolean;
-  /** If set, append a JSONL audit trail of every MCP request/response here. */
-  auditLogPath?: string;
   /** Transport for http(s) targets: auto (default), http (Streamable), or sse. */
   transport?: "auto" | "http" | "sse";
   /** Compress verbose output text (lossless JSON minify by default). */
@@ -85,40 +63,18 @@ export async function startServer(opts: ServerOptions): Promise<void> {
    */
   let cachedToolList: any[] | null = null;
 
-  const auditLogger = opts.auditLogPath ? new AuditLogger(opts.auditLogPath) : null;
-
   const interceptor = new ResponseInterceptor({
     outDir: opts.outDir,
     defaultTimeoutMs: opts.timeoutMs,
     maxTextLength: opts.maxTextLength,
     mediaThresholdKb: opts.mediaThresholdKb,
-    // Tool-poisoning defense is on by default: the agent's context is exactly
-    // what this attack targets. Opt out with scanTools: false. Secret redaction
-    // is opt-in (it mutates result content).
     plugins: (() => {
       const p: InterceptorPlugin[] = [];
-      if (opts.scanTools !== false) p.push(toolPoisoningScanner());
-      if (opts.redactSecrets) p.push(secretRedactionPlugin({ redactEmails: opts.redactEmails }));
-      // Compression runs last so it minifies already-redacted text.
       if (opts.compressOutput)
         p.push(outputCompressionPlugin({ aggressive: opts.compressAggressive }));
       return p;
     })(),
   });
-
-  /** Format plugin findings as a warning block appended to a tool listing. */
-  function formatFindings(findings: PluginFinding[]): string[] {
-    if (findings.length === 0) return [];
-    const lines = ["", "--- ⚠️ Tool Safety Findings ---"];
-    for (const f of findings) {
-      const loc = f.location ? ` [${f.location}]` : "";
-      lines.push(`  (${f.severity})${loc} ${f.message}`);
-    }
-    lines.push(
-      "Note: invisible/bidi characters were stripped automatically; review flagged tools before use.",
-    );
-    return lines;
-  }
 
   const mcpServer = new McpServer(
     { name: "run-mcp", version: PKG_VERSION },
@@ -134,18 +90,6 @@ export async function startServer(opts: ServerOptions): Promise<void> {
 
   /** Set up stderr and disconnect listeners on the target. */
   function setupTargetListeners(t: TargetManager): void {
-    if (auditLogger) {
-      t.on("history", (rec: any) => {
-        auditLogger.log("request", {
-          method: rec.method,
-          params: rec.params,
-          durationMs: rec.durationMs,
-          isError: rec.error !== undefined,
-          error: rec.error,
-        });
-      });
-    }
-
     t.on("stderr", (text) => {
       mcpServer
         .sendLoggingMessage({
@@ -246,13 +190,6 @@ export async function startServer(opts: ServerOptions): Promise<void> {
     cachedToolList = null;
 
     target = new TargetManager(cmdToUse, argsToUse ?? [], {
-      sandbox: opts.sandbox,
-      allowRead: opts.allowRead,
-      allowWrite: opts.allowWrite,
-      allowNet: opts.allowNet,
-      denyRead: opts.denyRead,
-      denyWrite: opts.denyWrite,
-      denyNet: opts.denyNet,
       env: envToUse,
       transport: opts.transport,
     });
@@ -285,9 +222,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
     if (include.includes("tools")) {
       try {
         const listed = await target.listTools();
-        // Run tools through the interceptor plugins (tool-poisoning scan) before
-        // they enter the agent's context.
-        const { tools, findings } = await interceptor.processToolList(listed.tools as any);
+        const { tools } = await interceptor.processToolList(listed.tools as any);
         let displayTools = summary
           ? tools.map((t: any) => ({ name: t.name, description: t.description }))
           : tools;
@@ -304,7 +239,6 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         } else {
           lines.push("", "--- Tools ---", jsonStr);
         }
-        lines.push(...formatFindings(findings));
       } catch (err: any) {
         lines.push("", "--- Tools ---", `Error: ${err.message}`);
       }
@@ -408,13 +342,9 @@ export async function startServer(opts: ServerOptions): Promise<void> {
           .describe(
             "If true, returns only the name and description of each primitive (omitting full schemas) when included to save tokens.",
           ),
-        sandbox: z
-          .enum(["auto", "docker", "native", "audit", "none"])
-          .optional()
-          .describe("Sandbox mode to use for this server"),
       },
     },
-    async ({ command, args, env, include, summary, sandbox }) => {
+    async ({ command, args, env, include, summary }) => {
       if (target?.connected) {
         return {
           content: [
@@ -436,13 +366,6 @@ export async function startServer(opts: ServerOptions): Promise<void> {
 
       try {
         target = new TargetManager(command, args ?? [], {
-          sandbox: sandbox ?? opts.sandbox,
-          allowRead: opts.allowRead,
-          allowWrite: opts.allowWrite,
-          allowNet: opts.allowNet,
-          denyRead: opts.denyRead,
-          denyWrite: opts.denyWrite,
-          denyNet: opts.denyNet,
           env,
           transport: opts.transport,
         });
@@ -676,7 +599,6 @@ export async function startServer(opts: ServerOptions): Promise<void> {
           if (result.nextCursor) {
             sections.push(`--- Tools Next Cursor: ${result.nextCursor} ---`);
           }
-          sections.push(...formatFindings(scanned.findings));
         } catch (err: any) {
           sections.push("--- Tools ---", `Error: ${err.message}`);
         }
@@ -834,8 +756,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
 
       try {
         const listed = await target.listTools();
-        // Run the tool-poisoning scanner over metadata before ranking/surfacing.
-        const { tools, findings } = await interceptor.processToolList(listed.tools as any);
+        const { tools } = await interceptor.processToolList(listed.tools as any);
         const ranked = rankTools(query, tools as any[], limit ?? 5);
 
         if (ranked.length === 0) {
@@ -865,7 +786,6 @@ export async function startServer(opts: ServerOptions): Promise<void> {
           "",
           "Next: list_mcp_primitives(name='<tool>') for the full schema, then call_mcp_primitive to invoke it.",
         ];
-        lines.push(...formatFindings(findings));
 
         return { content: [{ type: "text" as const, text: lines.join("\n") }] };
       } catch (err: any) {
@@ -1413,13 +1333,6 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       }
 
       const tempTarget = new TargetManager(command, args ?? [], {
-        sandbox: opts.sandbox,
-        allowRead: opts.allowRead,
-        allowWrite: opts.allowWrite,
-        allowNet: opts.allowNet,
-        denyRead: opts.denyRead,
-        denyWrite: opts.denyWrite,
-        denyNet: opts.denyNet,
         env,
         transport: opts.transport,
       });
@@ -1468,154 +1381,6 @@ export async function startServer(opts: ServerOptions): Promise<void> {
                 `Captured Stderr:\n${stderrLines.join("\n") || "(none)"}`,
             },
           ],
-          isError: true,
-        };
-      }
-    },
-  );
-
-  mcpServer.registerTool(
-    "search_all_local_mcp_servers",
-    {
-      title: "Search All Local MCP Servers",
-      description:
-        "Scans all configured/discovered local MCP servers, connects to them, " +
-        "and searches their tool names/descriptions or resource names/URIs for a query string.",
-      inputSchema: {
-        query: z.string().describe("Search query (case-insensitive substring match)"),
-        type: z
-          .array(z.enum(["tools", "resources", "prompts"]))
-          .optional()
-          .describe("Primitives to search. Defaults to ['tools']."),
-      },
-    },
-    async ({ query, type }) => {
-      const searchTypes = type ?? ["tools"];
-      const lowerQuery = query.toLowerCase();
-
-      try {
-        const servers = await discoverServers({ scan: opts.scan });
-        if (servers.length === 0) {
-          return {
-            content: [{ type: "text" as const, text: "No local MCP servers found to search." }],
-          };
-        }
-
-        const uniqueServers = new Map<string, any>();
-        for (const s of servers) {
-          const key = `${s.name}::${s.config.command}::${(s.config.args || []).join(" ")}`;
-          if (!uniqueServers.has(key)) {
-            uniqueServers.set(key, s);
-          } else if (s.source.includes("Project")) {
-            uniqueServers.set(key, s);
-          }
-        }
-
-        const matchResults: any[] = [];
-
-        for (const s of uniqueServers.values()) {
-          const tempTarget = new TargetManager(s.config.command, s.config.args || [], {
-            sandbox: opts.sandbox,
-            allowRead: opts.allowRead,
-            allowWrite: opts.allowWrite,
-            allowNet: opts.allowNet,
-            denyRead: opts.denyRead,
-            denyWrite: opts.denyWrite,
-            denyNet: opts.denyNet,
-            env: s.config.env,
-            transport: opts.transport,
-          });
-          try {
-            await Promise.race([
-              tempTarget.connect(),
-              new Promise<never>((_, reject) =>
-                setTimeout(() => reject(new Error("Timeout")), 3000),
-              ),
-            ]);
-
-            const caps = tempTarget.getServerCapabilities() ?? {};
-
-            if (searchTypes.includes("tools") && caps.tools) {
-              const { tools } = await tempTarget.listTools();
-              for (const t of tools) {
-                if (
-                  t.name.toLowerCase().includes(lowerQuery) ||
-                  (t.description && t.description.toLowerCase().includes(lowerQuery))
-                ) {
-                  matchResults.push({
-                    server: s.name,
-                    primitive: "tool",
-                    name: t.name,
-                    description: t.description,
-                  });
-                }
-              }
-            }
-
-            if (searchTypes.includes("resources") && caps.resources) {
-              const { resources } = await tempTarget.listResources();
-              for (const r of resources as any[]) {
-                if (
-                  (r.name && r.name.toLowerCase().includes(lowerQuery)) ||
-                  r.uri.toLowerCase().includes(lowerQuery) ||
-                  (r.description && r.description.toLowerCase().includes(lowerQuery))
-                ) {
-                  matchResults.push({
-                    server: s.name,
-                    primitive: "resource",
-                    name: r.name || r.uri,
-                    uri: r.uri,
-                    description: r.description,
-                  });
-                }
-              }
-            }
-
-            if (searchTypes.includes("prompts") && caps.prompts) {
-              const { prompts } = await tempTarget.listPrompts();
-              for (const p of prompts) {
-                if (
-                  p.name.toLowerCase().includes(lowerQuery) ||
-                  (p.description && p.description.toLowerCase().includes(lowerQuery))
-                ) {
-                  matchResults.push({
-                    server: s.name,
-                    primitive: "prompt",
-                    name: p.name,
-                    description: p.description,
-                  });
-                }
-              }
-            }
-          } catch {
-            // Ignore individual server connection or query errors
-          } finally {
-            await tempTarget.close().catch(() => {});
-          }
-        }
-
-        if (matchResults.length === 0) {
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: `No matches found for query "${query}".`,
-              },
-            ],
-          };
-        }
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Search results for "${query}":\n\n${JSON.stringify(matchResults, null, 2)}`,
-            },
-          ],
-        };
-      } catch (err: any) {
-        return {
-          content: [{ type: "text" as const, text: `Error searching servers: ${err.message}` }],
           isError: true,
         };
       }

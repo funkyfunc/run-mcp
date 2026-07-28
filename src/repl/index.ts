@@ -2,7 +2,6 @@ import { readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { colors as pc } from "../colors.js";
 import { ResponseInterceptor } from "../interceptor.js";
-import { toolPoisoningScanner } from "../plugins.js";
 import { groupToolsByPrefix, interpolateString } from "../parsing.js";
 import { type Snapshot, computeSnapshotDiff, takeSnapshot } from "../snapshot.js";
 import type { ServerNotification } from "../target-manager.js";
@@ -33,13 +32,6 @@ interface ReplOptions {
   mediaThresholdKb?: number;
   openMedia?: boolean;
   watch?: boolean;
-  sandbox?: "auto" | "docker" | "native" | "audit" | "none";
-  allowRead?: string[];
-  allowWrite?: string[];
-  allowNet?: string[];
-  denyRead?: string[];
-  denyWrite?: string[];
-  denyNet?: string[];
   transport?: "auto" | "http" | "sse";
   env?: Record<string, string>;
 }
@@ -151,13 +143,6 @@ export function startReadlineLoop(target: TargetManager, interceptor: ResponseIn
 export async function startRepl(targetCommand: string[], opts: ReplOptions): Promise<void> {
   const [command, ...args] = targetCommand;
   const target = new TargetManager(command, args, {
-    sandbox: opts.sandbox,
-    allowRead: opts.allowRead,
-    allowWrite: opts.allowWrite,
-    allowNet: opts.allowNet,
-    denyRead: opts.denyRead,
-    denyWrite: opts.denyWrite,
-    denyNet: opts.denyNet,
     transport: opts.transport,
     env: opts.env,
   });
@@ -167,7 +152,6 @@ export async function startRepl(targetCommand: string[], opts: ReplOptions): Pro
     openMedia: opts.openMedia,
     // Tool-poisoning defense: strip invisible chars + flag injection phrasing in
     // tools/list metadata before it's shown to the human.
-    plugins: [toolPoisoningScanner()],
   });
 
   setIsScriptMode(!!opts.script);

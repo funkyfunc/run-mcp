@@ -4,12 +4,7 @@ import { resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  MOCK_SERVER_ARGS,
-  MOCK_SERVER_CMD,
-  POISONED_SERVER_ARGS,
-  POISONED_SERVER_CMD,
-} from "./helpers.js";
+import { MOCK_SERVER_ARGS, MOCK_SERVER_CMD } from "./helpers.js";
 
 /**
  * Tests for the server mode (consolidated tool surface).
@@ -84,39 +79,6 @@ function getText(result: any): string {
 // Tool-poisoning scanner (interceptor plugin) — end to end
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe("server: tool-poisoning scanner", () => {
-  it("flags a poisoned target's tools and strips invisible chars when listing", async () => {
-    const c = await startRunMcpServer();
-    const result = await c.callTool({
-      name: "connect_to_mcp",
-      arguments: {
-        command: POISONED_SERVER_CMD,
-        args: POISONED_SERVER_ARGS,
-        include: ["tools"],
-      },
-    });
-    const text = getText(result);
-
-    // The scanner surfaces a safety-findings block to the agent...
-    expect(text).toContain("Tool Safety Findings");
-    // ...and the invisible Unicode Tag char is stripped from the listed metadata.
-    expect(text).not.toContain(String.fromCodePoint(0xe0041));
-  }, 15_000);
-
-  it("surfaces findings via list_mcp_primitives too", async () => {
-    const c = await startRunMcpServer();
-    await c.callTool({
-      name: "connect_to_mcp",
-      arguments: { command: POISONED_SERVER_CMD, args: POISONED_SERVER_ARGS },
-    });
-    const result = await c.callTool({
-      name: "list_mcp_primitives",
-      arguments: { type: ["tools"] },
-    });
-    expect(getText(result)).toContain("Tool Safety Findings");
-  }, 15_000);
-});
-
 // ═══════════════════════════════════════════════════════════════════════════
 // find_tools — context-firewall / lazy discovery
 // ═══════════════════════════════════════════════════════════════════════════
@@ -167,9 +129,8 @@ describe("server: tool discovery", () => {
     expect(names).toContain("get_mcp_server_stderr");
     expect(names).toContain("list_available_mcp_servers");
     expect(names).toContain("validate_mcp_server");
-    expect(names).toContain("search_all_local_mcp_servers");
     expect(names).toContain("read_result");
-    expect(names).toHaveLength(11);
+    expect(names).toHaveLength(10);
   }, 15_000);
 
   it("tools have descriptions", async () => {
@@ -942,7 +903,7 @@ describe("server: advanced features and protocol compliance", () => {
     const text = getText(result);
     expect(text).toContain("Validation Result: SUCCESS");
     expect(text).toContain("mock-mcp-server");
-    expect(text).toContain("Tools Count: 15");
+    expect(text).toContain("Tools Count: 12");
   }, 25_000);
 
   it("supports deep protocol validation via validate_mcp_server", async () => {
@@ -976,28 +937,13 @@ describe("server: advanced features and protocol compliance", () => {
     expect(text).toContain("Validation Result: FAILED");
   }, 20_000);
 
-  it("executes search_all_local_mcp_servers cleanly", async () => {
-    const c = await startRunMcpServer();
-    const result = await c.callTool({
-      name: "search_all_local_mcp_servers",
-      arguments: {
-        query: "echo",
-        type: ["tools"],
-      },
-    });
-
-    const text = getText(result);
-    expect(text).toBeTypeOf("string");
-  }, 20_000);
-
-  it("connects to target server with sandboxing enabled via connect_to_mcp", async () => {
+  it("connects to a target server via connect_to_mcp", async () => {
     const c = await startRunMcpServer();
     const result = await c.callTool({
       name: "connect_to_mcp",
       arguments: {
         command: MOCK_SERVER_CMD,
         args: MOCK_SERVER_ARGS,
-        sandbox: "none",
       },
     });
 

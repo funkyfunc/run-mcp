@@ -3,7 +3,6 @@ import type { Interface as ReadlineInterface } from "node:readline";
 import { checkbox, confirm, input, search } from "@inquirer/prompts";
 import { colors as pc } from "../colors.js";
 import { ResponseInterceptor } from "../interceptor.js";
-import type { PluginFinding } from "../plugins.js";
 import { rankTools } from "../ranking.js";
 import {
   formatJson,
@@ -293,24 +292,12 @@ export async function handleCommand(
 
 // ─── Command Implementations ────────────────────────────────────────────────
 
-/** Print tool-poisoning findings (already sanitized) to the terminal. */
-function printToolFindings(findings: PluginFinding[]): void {
-  if (findings.length === 0) return;
-  console.log();
-  console.log(pc.yellow("  ⚠️  Tool safety findings:"));
-  for (const f of findings) {
-    const loc = f.location ? ` [${sanitizeServerText(f.location)}]` : "";
-    console.log(pc.dim(`    (${f.severity})${loc} ${sanitizeServerText(f.message)}`));
-  }
-}
-
 async function cmdToolsList(
   target: TargetManager,
   interceptor: ResponseInterceptor,
 ): Promise<void> {
   const listed = await target.listTools();
-  // Scan tools/list metadata (strips invisible chars, flags injection phrasing).
-  const { tools, findings } = await interceptor.processToolList(listed.tools as any);
+  const { tools } = await interceptor.processToolList(listed.tools as any);
 
   if (tools.length === 0) {
     console.log(pc.dim("  No tools available."));
@@ -348,8 +335,6 @@ async function cmdToolsList(
       }
     }
   }
-
-  printToolFindings(findings);
 }
 
 async function cmdToolsDescribe(
@@ -372,7 +357,7 @@ async function cmdToolsDescribe(
   }
 
   const listed = await target.listTools();
-  const { tools, findings } = await interceptor.processToolList(listed.tools as any);
+  const { tools } = await interceptor.processToolList(listed.tools as any);
   const tool = (tools as any[]).find((t) => t.name === name);
 
   if (!tool) {
@@ -405,8 +390,6 @@ async function cmdToolsDescribe(
     ),
   );
   console.log();
-  // Only findings for this tool.
-  printToolFindings(findings.filter((f) => !f.location || f.location.startsWith(name)));
 }
 
 async function cmdFind(
@@ -422,7 +405,7 @@ async function cmdFind(
   }
 
   const listed = await target.listTools();
-  const { tools, findings } = await interceptor.processToolList(listed.tools as any);
+  const { tools } = await interceptor.processToolList(listed.tools as any);
   const ranked = rankTools(query, tools as any[], 8);
 
   if (ranked.length === 0) {
@@ -444,7 +427,6 @@ async function cmdFind(
     console.log(`  ${pc.green(safeName.padEnd(nameWidth))}  ${pc.dim(desc)}`);
   }
   console.log(pc.dim(`\n  Use ${pc.bold("tools/describe <name>")} for the full schema.`));
-  printToolFindings(findings);
 }
 
 async function cmdToolsCall(

@@ -5,7 +5,7 @@ import { ResponseInterceptor } from "./interceptor.js";
 import { TargetManager } from "./target-manager.js";
 import { TargetPool, type PoolBackendConfig, type PooledServer } from "./target-pool.js";
 import { ToolListCache } from "./tool-cache.js";
-import { toolPoisoningScanner, outputCompressionPlugin } from "./plugins.js";
+import { outputCompressionPlugin } from "./plugins.js";
 import { rankTools } from "./ranking.js";
 import { groupToolsByPrefix } from "./parsing.js";
 import {
@@ -37,8 +37,7 @@ export interface ProxyOptions {
   /** Restrict the exposed backend tools before compression. */
   includeTools?: string[];
   excludeTools?: string[];
-  /** Sandbox + transport options forwarded to the backend(s). */
-  sandbox?: "auto" | "docker" | "native" | "audit" | "none";
+  /** Transport options forwarded to the backend(s). */
   transport?: "auto" | "http" | "sse";
   /** Compress backend tool output text (lossless JSON minify). */
   compressOutput?: boolean;
@@ -73,7 +72,7 @@ export async function startProxyServer(opts: ProxyOptions): Promise<void> {
   const filters = { include: opts.includeTools, exclude: opts.excludeTools };
 
   const interceptor = new ResponseInterceptor({
-    plugins: [toolPoisoningScanner(), ...(opts.compressOutput ? [outputCompressionPlugin()] : [])],
+    plugins: opts.compressOutput ? [outputCompressionPlugin()] : [],
   });
 
   const mcpServer = new McpServer(
@@ -93,7 +92,6 @@ export async function startProxyServer(opts: ProxyOptions): Promise<void> {
       process.exit(1);
     }
     const target = new TargetManager(command, single?.args ?? opts.args ?? [], {
-      sandbox: opts.sandbox,
       transport: opts.transport,
       env: single?.env ?? opts.env,
     });
@@ -291,7 +289,6 @@ async function registerMultiplexSurface(
   opts: ProxyOptions,
 ): Promise<void> {
   const pool = new TargetPool(backends, {
-    sandbox: opts.sandbox,
     transport: opts.transport,
     autoReconnect: true,
   });

@@ -4,12 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
-import {
-  MOCK_SERVER_ARGS,
-  MOCK_SERVER_CMD,
-  POISONED_SERVER_ARGS,
-  POISONED_SERVER_CMD,
-} from "./helpers.js";
+import { MOCK_SERVER_ARGS, MOCK_SERVER_CMD } from "./helpers.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -44,29 +39,6 @@ async function runCli(
 // ═══════════════════════════════════════════════════════════════════════════════
 // Headless CLI Integration Tests
 // ═══════════════════════════════════════════════════════════════════════════════
-
-describe("headless: tool-poisoning scanner", () => {
-  const POISON_TARGET = ["--", POISONED_SERVER_CMD, ...POISONED_SERVER_ARGS];
-  const TAG = String.fromCodePoint(0xe0041); // invisible Unicode Tag char in the fixture
-
-  it("strips invisible chars from list-tools JSON and warns on stderr", async () => {
-    const { stdout, stderr, exitCode } = await runCli(["list-tools", ...POISON_TARGET]);
-    expect(exitCode).toBe(0);
-    // stdout stays clean JSON with the invisible char removed...
-    expect(stdout).not.toContain(TAG);
-    const tools = JSON.parse(stdout);
-    expect(tools.map((t: any) => t.name)).toContain("lookup");
-    // ...and the finding is surfaced on stderr, not stdout.
-    expect(stderr).toContain("tool-safety");
-    expect(stdout).not.toContain("tool-safety");
-  }, 15_000);
-
-  it("--no-scan-tools disables scanning", async () => {
-    const { stderr, exitCode } = await runCli(["list-tools", "--no-scan-tools", ...POISON_TARGET]);
-    expect(exitCode).toBe(0);
-    expect(stderr).not.toContain("tool-safety");
-  }, 15_000);
-});
 
 describe("headless: output compression", () => {
   it("--compress-output minifies a JSON tool result losslessly", async () => {

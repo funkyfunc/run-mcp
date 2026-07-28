@@ -38,7 +38,6 @@ export class TargetPool {
   constructor(
     configs: PoolBackendConfig[],
     shared: {
-      sandbox?: "auto" | "docker" | "native" | "audit" | "none";
       transport?: "auto" | "http" | "sse";
       /** Auto-restart backends that crash after a stable start (proxy mode). */
       autoReconnect?: boolean;
@@ -57,7 +56,6 @@ export class TargetPool {
         prefix,
         description: cfg.description,
         target: new TargetManager(cfg.command, cfg.args ?? [], {
-          sandbox: shared.sandbox,
           transport: shared.transport,
           env: cfg.env,
         }),

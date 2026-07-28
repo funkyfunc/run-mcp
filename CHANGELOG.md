@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+
+Scope cut: `run-mcp` protects the consuming agent's *context*, not the host. Guarding
+against hostile MCP servers is a different product with a different user — the person
+this tool serves is developing the server they are pointing it at. Everything below is
+recoverable from git history if that ever changes.
+
+- **Sandbox engine** — `--sandbox` (`auto`/`native`/`docker`/`audit`) and all
+  `--allow-read|write|net` / `--deny-read|write|net` flags, the Seatbelt/bwrap/Docker/MXC
+  enforcement matrix, the hierarchical sandbox settings loader (`.run-mcp.json` and the
+  managed/user/project/local scopes), the automatic credential-directory deny list, and the
+  outbound network audit proxy. The optional `@microsoft/mxc-sdk` dependency is no longer used.
+- **Tool-poisoning scanner** — invisible/bidi Unicode stripping and prompt-injection phrase
+  flagging over `tools/list`, plus `--no-scan-tools` and the "Tool Safety Findings" output blocks.
+- **Secret/DLP redaction** — `--redact-secrets` and `--redact-emails`.
+- **JSONL audit logging** — `--audit-log <file>`.
+- **`search_all_local_mcp_servers` agent tool** — it spawned every MCP server configured on
+  the machine to run a substring match. `list_available_mcp_servers` still lists them from
+  config files without starting anything, and the CLI's interactive picker and `--scan` are
+  unchanged.
+
+The agent server now exposes 10 tools (was 11) and the root command 15 options (was 25).
+The interceptor plugin framework itself is retained, as is `--compress-output`.
+
 ## [1.8.0] - 2026-07-14
 
 ### Added

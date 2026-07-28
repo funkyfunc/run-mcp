@@ -30,7 +30,7 @@
   },
   "scripts": {
     "build": "tsup && node scripts/update-readme-help.js",
-    "build:fixtures": "tsup tests/fixtures/mock-server.ts tests/fixtures/vulnerable-stdio-server.ts tests/fixtures/poisoned-server.ts --format esm --target node18 --out-dir tests/fixtures/dist",
+    "build:fixtures": "tsup tests/fixtures/mock-server.ts tests/fixtures/second-server.ts --format esm --target node18 --out-dir tests/fixtures/dist",
     "dev": "tsup --watch",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
@@ -52,9 +52,6 @@
     "picocolors": "^1.1.1",
     "tree-kill": "^1.2.2",
     "zod": "^3.24.3"
-  },
-  "optionalDependencies": {
-    "@microsoft/mxc-sdk": "^1.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

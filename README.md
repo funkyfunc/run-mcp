@@ -73,22 +73,11 @@ run-mcp [options] [target_command...]
 | `-s, --script <file>` | Read commands from a file instead of stdin (REPL Mode only) |
 | `--color <mode>` | Color output mode: always, never, auto (default: auto) |
 | `--open-media` | Automatically open intercepted images and audio files using the host OS viewer |
-| `--sandbox <mode>` | Sandbox execution mode: auto, docker, native, audit, none (default: "none") |
 | `--scan` | Scan the current workspace and parent directories for any JSON files containing mcpServers |
-| `--no-scan-tools` | Disable tool-poisoning scanning of tools/list metadata (Agent Mode; on by default) |
-| `--redact-secrets` | Redact detected secrets/API keys from tool/resource/prompt output (Agent Mode) |
-| `--redact-emails` | When redacting, also redact email addresses (Agent Mode) |
-| `--audit-log <file>` | Append a JSONL audit trail of every MCP request/response to this file (Agent Mode) |
 | `--transport <mode>` | Transport for http(s) targets: auto (default), http (Streamable HTTP), sse |
 | `--compress-output` | Minify verbose output text to save tokens (lossless JSON minify by default) (Agent Mode) |
 | `--compress-aggressive` | With --compress-output, also collapse blank lines / trailing whitespace (lossy) (Agent Mode) |
 | `-w, --watch` | Watch the current directory for file changes and auto-reconnect (REPL Mode only) |
-| `--allow-read <paths...>` | Paths to allow reading under the sandbox |
-| `--allow-write <paths...>` | Paths to allow writing under the sandbox |
-| `--allow-net <domains...>` | Network domains to allow connecting to under the sandbox |
-| `--deny-read <paths...>` | Paths to deny reading under the sandbox |
-| `--deny-write <paths...>` | Paths to deny writing under the sandbox |
-| `--deny-net <domains...>` | Network domains to deny connecting to under the sandbox |
 | `-h, --help` | display help for command |
 <!-- OPTIONS_END -->
 
@@ -174,7 +163,7 @@ run-mcp close-session main
 - `read [options] <uri> [target_command...]`
 - `describe [options] <tool> [target_command...]`
 - `get-prompt [options] <name> [json_args] [target_command...]`
-- `daemon [options] <session_name> [target_command...]`
+- `daemon <session_name> [target_command...]`
 - `close-session <session_name>`
 - `validate [options] [target_command...]`
 - `proxy [options] [target_command...]`
@@ -218,7 +207,7 @@ Then use these tools from your agent:
 | `mcp_server_status` | Check connection status |
 | `get_mcp_server_stderr` | View target server stderr output |
 | `validate_mcp_server` | Validate an MCP server command and collect diagnostics |
-| `search_all_local_mcp_servers` | Scan and search all local MCP servers for a query |
+| `list_available_mcp_servers` | List local MCP servers found in config files |
 <!-- AGENT_TOOLS_END -->
 
 ## REPL Mode Commands
@@ -372,10 +361,10 @@ your context stays tiny no matter how many servers or tools you front:
 - `-c, --compression <level>` — `low` / `medium` / `high` / `max`.
 - `--include-tools <names...>` / `--exclude-tools <names...>` — restrict the exposed backend tools (applied before compression).
 - `--compress-output` — also minify backend tool output (lossless JSON minify).
-- `--sandbox <mode>`, `--transport <mode>` — forwarded to the backend.
+- `--transport <mode>` — forwarded to the backend.
 
 Calls routed through `invoke_tool` still pass through the interceptor pipeline
-(tool-poisoning scan, media extraction, truncation, optional output compression).
+(media extraction, truncation, optional output compression).
 
 ## Agent Server Mode — How It Works
 
@@ -391,87 +380,6 @@ processed through the interceptor pipeline:
 | **Base64 detection** | Text responses that are entirely base64-encoded (1000+ chars) are also saved as images                                   |
 | **Timeouts**         | Tool calls are wrapped in a configurable timeout (default 5 minutes, use `--timeout` to change)                          |
 | **Truncation**       | Text exceeding the limit (default 50K chars, `--max-text` to change) is saved in full to disk; the reply keeps the head plus a result id, navigable via the `read_result` tool |
-
-## Sandboxing & Outbound Data Exfiltration Protection
-
-`run-mcp` features a comprehensive multi-layered sandboxing engine designed to protect local systems and credentials from malicious or buggy MCP servers.
-
-### 🛡️ Sandboxing Modes
-
-You can restrict a target server's execution footprint using the `--sandbox` flag:
-
-- **`none`** (Default): No sandboxing. The target server runs with full user privileges.
-- **`auto`**: Automatically selects the most restrictive sandboxing system available on the host OS.
-- **`native`**: Uses OS-level native isolation:
-  - **macOS**: Utilizes the Seatbelt (App Sandbox) framework (`sandbox-exec`).
-  - **Linux**: Utilizes `bubblewrap` (`bwrap`) containerization.
-  - **Windows**: Utilizes `@microsoft/mxc-sdk` App Container sandboxing (requires the package to be present).
-- **`docker`**: Spawns the target command inside a fresh, network-disabled ephemeral Docker container (`node:20` or `python:3` depending on the command).
-- **`audit`**: Runs the server under a special non-enforcing native sandbox mode that permits operations but logs all network activity to the console.
-
-### 🌐 Outbound Network Proxy Auditing
-
-When a sandboxed server is granted outbound network access (e.g., using `--allow-net`), `run-mcp` automatically spawns a zero-dependency local **Network Audit Proxy**.
-- All outbound HTTP/HTTPS traffic is forced through the proxy using environment variables.
-- Target endpoints and protocols (including HTTPS `CONNECT` tunnels) are transparently logged to stderr in distinct cyan color:
-  ```
-  🌐 [NETWORK AUDIT] HTTP request to: http://example.com/api/v1/data
-  🌐 [NETWORK AUDIT] HTTPS connection established to: github.com
-  ```
-- Permits outbound traffic while providing complete visibility into where the server is sending data.
-
-### 🔑 Automatic Credential Protection (Deny-Wins)
-
-When outbound network capability is enabled, `run-mcp` automatically safeguards your local configuration files and private keys from exfiltration. 
-By default, the sandbox denies access to the following directories:
-- `~/.ssh` (SSH private keys and configs)
-- `~/.aws` (AWS credentials)
-- `~/.kube` (Kubernetes configurations)
-- `~/.config/gcloud` (Google Cloud SDK credentials)
-- `~/.netrc` and `~/.npmrc` (Authentication files)
-
-Access is strictly blocked using **Deny-Wins** precedence unless a folder is explicitly whitelisted.
-
-> [!NOTE]
-> **Platform Support for Deny Rules**:
-> - **macOS (`native` / Seatbelt)**: Deny rules are natively enforced at the OS kernel level.
-> - **Docker & Linux (`native` / Bubblewrap)**: Deny rules within the workspace are enforced by masking directories/files (overlaying empty files or tmpfs mounts).
-> - **Windows (`native` / MXC)**: The `@microsoft/mxc-sdk` is strictly allowlist-based and does not support exclusions within allowed paths; a warning is printed to `stderr` if deny rules are configured.
-
-### ⚙️ Capabilities & Configuration
-
-You can configure sandbox rules on the command line or using structured JSON settings files.
-
-#### CLI Overrides
-
-Pass these flags after `run-mcp` and before the target command:
-- `--sandbox <mode>`: Set sandbox execution mode (`auto`, `native`, `docker`, `audit`, `none`).
-- `--allow-read <paths...>`: Allow reading specific host directories.
-- `--allow-write <paths...>`: Allow writing to specific host directories.
-- `--allow-net <domains...>`: Allow outbound network access to specific domains.
-- `--deny-read <paths...>`: Deny reading specific host directories.
-- `--deny-write <paths...>`: Deny writing to specific host directories.
-- `--deny-net <domains...>`: Deny outbound network access to specific domains.
-
-#### Configuration Scopes
-
-`run-mcp` resolves settings hierarchically, allowing both administrator enforcement and developer configuration:
-1. **Managed (Enterprise)**: System-wide read-only overrides (`/Library/Application Support/run-mcp/settings.json`, `C:\Program Files\run-mcp\settings.json`, `/etc/run-mcp/settings.json`).
-2. **User (Global)**: Personal defaults (`~/.gemini/antigravity-ide/settings.json` or equivalent).
-3. **Project**: Shared settings within a repository (`<workspace>/.run-mcp.json`).
-4. **Local**: Developer-specific project settings (`<workspace>/.run-mcp.local.json`).
-
-*Example Settings File (`.run-mcp.json`):*
-```json
-{
-  "sandbox": {
-    "mode": "native",
-    "allowRead": ["/usr/local/bin"],
-    "allowNet": ["*.api.github.com"],
-    "denyRead": ["~/.ssh"]
-  }
-}
-```
 
 ## Architecture
 

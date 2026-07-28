@@ -67,7 +67,7 @@ All three interfaces feed into the same interception pipeline. See `README.md` f
            ┌──────▼──────┐  ┌──────▼──────┐
            │ Interceptor │  │ TargetManager│
            │ (timeouts,  │──│ (MCP Client, │
-           │  media save,│  │  sandbox,    │
+           │  media save,│  │  reconnect,  │
            │  truncation)│  │  reconnect)  │
            └─────────────┘  └──────┬──────┘
                                    │ stdio / SSE
@@ -82,21 +82,18 @@ All three interfaces feed into the same interception pipeline. See `README.md` f
 | Module                  | File(s)                 | Responsibility |
 | ----------------------- | ----------------------- | -------------- |
 | **CLI Entry**           | `src/index.ts`          | Commander-based CLI. Routes to REPL (target command provided), headless subcommands (`call`, `list-tools`, etc.), or Agent Server (no args / `--mcp`). Registers headless subcommands via `registerHeadlessCommand()`. |
-| **TargetManager**       | `src/target-manager.ts` | Spawns the target MCP server, manages MCP Client connection (stdio, or for http(s) URLs: Streamable HTTP with SSE fallback — `transport` option / `--transport`), sandbox enforcement (Seatbelt, bwrap, Docker, MXC), auto-reconnect with loop protection, captures stderr, tracks process lifecycle. |
+| **TargetManager**       | `src/target-manager.ts` | Spawns the target MCP server, manages MCP Client connection (stdio, or for http(s) URLs: Streamable HTTP with SSE fallback — `transport` option / `--transport`), auto-reconnect with loop protection, captures stderr, tracks process lifecycle. |
 | **ResponseInterceptor** | `src/interceptor.ts`    | Wraps `callTool` with timeouts (timers cleared on settle), extracts base64 images/audio to disk, detects raw base64 text blobs, and spills oversized text to disk (full payload saved; reply keeps the head + a per-session result id, navigable via `read_result` / `readSpilledResult()`). Configurable via `InterceptorOptions`. |
 | **REPL**                | `src/repl/`             | Interactive readline interface across 8 files: `commands.ts` (command routing), `completer.ts` (tab completion), `history.ts` (persistent history), `index.ts` (entry point), `state.ts` (shared state + `KNOWN_COMMANDS`), `ui.ts` (formatting/output), `wizard.ts` (interactive arg scaffolding), `approval.ts` (pure sampling/elicitation approval decisions — unit-tested). `src/repl.ts` is a re-export barrel. |
-| **Agent Server**        | `src/server.ts`         | MCP Server exposing 11 tools (`connect_to_mcp`, `call_mcp_primitive`, `list_mcp_primitives`, `find_tools`, `read_result`, `disconnect_from_mcp`, `mcp_server_status`, `get_mcp_server_stderr`, `list_available_mcp_servers`, `validate_mcp_server`, `search_all_local_mcp_servers`) for dynamic MCP server testing. Uses `registerTool()` with Zod schemas. |
+| **Agent Server**        | `src/server.ts`         | MCP Server exposing 10 tools (`connect_to_mcp`, `call_mcp_primitive`, `list_mcp_primitives`, `find_tools`, `read_result`, `disconnect_from_mcp`, `mcp_server_status`, `get_mcp_server_stderr`, `list_available_mcp_servers`, `validate_mcp_server`) for dynamic MCP server testing. Uses `registerTool()` with Zod schemas. |
 | **Headless**            | `src/headless.ts`       | Single-shot executor for CLI subcommands. Connect → execute one operation → output JSON to stdout → exit. All status/progress to stderr for pipe-clean output. |
-| **Settings**            | `src/settings.ts`       | Hierarchical sandbox policy loader (managed → user → project → local scopes). `SandboxPolicy` class for file/network permission evaluation, path resolution (`~`, `$HOME`), and Seatbelt profile generation. |
 | **Validator**           | `src/validator.ts`      | Protocol compliance validator (`run-mcp validate`). Validates handshake, capabilities, tool schemas, resources, and prompts against the MCP JSON Schema. |
 | **Snapshot**            | `src/snapshot.ts`       | Reconnect diffing: takes snapshots of tools/resources/prompts and computes what was added/removed/modified between connections. |
 | **Watcher**             | `src/watcher.ts`        | File watcher for `--watch` mode. Debounced `fs.watch` with automatic ignore patterns (node_modules, .git, dist, etc.). |
 | **Parsing**             | `src/parsing.ts`        | Pure functions: command line splitting, argument parsing, JSON formatting, HTTPie-style args (`key=val`, `key:=json`), Levenshtein distance, typo suggestions. |
 | **Config Scanner**      | `src/config-scanner.ts` | Discovers MCP server configurations across VS Code, Cursor, Claude Desktop, Windsurf, Copilot, Gemini CLI, and local workspace files. Powers `list_available_mcp_servers` and the interactive picker. |
-| **Proxy Audit**         | `src/proxy-audit.ts`    | HTTP/HTTPS proxy for `--sandbox audit` mode. Logs outbound network connections from sandboxed server processes to stderr. |
 | **Colors**              | `src/colors.ts`         | Color constants and helpers using `picocolors` for consistent terminal styling across REPL and headless output. |
-| **Plugins**             | `src/plugins.ts`        | Interceptor plugin framework (ordered middleware hooks: `onToolsList`, `onToolResult`, `onResourceResult`, `onPromptResult`) plus bundled plugins: `toolPoisoningScanner` (strips invisible/bidi Unicode + flags injection phrasing in tools/list), `secretRedactionPlugin` (DLP redaction of secrets in results), and `outputCompressionPlugin` (`--compress-output`: lossless JSON minify + opt-in aggressive whitespace collapse, with an inflation guard — cuts output tokens). |
-| **Audit**               | `src/audit.ts`          | Append-only JSONL audit logger (`--audit-log`) recording every MCP request/response from `TargetManager`'s `history` event. |
+| **Plugins**             | `src/plugins.ts`        | Interceptor plugin framework (ordered middleware hooks: `onToolsList`, `onToolResult`, `onResourceResult`, `onPromptResult`) plus the bundled `outputCompressionPlugin` (`--compress-output`: lossless JSON minify + opt-in aggressive whitespace collapse, with an inflation guard — cuts output tokens). |
 | **Cassette**            | `src/cassette.ts`       | Record/replay ("VCR for MCP", `--cassette`/`--record`/`--replay`): captures tool/resource/prompt responses keyed by a canonical (primitive, name, args) hash and replays them deterministically. The interceptor short-circuits the target on a replay hit (offline in headless mode). |
 | **Compression**         | `src/compression.ts`    | Pure helpers for the compressing proxy: format a tool as `<tool>name(args): summary</tool>` per compression level (low/medium/high/max), build the `get_tool_schema` catalog + schema response, flatten MCP results to text, coerce JSON-string args, tool filters, tool-name namespacing (`server__tool`). |
 | **Ranking**             | `src/ranking.ts`        | BM25 relevance ranking (`rankTools`) over tool name + description + arg names/descriptions (Anthropic's tool-search fields), name-weighted. Powers `find_tools` in both the agent server and the multiplexing proxy. Pure/deterministic, no embedding model. |
@@ -218,7 +215,7 @@ Headless subcommands use the `registerHeadlessCommand()` pattern in `src/index.t
 2. **Add the operation type** to `HeadlessOperation` in `src/headless.ts` and handle it in `executeOperation()`.
 3. **Add tests** in `tests/headless.test.ts`.
 
-All headless subcommands automatically get shared options (`--out-dir`, `--timeout`, `--session`, `--sandbox`) and the `[target_command...]` variadic argument.
+All headless subcommands automatically get shared options (`--out-dir`, `--timeout`, `--session`) and the `[target_command...]` variadic argument.
 
 ### Adding a New Interceptor Behavior
 
@@ -242,12 +239,10 @@ All headless subcommands automatically get shared options (`--out-dir`, `--timeo
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `tests/parsing.test.ts`        | Pure parsing functions, JSON formatting, HTTPie-style args, Levenshtein distance, typo suggestions                                    |
 | `tests/interceptor.test.ts`    | Image extraction, audio extraction, base64 detection, truncation, timeout behavior (mocked, no child processes)                       |
-| `tests/target-manager.test.ts` | Full integration: spawns the mock server, tests connect/disconnect/listTools/callTool/auto-reconnect/sandbox                          |
+| `tests/target-manager.test.ts` | Full integration: spawns the mock server, tests connect/disconnect/listTools/callTool/auto-reconnect                          |
 | `tests/e2e.test.ts`            | End-to-end: TargetManager + ResponseInterceptor against the mock server                                                               |
 | `tests/server.test.ts`         | Agent MCP Server: tool surface (call_mcp_primitive, list_mcp_primitives), auto-connect, disconnect_after, reconnect diff, diagnostics |
 | `tests/headless.test.ts`       | Headless CLI subcommands: call, list-tools, list-resources, describe, sessions                                                        |
-| `tests/settings.test.ts`       | Hierarchical settings loading, sandbox policy merging, path resolution                                                                |
-| `tests/proxy-audit.test.ts`    | Network audit proxy HTTP/HTTPS logging                                                                                                |
 | `tests/validator.test.ts`      | Protocol compliance validation against mock server                                                                                    |
 
 ### Running Tests
@@ -343,7 +338,6 @@ The mock server uses the **non-deprecated** `McpServer.registerTool()` API. Test
 - **Integration** → add to `tests/target-manager.test.ts` or `tests/e2e.test.ts` (spawns mock server)
 - **Agent Server protocol** → add to `tests/server.test.ts` (spawns full MCP mode pipeline)
 - **Headless CLI subcommands** → add to `tests/headless.test.ts`
-- **Sandbox / settings** → add to `tests/settings.test.ts`
 - **Protocol validation** → add to `tests/validator.test.ts`
 - **If you add a new tool/resource/prompt to the mock server**, add test coverage in the appropriate test file
 
@@ -397,4 +391,4 @@ The package is designed to work with `npx run-mcp`:
 
 4. **Don't run tests in parallel.** Integration tests spawn child processes on stdio. Parallel execution causes conflicts.
 
-5. **Test fixtures use `tsx` in integration tests but also have a `build:fixtures` script.** Unit and integration tests run `tests/fixtures/mock-server.ts` via `tsx` directly (no compilation step). The `npm run build:fixtures` script exists for the `pretest` hook to compile fixtures needed by specific test files (e.g., `vulnerable-stdio-server.ts`). Don't remove either approach.
+5. **Test fixtures use `tsx` in integration tests but also have a `build:fixtures` script.** Unit and integration tests run `tests/fixtures/mock-server.ts` via `tsx` directly (no compilation step). The `npm run build:fixtures` script exists for the `pretest` hook to compile fixtures needed by specific test files (e.g., `second-server.ts`). Don't remove either approach.

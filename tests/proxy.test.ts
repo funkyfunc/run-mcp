@@ -7,8 +7,8 @@ import {
   CRASHY_SERVER_CMD,
   MOCK_SERVER_ARGS,
   MOCK_SERVER_CMD,
-  POISONED_SERVER_ARGS,
-  POISONED_SERVER_CMD,
+  SECOND_SERVER_ARGS,
+  SECOND_SERVER_CMD,
 } from "./helpers.js";
 
 /**
@@ -122,7 +122,7 @@ describe("multiplexing proxy (B2)", () => {
         ...extra,
         "--multi-server",
         `alpha=${MOCK_SERVER_CMD} ${MOCK_SERVER_ARGS.join(" ")}`,
-        `beta=${POISONED_SERVER_CMD} ${POISONED_SERVER_ARGS.join(" ")}`,
+        `beta=${SECOND_SERVER_CMD} ${SECOND_SERVER_ARGS.join(" ")}`,
       ],
       stderr: "pipe",
     });

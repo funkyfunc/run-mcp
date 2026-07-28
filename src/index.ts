@@ -16,7 +16,6 @@ import { COMPRESSION_LEVELS, type CompressionLevel } from "./compression.js";
 import type { PoolBackendConfig } from "./target-pool.js";
 import { TargetManager } from "./target-manager.js";
 import { ResponseInterceptor } from "./interceptor.js";
-import { toolPoisoningScanner } from "./plugins.js";
 import { validateProtocol } from "./validator.js";
 
 // ─── Headless subcommand helper ───────────────────────────────────────────────
@@ -119,26 +118,10 @@ async function handleHeadlessSession(
 
     const target = activeTargetCommand;
 
-    // Spawn the daemon process in background. Forward the full sandbox policy —
-    // not just --sandbox — otherwise credential/deny protections would silently
-    // vanish in session mode. The target command is separated with `--` so the
-    // variadic flag values don't swallow it during re-parse.
+    // Spawn the daemon process in background. The target command is separated
+    // with `--` so it isn't swallowed during the daemon's re-parse.
     const binPath = resolve(import.meta.dirname, "./index.js");
     const daemonArgs = ["daemon", sessionName];
-    if (opts.sandbox) {
-      daemonArgs.push("--sandbox", opts.sandbox);
-    }
-    const listFlags: [string, string[] | undefined][] = [
-      ["--allow-read", opts.allowRead],
-      ["--allow-write", opts.allowWrite],
-      ["--allow-net", opts.allowNet],
-      ["--deny-read", opts.denyRead],
-      ["--deny-write", opts.denyWrite],
-      ["--deny-net", opts.denyNet],
-    ];
-    for (const [flag, vals] of listFlags) {
-      if (vals && vals.length > 0) daemonArgs.push(flag, ...vals);
-    }
     daemonArgs.push("--", ...target);
     const daemonProcess = spawn("node", [binPath, ...daemonArgs], {
       detached: true,
@@ -189,18 +172,10 @@ interface HeadlessOpts {
   showStderr?: boolean;
   mediaThreshold?: string;
   session?: string;
-  sandbox?: string;
-  allowRead?: string[];
-  allowWrite?: string[];
-  allowNet?: string[];
-  denyRead?: string[];
-  denyWrite?: string[];
-  denyNet?: string[];
   cassette?: string;
   record?: boolean;
   replay?: boolean;
   transport?: string;
-  scanTools?: boolean;
   compressOutput?: boolean;
   compressAggressive?: boolean;
 }
@@ -212,17 +187,9 @@ function parseHeadlessOpts(opts: HeadlessOpts) {
     raw: opts.raw,
     showStderr: opts.showStderr,
     mediaThresholdKb: opts.mediaThreshold ? Number.parseInt(opts.mediaThreshold, 10) : undefined,
-    sandbox: opts.sandbox as "auto" | "docker" | "native" | "audit" | "none" | undefined,
-    allowRead: opts.allowRead,
-    allowWrite: opts.allowWrite,
-    allowNet: opts.allowNet,
-    denyRead: opts.denyRead,
-    denyWrite: opts.denyWrite,
-    denyNet: opts.denyNet,
     cassettePath: opts.cassette,
     cassetteMode: opts.record ? ("record" as const) : opts.replay ? ("replay" as const) : undefined,
     transport: opts.transport as "auto" | "http" | "sse" | undefined,
-    scanTools: opts.scanTools,
     compressOutput: opts.compressOutput,
     compressAggressive: opts.compressAggressive,
   };
@@ -273,7 +240,6 @@ function registerHeadlessCommand(config: HeadlessCommandConfig) {
     )
     .option("--show-stderr", "Stream target server stderr to process stderr")
     .option("--session <name>", "Persistent session name")
-    .option("--sandbox <mode>", "Sandbox execution mode: auto, docker, native, audit, none", "none")
     .option(
       "--cassette <file>",
       "Record/replay responses to a cassette file (auto: replay if present, else record)",
@@ -284,7 +250,6 @@ function registerHeadlessCommand(config: HeadlessCommandConfig) {
       "--transport <mode>",
       "Transport for http(s) targets: auto (default), http (Streamable HTTP), sse",
     )
-    .option("--no-scan-tools", "Disable tool-poisoning scanning of tools/list metadata")
     .option("--compress-output", "Minify verbose output text (lossless JSON minify by default)")
     .option(
       "--compress-aggressive",
@@ -407,107 +372,84 @@ program
   .argument("<session_name>", "Session name")
   .argument("[target_command...]", "Target server command")
   .description("Start run-mcp in background session daemon mode")
-  .option("--sandbox <mode>", "Sandbox execution mode: auto, docker, native, audit, none", "none")
   .allowUnknownOption()
-  .action(
-    async (
-      sessionName: string,
-      targetCommand: string[],
-      opts: {
-        sandbox?: string;
-        allowRead?: string[];
-        allowWrite?: string[];
-        allowNet?: string[];
-        denyRead?: string[];
-        denyWrite?: string[];
-        denyNet?: string[];
-      },
-    ) => {
-      const targetCmd = activeTargetCommand ?? targetCommand;
-      if (!targetCmd || targetCmd.length === 0) {
-        process.stderr.write("Error: No target command provided for daemon.\n");
-        process.exit(64);
+  .action(async (sessionName: string, targetCommand: string[], _opts: Record<string, never>) => {
+    const targetCmd = activeTargetCommand ?? targetCommand;
+    if (!targetCmd || targetCmd.length === 0) {
+      process.stderr.write("Error: No target command provided for daemon.\n");
+      process.exit(64);
+    }
+
+    const server = createServer();
+    server.listen(0, "127.0.0.1", async () => {
+      const addr = server.address();
+      const port = (addr as any).port;
+
+      const target = new TargetManager(targetCmd[0], targetCmd.slice(1), {});
+      const interceptor = new ResponseInterceptor();
+
+      try {
+        await target.connect();
+      } catch (err: any) {
+        process.stderr.write(`Daemon failed to connect to target: ${err.message}\n`);
+        process.exit(1);
       }
 
-      const server = createServer();
-      server.listen(0, "127.0.0.1", async () => {
-        const addr = server.address();
-        const port = (addr as any).port;
+      // The daemon accepts commands over a loopback TCP socket whose port lives
+      // in this session file. Restrict the dir/file to the owner so other local
+      // users can't discover the port and drive the target. (Same-user local
+      // processes are already inside the trust boundary — they run as you.)
+      await mkdir(SESSION_DIR, { recursive: true, mode: 0o700 });
+      await writeFile(getSessionPath(sessionName), JSON.stringify({ port, pid: process.pid }), {
+        encoding: "utf8",
+        mode: 0o600,
+      });
 
-        const target = new TargetManager(targetCmd[0], targetCmd.slice(1), {
-          sandbox: opts.sandbox as any,
-          allowRead: opts.allowRead,
-          allowWrite: opts.allowWrite,
-          allowNet: opts.allowNet,
-          denyRead: opts.denyRead,
-          denyWrite: opts.denyWrite,
-          denyNet: opts.denyNet,
-        });
-        const interceptor = new ResponseInterceptor({ plugins: [toolPoisoningScanner()] });
+      server.on("connection", (socket) => {
+        let buffer = "";
+        socket.on("data", async (data) => {
+          buffer += data.toString();
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
 
-        try {
-          await target.connect();
-        } catch (err: any) {
-          process.stderr.write(`Daemon failed to connect to target: ${err.message}\n`);
-          process.exit(1);
-        }
-
-        // The daemon accepts commands over a loopback TCP socket whose port lives
-        // in this session file. Restrict the dir/file to the owner so other local
-        // users can't discover the port and drive the target. (Same-user local
-        // processes are already inside the trust boundary — they run as you.)
-        await mkdir(SESSION_DIR, { recursive: true, mode: 0o700 });
-        await writeFile(getSessionPath(sessionName), JSON.stringify({ port, pid: process.pid }), {
-          encoding: "utf8",
-          mode: 0o600,
-        });
-
-        server.on("connection", (socket) => {
-          let buffer = "";
-          socket.on("data", async (data) => {
-            buffer += data.toString();
-            const lines = buffer.split("\n");
-            buffer = lines.pop() ?? "";
-
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (!trimmed) continue;
-              try {
-                const req = JSON.parse(trimmed);
-                if (req.method === "execute") {
-                  const { operation, opts } = req.params;
-                  const { result, hasError } = await executeOperation(
-                    target,
-                    interceptor,
-                    operation,
-                    opts,
-                  );
-                  socket.write(
-                    JSON.stringify({ jsonrpc: "2.0", result: { result, hasError }, id: req.id }) +
-                      "\n",
-                  );
-                  socket.end();
-                } else if (req.method === "close") {
-                  socket.write(
-                    JSON.stringify({ jsonrpc: "2.0", result: { ok: true }, id: req.id }) + "\n",
-                  );
-                  socket.end();
-                  await target.close().catch(() => {});
-                  await rm(getSessionPath(sessionName), { force: true }).catch(() => {});
-                  process.exit(0);
-                }
-              } catch (err: any) {
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            try {
+              const req = JSON.parse(trimmed);
+              if (req.method === "execute") {
+                const { operation, opts } = req.params;
+                const { result, hasError } = await executeOperation(
+                  target,
+                  interceptor,
+                  operation,
+                  opts,
+                );
                 socket.write(
-                  JSON.stringify({ jsonrpc: "2.0", error: { message: err.message }, id: 1 }) + "\n",
+                  JSON.stringify({ jsonrpc: "2.0", result: { result, hasError }, id: req.id }) +
+                    "\n",
                 );
                 socket.end();
+              } else if (req.method === "close") {
+                socket.write(
+                  JSON.stringify({ jsonrpc: "2.0", result: { ok: true }, id: req.id }) + "\n",
+                );
+                socket.end();
+                await target.close().catch(() => {});
+                await rm(getSessionPath(sessionName), { force: true }).catch(() => {});
+                process.exit(0);
               }
+            } catch (err: any) {
+              socket.write(
+                JSON.stringify({ jsonrpc: "2.0", error: { message: err.message }, id: 1 }) + "\n",
+              );
+              socket.end();
             }
-          });
+          }
         });
       });
-    },
-  );
+    });
+  });
 
 // ─── Subcommand: close-session ───────────────────────────────────────────────
 
@@ -548,92 +490,89 @@ program
   .argument("[target_command...]", "Target server command")
   .option("--deep", "Perform deep protocol and schema compliance checks")
   .option("--json", "Format output as JSON")
-  .option("--sandbox <mode>", "Sandbox execution mode: auto, docker, native, audit, none", "none")
   .allowUnknownOption()
-  .action(
-    async (targetCommand: string[], opts: { deep?: boolean; json?: boolean; sandbox?: string }) => {
-      const target = activeTargetCommand ?? targetCommand ?? [];
-      if (target.length === 0) {
-        process.stderr.write("Error: Target server command must be provided.\n");
-        process.exit(64);
-      }
+  .action(async (targetCommand: string[], opts: { deep?: boolean; json?: boolean }) => {
+    const target = activeTargetCommand ?? targetCommand ?? [];
+    if (target.length === 0) {
+      process.stderr.write("Error: Target server command must be provided.\n");
+      process.exit(64);
+    }
 
-      try {
-        if (opts.deep) {
-          const report = await validateProtocol(target[0], target.slice(1));
-          if (opts.json) {
-            process.stdout.write(JSON.stringify(report, null, 2) + "\n");
-          } else {
-            console.log(
-              `Validation Result: ${report.status === "PASS" ? "\x1b[32mSUCCESS\x1b[0m" : report.status === "WARN" ? "\x1b[33mWARNING\x1b[0m" : "\x1b[31mFAILED\x1b[0m"}\n`,
-            );
-            for (const check of report.checks) {
-              const statusStr =
-                check.status === "PASS"
-                  ? "\x1b[32mPASS\x1b[0m"
-                  : check.status === "WARN"
-                    ? "\x1b[33mWARN\x1b[0m"
-                    : "\x1b[31mFAIL\x1b[0m";
-              console.log(`  [${statusStr}] ${check.name}: ${check.message || ""}`);
-            }
-          }
-          process.exit(report.status === "FAIL" ? 1 : 0);
+    try {
+      if (opts.deep) {
+        const report = await validateProtocol(target[0], target.slice(1));
+        if (opts.json) {
+          process.stdout.write(JSON.stringify(report, null, 2) + "\n");
         } else {
-          const report = await validateProtocol(target[0], target.slice(1));
-
-          const handshake = report.checks.find((c) => c.name === "handshake_connection");
-          const metadata = report.checks.find((c) => c.name === "implementation_metadata");
-          const tools = report.checks.find((c) => c.name === "tools_capability");
-          const caps = report.checks.find((c) => c.name === "server_capabilities");
-
-          if (report.status === "FAIL") {
-            if (opts.json) {
-              process.stdout.write(
-                JSON.stringify(
-                  { success: false, error: handshake?.message || "Validation failed" },
-                  null,
-                  2,
-                ) + "\n",
-              );
-            } else {
-              console.error(`\x1b[31mValidation Result: FAILED\x1b[0m`);
-              console.error(`Error: ${handshake?.message || "Unknown error"}`);
-            }
-            process.exit(1);
+          console.log(
+            `Validation Result: ${report.status === "PASS" ? "\x1b[32mSUCCESS\x1b[0m" : report.status === "WARN" ? "\x1b[33mWARNING\x1b[0m" : "\x1b[31mFAILED\x1b[0m"}\n`,
+          );
+          for (const check of report.checks) {
+            const statusStr =
+              check.status === "PASS"
+                ? "\x1b[32mPASS\x1b[0m"
+                : check.status === "WARN"
+                  ? "\x1b[33mWARN\x1b[0m"
+                  : "\x1b[31mFAIL\x1b[0m";
+            console.log(`  [${statusStr}] ${check.name}: ${check.message || ""}`);
           }
+        }
+        process.exit(report.status === "FAIL" ? 1 : 0);
+      } else {
+        const report = await validateProtocol(target[0], target.slice(1));
 
+        const handshake = report.checks.find((c) => c.name === "handshake_connection");
+        const metadata = report.checks.find((c) => c.name === "implementation_metadata");
+        const tools = report.checks.find((c) => c.name === "tools_capability");
+        const caps = report.checks.find((c) => c.name === "server_capabilities");
+
+        if (report.status === "FAIL") {
           if (opts.json) {
             process.stdout.write(
               JSON.stringify(
-                {
-                  success: true,
-                  serverName: metadata?.message?.match(/"([^"]+)"/)?.[1] || "unknown",
-                  capabilities: caps?.message || "none",
-                },
+                { success: false, error: handshake?.message || "Validation failed" },
                 null,
                 2,
               ) + "\n",
             );
           } else {
-            console.log(`\x1b[32mValidation Result: SUCCESS\x1b[0m`);
-            console.log(`  ${metadata?.message || "Implementation metadata OK."}`);
-            console.log(`  ${caps?.message || "Capabilities OK."}`);
-            console.log(`  ${tools?.message || "Tools OK."}`);
+            console.error(`\x1b[31mValidation Result: FAILED\x1b[0m`);
+            console.error(`Error: ${handshake?.message || "Unknown error"}`);
           }
-          process.exit(0);
+          process.exit(1);
         }
-      } catch (err: any) {
+
         if (opts.json) {
           process.stdout.write(
-            JSON.stringify({ success: false, error: err.message }, null, 2) + "\n",
+            JSON.stringify(
+              {
+                success: true,
+                serverName: metadata?.message?.match(/"([^"]+)"/)?.[1] || "unknown",
+                capabilities: caps?.message || "none",
+              },
+              null,
+              2,
+            ) + "\n",
           );
         } else {
-          console.error(`\x1b[31mError: ${err.message}\x1b[0m`);
+          console.log(`\x1b[32mValidation Result: SUCCESS\x1b[0m`);
+          console.log(`  ${metadata?.message || "Implementation metadata OK."}`);
+          console.log(`  ${caps?.message || "Capabilities OK."}`);
+          console.log(`  ${tools?.message || "Tools OK."}`);
         }
-        process.exit(1);
+        process.exit(0);
       }
-    },
-  );
+    } catch (err: any) {
+      if (opts.json) {
+        process.stdout.write(
+          JSON.stringify({ success: false, error: err.message }, null, 2) + "\n",
+        );
+      } else {
+        console.error(`\x1b[31mError: ${err.message}\x1b[0m`);
+      }
+      process.exit(1);
+    }
+  });
 
 // ─── Subcommand: proxy (compressing proxy) ───────────────────────────────────
 
@@ -656,7 +595,6 @@ program
   .option("--include-tools <names...>", "Only expose these backend tools")
   .option("--exclude-tools <names...>", "Hide these backend tools")
   .option("--compress-output", "Also minify backend tool output (lossless JSON minify)")
-  .option("--sandbox <mode>", "Sandbox execution mode: auto, docker, native, audit, none", "none")
   .option("--transport <mode>", "Transport for http(s) backends: auto, http, sse")
   .allowUnknownOption()
   .action(
@@ -669,7 +607,6 @@ program
         includeTools?: string[];
         excludeTools?: string[];
         compressOutput?: boolean;
-        sandbox?: string;
         transport?: string;
       },
     ) => {
@@ -732,7 +669,6 @@ program
         includeTools: opts.includeTools,
         excludeTools: opts.excludeTools,
         compressOutput: opts.compressOutput,
-        sandbox: opts.sandbox as any,
         transport: opts.transport as any,
       });
     },
@@ -770,23 +706,9 @@ program
     "--open-media",
     "Automatically open intercepted images and audio files using the host OS viewer",
   )
-  .option("--sandbox <mode>", "Sandbox execution mode: auto, docker, native, audit, none", "none")
   .option(
     "--scan",
     "Scan the current workspace and parent directories for any JSON files containing mcpServers",
-  )
-  .option(
-    "--no-scan-tools",
-    "Disable tool-poisoning scanning of tools/list metadata (Agent Mode; on by default)",
-  )
-  .option(
-    "--redact-secrets",
-    "Redact detected secrets/API keys from tool/resource/prompt output (Agent Mode)",
-  )
-  .option("--redact-emails", "When redacting, also redact email addresses (Agent Mode)")
-  .option(
-    "--audit-log <file>",
-    "Append a JSONL audit trail of every MCP request/response to this file (Agent Mode)",
   )
   .option(
     "--transport <mode>",
@@ -846,7 +768,7 @@ Agent Mode Tools:
   mcp_server_status    → Check connection status
   get_mcp_server_stderr → View target server stderr output
   validate_mcp_server  → Validate an MCP server command and collect diagnostics
-  search_all_local_mcp_servers → Scan and search all local MCP servers for a query
+  list_available_mcp_servers → List local MCP servers found in config files
 
 REPL Mode Commands (once connected):
   tools/list                          List all available tools
@@ -887,18 +809,7 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
         mcp?: boolean;
         openMedia?: boolean;
         watch?: boolean;
-        sandbox?: string;
-        allowRead?: string[];
-        allowWrite?: string[];
-        allowNet?: string[];
-        denyRead?: string[];
-        denyWrite?: string[];
-        denyNet?: string[];
         scan?: boolean;
-        scanTools?: boolean;
-        redactSecrets?: boolean;
-        redactEmails?: boolean;
-        auditLog?: string;
         transport?: string;
         compressOutput?: boolean;
         compressAggressive?: boolean;
@@ -916,13 +827,6 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
             : undefined,
           openMedia: opts.openMedia,
           watch: opts.watch,
-          sandbox: opts.sandbox as any,
-          allowRead: opts.allowRead,
-          allowWrite: opts.allowWrite,
-          allowNet: opts.allowNet,
-          denyRead: opts.denyRead,
-          denyWrite: opts.denyWrite,
-          denyNet: opts.denyNet,
           transport: opts.transport as any,
         });
       } else {
@@ -936,18 +840,7 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
             mediaThresholdKb: opts.mediaThreshold
               ? Number.parseInt(opts.mediaThreshold, 10)
               : undefined,
-            sandbox: opts.sandbox as any,
-            allowRead: opts.allowRead,
-            allowWrite: opts.allowWrite,
-            allowNet: opts.allowNet,
-            denyRead: opts.denyRead,
-            denyWrite: opts.denyWrite,
-            denyNet: opts.denyNet,
             scan: opts.scan,
-            scanTools: opts.scanTools,
-            redactSecrets: opts.redactSecrets,
-            redactEmails: opts.redactEmails,
-            auditLogPath: opts.auditLog,
             transport: opts.transport as any,
             compressOutput: opts.compressOutput,
             compressAggressive: opts.compressAggressive,
@@ -970,13 +863,6 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
               : undefined,
             openMedia: opts.openMedia,
             watch: opts.watch,
-            sandbox: opts.sandbox as any,
-            allowRead: opts.allowRead,
-            allowWrite: opts.allowWrite,
-            allowNet: opts.allowNet,
-            denyRead: opts.denyRead,
-            denyWrite: opts.denyWrite,
-            denyNet: opts.denyNet,
             transport: opts.transport as any,
             // Config env is threaded into the child, not mutated onto process.env.
             env: selected.config.env,
@@ -985,21 +871,5 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
       }
     },
   );
-
-// Dynamically add allow/deny options to all commands that support --sandbox
-for (const cmd of [program, ...program.commands]) {
-  if (cmd.options.some((o: any) => o.long === "--sandbox")) {
-    cmd
-      .option("--allow-read <paths...>", "Paths to allow reading under the sandbox")
-      .option("--allow-write <paths...>", "Paths to allow writing under the sandbox")
-      .option(
-        "--allow-net <domains...>",
-        "Network domains to allow connecting to under the sandbox",
-      )
-      .option("--deny-read <paths...>", "Paths to deny reading under the sandbox")
-      .option("--deny-write <paths...>", "Paths to deny writing under the sandbox")
-      .option("--deny-net <domains...>", "Network domains to deny connecting to under the sandbox");
-  }
-}
 
 program.parse(argvToParse);

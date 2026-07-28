@@ -19,31 +19,13 @@ export const MOCK_SERVER_ARGS = existsSync(MOCK_SERVER_PATH_JS)
   ? [MOCK_SERVER_PATH_JS]
   : ["--import", "tsx", MOCK_SERVER_PATH_TS];
 
-/** Path to the deliberately-hostile stdio server used for sandbox enforcement tests. */
-export const VULN_SERVER_PATH_TS = resolve(
-  import.meta.dirname,
-  "fixtures/vulnerable-stdio-server.ts",
-);
-export const VULN_SERVER_PATH_JS = resolve(
-  import.meta.dirname,
-  "fixtures/dist/vulnerable-stdio-server.js",
-);
-
-export const VULN_SERVER_CMD = "node";
-export const VULN_SERVER_ARGS = existsSync(VULN_SERVER_PATH_JS)
-  ? [VULN_SERVER_PATH_JS]
-  : ["--import", "tsx", VULN_SERVER_PATH_TS];
-
-/** Path to the tool-poisoned server fixture (invisible chars + injection phrase). */
-export const POISONED_SERVER_PATH_TS = resolve(import.meta.dirname, "fixtures/poisoned-server.ts");
-export const POISONED_SERVER_PATH_JS = resolve(
-  import.meta.dirname,
-  "fixtures/dist/poisoned-server.js",
-);
-export const POISONED_SERVER_CMD = "node";
-export const POISONED_SERVER_ARGS = existsSync(POISONED_SERVER_PATH_JS)
-  ? [POISONED_SERVER_PATH_JS]
-  : ["--import", "tsx", POISONED_SERVER_PATH_TS];
+/** Path to the minimal second backend used by the multiplexing-proxy tests. */
+export const SECOND_SERVER_PATH_TS = resolve(import.meta.dirname, "fixtures/second-server.ts");
+export const SECOND_SERVER_PATH_JS = resolve(import.meta.dirname, "fixtures/dist/second-server.js");
+export const SECOND_SERVER_CMD = "node";
+export const SECOND_SERVER_ARGS = existsSync(SECOND_SERVER_PATH_JS)
+  ? [SECOND_SERVER_PATH_JS]
+  : ["--import", "tsx", SECOND_SERVER_PATH_TS];
 
 /** Path to the crash-on-demand fixture (proxy dead-backend tests). Runs via tsx. */
 export const CRASHY_SERVER_PATH_TS = resolve(import.meta.dirname, "fixtures/crashy-server.ts");
