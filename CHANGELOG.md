@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A failed connect now carries the target server's stderr.** Previously `connect_to_mcp` reported only the transport's opaque `MCP error -32000: Connection closed`, told the caller to check `get_mcp_server_stderr`, and then discarded the target that held the output — so the follow-up call answered "No target server (current or previous). Nothing to show." A server that won't start is the most common event in the core loop, and its stderr is the only evidence of why; that evidence is now inlined in the failure message (zero extra round trips), retained for `get_mcp_server_stderr` after teardown, and given a brief settle window so it isn't lost to the close/stderr race. Applies to `connect_to_mcp`, `reconnect_to_mcp`, and `call_mcp_primitive`'s auto-connect.
+
+### Added
+
+- **`reconnect_to_mcp`** — restarts the current target in one call, reusing the command it was started with, and diffs tools/resources/prompts against the previous run. This is the edit-test loop: it replaces `disconnect_from_mcp` + `connect_to_mcp` and always reports what your change did. The REPL and watch mode already had this; the agent did not.
+
 ### Removed
 
 Scope cut: `run-mcp` protects the consuming agent's *context*, not the host. Guarding
@@ -28,8 +36,26 @@ recoverable from git history if that ever changes.
   config files without starting anything, and the CLI's interactive picker and `--scan` are
   unchanged.
 
-The agent server now exposes 10 tools (was 11) and the root command 15 options (was 25).
 The interceptor plugin framework itself is retained, as is `--compress-output`.
+
+Second cut — the compressing proxy and relevance search:
+
+- **`run-mcp proxy`** — both the single-backend `get_tool_schema`/`invoke_tool` surface and
+  the multi-backend multiplexer (`--config`/`--multi-server`, `list_servers`,
+  `list_server_tools`, namespaced routing), with `src/proxy.ts`, `src/compression.ts`,
+  `src/target-pool.ts`, `src/tool-cache.ts` and their four test suites.
+- **`find_tools`** (agent server) and **`find`** (REPL), plus `src/ranking.ts` (BM25).
+
+Rationale: every surface that earns its place makes the server under development *more*
+legible to the agent — schemas, stderr, diffs, spec compliance. The proxy's job is the
+opposite: show the model as little as possible. Its user is an agent *operator* fronting a
+fleet, not someone building a server, and the work it would need to be good at that (OAuth,
+remote transports, config management, stats) points away from this project. `find_tools`
+was the same instinct one layer in: BM25 search over the catalog of a server the agent
+wrote itself, where `list_mcp_primitives(summary: true)` already covers it.
+
+The agent server exposes 10 tools (was 11: `find_tools` out, `reconnect_to_mcp` in) and the
+root command 15 options (was 25). Bundle: 424KB → 356KB.
 
 ## [1.8.0] - 2026-07-14
 

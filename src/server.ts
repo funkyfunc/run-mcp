@@ -5,7 +5,6 @@ import { discoverServers } from "./config-scanner.js";
 import { type InterceptionMetadata, ResponseInterceptor } from "./interceptor.js";
 import { type InterceptorPlugin, outputCompressionPlugin } from "./plugins.js";
 import { suggestCommand } from "./parsing.js";
-import { rankTools } from "./ranking.js";
 import {
   type Snapshot,
   computeSnapshotDiff,
@@ -40,10 +39,10 @@ export interface ServerOptions {
  * Tools:
  *   connect_to_mcp        → Spawn and connect to a local MCP server
  *   disconnect_from_mcp   → Tear down the connection
+ *   reconnect_to_mcp      → Restart the target after a code edit and diff what changed
  *   mcp_server_status     → Check connection status
  *   call_mcp_primitive    → Call a tool, read a resource, or get a prompt (auto-connects if needed)
  *   list_mcp_primitives   → List tools, resources, and/or prompts
- *   find_tools            → Relevance-ranked, compact tool discovery (context firewall)
  *   read_result           → Page through an oversized result spilled to disk
  *   get_mcp_server_stderr → View target server stderr output
  *   list_available_mcp_servers → Discover other local MCP servers from config files
@@ -148,6 +147,70 @@ export async function startServer(opts: ServerOptions): Promise<void> {
     });
   }
 
+  /**
+   * Stderr of the most recently retired target, kept after it is torn down.
+   *
+   * A server that fails to start is exactly the case where its stderr matters
+   * most — it is the only evidence of *why* — and it is also the case where the
+   * TargetManager gets discarded. Without this, the transport's opaque
+   * "Connection closed" would be all the caller ever sees.
+   */
+  let lastStderr: string[] = [];
+
+  /**
+   * Wait briefly for a dying target's stderr to arrive.
+   *
+   * `connect()` rejects when the transport closes, which can win the race
+   * against the child's final stderr 'data' event. Only ever runs on the
+   * failure path, so the happy path pays nothing.
+   */
+  async function settleStderr(t: TargetManager): Promise<void> {
+    const DEADLINE_MS = 250;
+    const POLL_MS = 25;
+    for (let waited = 0; waited < DEADLINE_MS; waited += POLL_MS) {
+      if (t.getStderrLines().length > 0) return;
+      await new Promise((r) => setTimeout(r, POLL_MS));
+    }
+  }
+
+  /** Tear down a target, preserving its stderr for post-mortem reads. */
+  async function retireTarget(): Promise<void> {
+    if (!target) return;
+    const captured = target.getStderrLines();
+    if (captured.length > 0) lastStderr = captured;
+    await target.close().catch(() => {});
+    target = null;
+    cachedToolList = null;
+  }
+
+  /**
+   * Build a connect-failure message that carries the target's own stderr inline.
+   * The dying server's output is the actionable part; making the caller spend a
+   * second round trip to find it (or worse, find it already discarded) is the
+   * difference between a fixable error and a dead end.
+   */
+  function formatConnectFailure(err: any, command: string, args: string[]): string {
+    const lines = [
+      `Failed to connect: ${err?.message ?? String(err)}`,
+      `Command: ${command} ${args.join(" ")}`,
+    ];
+    const stderrLines = lastStderr.slice(-40);
+    if (stderrLines.length > 0) {
+      lines.push(
+        "",
+        "--- Target server stderr (this is almost certainly the cause) ---",
+        stderrLines.join("\n"),
+      );
+    } else {
+      lines.push(
+        "",
+        "The target produced no stderr output before exiting. Check that the command is " +
+          "correct and runs standalone in a shell.",
+      );
+    }
+    return lines.join("\n");
+  }
+
   /** Take a snapshot of the current target's primitives. */
   async function takeSnapshot(): Promise<Snapshot> {
     if (!target) return {};
@@ -183,11 +246,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
     }
 
     // Clean up any previous (disconnected) target
-    if (target) {
-      await target.close();
-      target = null;
-    }
-    cachedToolList = null;
+    await retireTarget();
 
     target = new TargetManager(cmdToUse, argsToUse ?? [], {
       env: envToUse,
@@ -197,9 +256,11 @@ export async function startServer(opts: ServerOptions): Promise<void> {
     try {
       await target.connect();
     } catch (err) {
-      await target.close().catch(() => {});
-      target = null;
-      throw err;
+      await settleStderr(target);
+      await retireTarget();
+      throw Object.assign(new Error(formatConnectFailure(err, cmdToUse, argsToUse ?? [])), {
+        alreadyFormatted: true,
+      });
     }
     cachedSpawnConfig = { command: cmdToUse, args: argsToUse ?? [], env: envToUse };
     return null;
@@ -358,11 +419,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       }
 
       // Clean up any previous (disconnected) target
-      if (target) {
-        await target.close();
-        target = null;
-      }
-      cachedToolList = null;
+      await retireTarget();
 
       try {
         target = new TargetManager(command, args ?? [], {
@@ -373,9 +430,11 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         try {
           await target.connect();
         } catch (err) {
-          await target.close().catch(() => {});
-          target = null;
-          throw err;
+          await settleStderr(target);
+          await retireTarget();
+          throw Object.assign(new Error(formatConnectFailure(err, command, args ?? [])), {
+            alreadyFormatted: true,
+          });
         }
         cachedSpawnConfig = { command, args: args ?? [], env };
 
@@ -432,17 +491,14 @@ export async function startServer(opts: ServerOptions): Promise<void> {
 
         return { content: [{ type: "text" as const, text: lines.join("\n") }] };
       } catch (err: any) {
-        target = null;
+        // A connect failure arrives pre-formatted with the target's stderr;
+        // anything thrown later (listTools, snapshot) gets the same treatment.
+        const text = err.alreadyFormatted
+          ? err.message
+          : formatConnectFailure(err, command, args ?? []);
+        await retireTarget();
         return {
-          content: [
-            {
-              type: "text" as const,
-              text:
-                `Failed to connect: ${err.message}\n\n` +
-                "Check that the command is correct and the server starts without errors. " +
-                "You can also check get_mcp_server_stderr after a failed connect for more details.",
-            },
-          ],
+          content: [{ type: "text" as const, text }],
           isError: true,
         };
       }
@@ -468,9 +524,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       }
 
       const status = target.getStatus();
-      await target.close();
-      target = null;
-      cachedToolList = null;
+      await retireTarget();
 
       return {
         content: [
@@ -480,6 +534,88 @@ export async function startServer(opts: ServerOptions): Promise<void> {
           },
         ],
       };
+    },
+  );
+
+  // ─── reconnect_to_mcp ───────────────────────────────────────────────────
+
+  mcpServer.registerTool(
+    "reconnect_to_mcp",
+    {
+      title: "Reconnect to MCP Server",
+      description:
+        "Restart the current target server and report what changed. " +
+        "This is the tool to use after editing your server's code — it replaces " +
+        "disconnect_from_mcp + connect_to_mcp with one call, reuses the command it " +
+        "was already started with, and diffs the tools/resources/prompts against the " +
+        "previous run so you can see the effect of your edit.",
+      inputSchema: {
+        include: z
+          .array(z.enum(["tools", "resources", "resource_templates", "prompts"]))
+          .optional()
+          .describe(
+            "Primitives to include in full in the response. The change diff is always shown.",
+          ),
+        summary: z
+          .boolean()
+          .optional()
+          .describe("If true, included primitives omit full schemas to save tokens."),
+      },
+    },
+    async ({ include, summary }) => {
+      if (!cachedSpawnConfig) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text:
+                "No server has been started yet, so there is nothing to restart. " +
+                "Call connect_to_mcp with a command first.",
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      const { command, args, env } = cachedSpawnConfig;
+
+      // Snapshot the outgoing server before tearing it down, so the diff
+      // reflects this edit rather than whatever connect_to_mcp last recorded.
+      if (target?.connected) {
+        previousSnapshot = await takeSnapshot();
+      }
+      await retireTarget();
+
+      target = new TargetManager(command, args, { env, transport: opts.transport });
+      setupTargetListeners(target);
+      try {
+        await target.connect();
+      } catch (err) {
+        await settleStderr(target);
+        await retireTarget();
+        return {
+          content: [{ type: "text" as const, text: formatConnectFailure(err, command, args) }],
+          isError: true,
+        };
+      }
+
+      const status = target.getStatus();
+      const lines = [
+        `Reconnected to MCP server (PID: ${status.pid})`,
+        `Command: ${command} ${args.join(" ")}`,
+      ];
+
+      const currentSnapshot = await takeSnapshot();
+      // diffSnapshot returns [] only when there is no baseline to compare against.
+      const diff = diffSnapshot(currentSnapshot);
+      lines.push("", ...(diff.length > 0 ? diff : ["No previous run to compare against."]));
+      previousSnapshot = currentSnapshot;
+
+      if (include && include.length > 0) {
+        lines.push(...(await buildIncludeData(include, summary)));
+      }
+
+      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
     },
   );
 
@@ -713,87 +849,6 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       return {
         content: [{ type: "text" as const, text: sections.join("\n") }],
       };
-    },
-  );
-
-  // ─── find_tools ─────────────────────────────────────────────────────────
-
-  mcpServer.registerTool(
-    "find_tools",
-    {
-      title: "Find Tools",
-      description:
-        "Search the connected server's tools by relevance to a query and return a " +
-        "short, ranked list of compact summaries (name + description) — WITHOUT full " +
-        "schemas. Use this to discover the right tool without loading the entire tool " +
-        "catalog into context (avoids the 'tools tax'). Then inspect one schema with " +
-        "list_mcp_primitives(name='...') and invoke it with call_mcp_primitive.",
-      inputSchema: {
-        query: z
-          .string()
-          .describe(
-            "What you want to do — natural language or keywords (e.g. 'take a screenshot')",
-          ),
-        limit: z.number().optional().describe("Max number of tools to return (default 5)"),
-        include_schema: z
-          .boolean()
-          .optional()
-          .describe("Include the full input schema for each matched tool (default false)"),
-      },
-    },
-    async ({ query, limit, include_schema }) => {
-      if (!target?.connected) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: "No target server connected. Use connect_to_mcp first.",
-            },
-          ],
-          isError: true,
-        };
-      }
-
-      try {
-        const listed = await target.listTools();
-        const { tools } = await interceptor.processToolList(listed.tools as any);
-        const ranked = rankTools(query, tools as any[], limit ?? 5);
-
-        if (ranked.length === 0) {
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: `No tools matched "${query}" among ${tools.length} tool(s). Try broader keywords, or list_mcp_primitives to browse.`,
-              },
-            ],
-          };
-        }
-
-        const matches = ranked.map(({ tool, score }) => {
-          const entry: Record<string, unknown> = {
-            name: (tool as any).name,
-            description: (tool as any).description,
-            score,
-          };
-          if (include_schema) entry.inputSchema = (tool as any).inputSchema;
-          return entry;
-        });
-
-        const lines = [
-          `Top ${matches.length} of ${tools.length} tool(s) for "${query}":`,
-          JSON.stringify(matches, null, 2),
-          "",
-          "Next: list_mcp_primitives(name='<tool>') for the full schema, then call_mcp_primitive to invoke it.",
-        ];
-
-        return { content: [{ type: "text" as const, text: lines.join("\n") }] };
-      } catch (err: any) {
-        return {
-          content: [{ type: "text" as const, text: `Error searching tools: ${err.message}` }],
-          isError: true,
-        };
-      }
     },
   );
 
@@ -1259,18 +1314,25 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       },
     },
     async ({ lines }) => {
-      if (!target) {
+      // Falls back to the retired target's buffer: the most valuable stderr is
+      // the stderr of a server that just died, and that target is already gone.
+      const stderrLines = target
+        ? target.getStderrLines(lines)
+        : lines
+          ? lastStderr.slice(-lines)
+          : lastStderr;
+
+      if (!target && stderrLines.length > 0) {
         return {
           content: [
             {
               type: "text" as const,
-              text: "No target server (current or previous). Nothing to show.",
+              text: `(from the last target, which is no longer running)\n\n${stderrLines.join("\n")}`,
             },
           ],
         };
       }
 
-      const stderrLines = target.getStderrLines(lines);
       if (stderrLines.length === 0) {
         return {
           content: [{ type: "text" as const, text: "No stderr output captured." }],

@@ -163,7 +163,7 @@ export class TargetManager extends EventEmitter {
 
   /**
    * Enable auto-reconnect behavior.
-   * Only applies to interactive REPL mode — proxy mode manages its own lifecycle.
+   * Only applies to interactive REPL mode.
    */
   enableAutoReconnect(): void {
     this._autoReconnect = true;
@@ -478,7 +478,7 @@ export class TargetManager extends EventEmitter {
   /**
    * List ALL tools, following cursor-based pagination to exhaustion.
    * `listTools()` returns a single page — a paginating backend would otherwise
-   * yield a silently partial catalog (worse than an error for a proxy).
+   * yield a silently partial catalog (worse than an error).
    */
   async listAllTools(): Promise<{ tools: any[] }> {
     const tools: any[] = [];

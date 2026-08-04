@@ -7,13 +7,10 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
-import { pickDiscoveredServer, loadMcpServersFile } from "./config-scanner.js";
+import { pickDiscoveredServer } from "./config-scanner.js";
 import { runHeadless, executeOperation } from "./headless.js";
 import { startRepl } from "./repl.js";
 import { startServer } from "./server.js";
-import { startProxyServer } from "./proxy.js";
-import { COMPRESSION_LEVELS, type CompressionLevel } from "./compression.js";
-import type { PoolBackendConfig } from "./target-pool.js";
 import { TargetManager } from "./target-manager.js";
 import { ResponseInterceptor } from "./interceptor.js";
 import { validateProtocol } from "./validator.js";
@@ -574,106 +571,6 @@ program
     }
   });
 
-// ─── Subcommand: proxy (compressing proxy) ───────────────────────────────────
-
-program
-  .command("proxy")
-  .description(
-    "Run as a compressing MCP proxy: expose a backend's tools as a tiny " +
-      "get_tool_schema/invoke_tool surface to slash tool-metadata tokens",
-  )
-  .argument("[target_command...]", "Backend server command (after --)")
-  .option(
-    "-c, --compression <level>",
-    `Compression level: ${COMPRESSION_LEVELS.join(", ")} (default: medium)`,
-  )
-  .option("--config <file>", "MCP config file (mcpServers shape) to front multiple backends")
-  .option(
-    "--multi-server <spec...>",
-    'Add a backend as "name=command [args...]" (repeatable, alternative to --config)',
-  )
-  .option("--include-tools <names...>", "Only expose these backend tools")
-  .option("--exclude-tools <names...>", "Hide these backend tools")
-  .option("--compress-output", "Also minify backend tool output (lossless JSON minify)")
-  .option("--transport <mode>", "Transport for http(s) backends: auto, http, sse")
-  .allowUnknownOption()
-  .action(
-    async (
-      targetCommand: string[],
-      opts: {
-        compression?: string;
-        config?: string;
-        multiServer?: string[];
-        includeTools?: string[];
-        excludeTools?: string[];
-        compressOutput?: boolean;
-        transport?: string;
-      },
-    ) => {
-      const level = opts.compression as CompressionLevel | undefined;
-      if (level && !COMPRESSION_LEVELS.includes(level)) {
-        process.stderr.write(
-          `Error: invalid compression level "${level}". Use one of: ${COMPRESSION_LEVELS.join(", ")}.\n`,
-        );
-        process.exit(64);
-      }
-
-      // Resolve backends from: --config (a file), --multi-server (repeatable), or
-      // a single `-- <cmd>`.
-      let backends: PoolBackendConfig[] | undefined;
-      if (opts.config) {
-        try {
-          const servers = await loadMcpServersFile(opts.config);
-          backends = servers.map(({ name, config }) => ({
-            name,
-            command: config.command ?? config.url!,
-            args: config.args,
-            env: config.env,
-            description: config.description,
-          }));
-        } catch (err: any) {
-          process.stderr.write(`Error loading --config "${opts.config}": ${err.message}\n`);
-          process.exit(64);
-        }
-      } else if (opts.multiServer && opts.multiServer.length > 0) {
-        backends = opts.multiServer.map((spec) => {
-          const eq = spec.indexOf("=");
-          if (eq <= 0) {
-            process.stderr.write(
-              `Error: --multi-server must be "name=command [args...]": ${spec}\n`,
-            );
-            process.exit(64);
-          }
-          const name = spec.slice(0, eq).trim();
-          const parts = spec
-            .slice(eq + 1)
-            .trim()
-            .split(/\s+/);
-          return { name, command: parts[0], args: parts.slice(1) };
-        });
-      }
-
-      const target = activeTargetCommand ?? targetCommand ?? [];
-      if (!backends && target.length === 0) {
-        process.stderr.write("Error: provide a backend via '--', --config, or --multi-server.\n");
-        process.stderr.write("Usage: run-mcp proxy [-c medium] -- <backend_command...>\n");
-        process.stderr.write("       run-mcp proxy [-c medium] --config mcp.json\n");
-        process.exit(64);
-      }
-
-      await startProxyServer({
-        command: backends ? undefined : target[0],
-        args: backends ? undefined : target.slice(1),
-        backends,
-        level,
-        includeTools: opts.includeTools,
-        excludeTools: opts.excludeTools,
-        compressOutput: opts.compressOutput,
-        transport: opts.transport as any,
-      });
-    },
-  );
-
 // ─── Default: REPL or Agent Server ───────────────────────────────────────────
 
 program
@@ -762,7 +659,7 @@ Agent Mode Tools:
   connect_to_mcp       → Spawn and connect (use include to get tools/resources/prompts)
   call_mcp_primitive   → Call a tool, read a resource, or get a prompt (auto-connects)
   list_mcp_primitives  → List tools, resources, and/or prompts
-  find_tools           → Search tools by relevance (compact, avoids the tools tax)
+  reconnect_to_mcp     → Restart the target after a code edit and diff what changed
   read_result          → Page through an oversized result spilled to disk
   disconnect_from_mcp  → Tear down and reconnect after changes
   mcp_server_status    → Check connection status
@@ -775,7 +672,6 @@ REPL Mode Commands (once connected):
   tools/describe <name>               Show a tool's input schema
   tools/call <name> [json] [opts]     Call a tool (interactive if no json)
   tools/scaffold <name>               Generate argument template for a tool
-  find <query>                        Find tools by relevance to a query
   resources/list                      List all available resources
   resources/read <uri>                Read a resource by URI
   resources/templates                 List resource templates

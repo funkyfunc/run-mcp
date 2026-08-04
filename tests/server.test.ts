@@ -4,7 +4,12 @@ import { resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { afterEach, describe, expect, it } from "vitest";
-import { MOCK_SERVER_ARGS, MOCK_SERVER_CMD } from "./helpers.js";
+import {
+  MOCK_SERVER_ARGS,
+  MOCK_SERVER_CMD,
+  STARTUP_CRASH_ARGS,
+  STARTUP_CRASH_CMD,
+} from "./helpers.js";
 
 /**
  * Tests for the server mode (consolidated tool surface).
@@ -80,33 +85,82 @@ function getText(result: any): string {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ═══════════════════════════════════════════════════════════════════════════
-// find_tools — context-firewall / lazy discovery
+// Connect failures must carry the target's stderr — the whole point of the tool
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe("server: find_tools", () => {
-  it("returns a ranked, compact match without full schemas by default", async () => {
+describe("server: failed connect surfaces the target's stderr", () => {
+  it("inlines stderr in the connect_to_mcp failure, with no extra round trip", async () => {
     const c = await startRunMcpServer();
-    await connectToMockServer(c);
     const result = await c.callTool({
-      name: "find_tools",
-      arguments: { query: "take a screenshot", limit: 3 },
+      name: "connect_to_mcp",
+      arguments: { command: STARTUP_CRASH_CMD, args: STARTUP_CRASH_ARGS },
     });
-    const text = getText(result);
-    expect(text).toContain("screenshot");
-    // Compact by default: no inputSchema dumped into context.
-    expect(text).not.toContain("inputSchema");
-    // Guides the agent toward the drill-down workflow.
-    expect(text).toContain("list_mcp_primitives");
-  }, 15_000);
 
-  it("includes the schema only when include_schema is set", async () => {
+    expect(result.isError).toBe(true);
+    const text = getText(result);
+    // The server's own diagnostic — not just "Connection closed".
+    expect(text).toContain("cannot find module './db-config.js'");
+    expect(text).toContain("Target server stderr");
+  }, 20_000);
+
+  it("get_mcp_server_stderr still works after the failed target is torn down", async () => {
     const c = await startRunMcpServer();
-    await connectToMockServer(c);
-    const result = await c.callTool({
-      name: "find_tools",
-      arguments: { query: "screenshot", include_schema: true },
+    await c.callTool({
+      name: "connect_to_mcp",
+      arguments: { command: STARTUP_CRASH_CMD, args: STARTUP_CRASH_ARGS },
     });
-    expect(getText(result)).toContain("inputSchema");
+
+    const stderr = await c.callTool({ name: "get_mcp_server_stderr", arguments: {} });
+    const text = getText(stderr);
+    expect(text).toContain("cannot find module './db-config.js'");
+    expect(text).not.toContain("Nothing to show");
+  }, 20_000);
+
+  it("auto-connect failures through call_mcp_primitive carry stderr too", async () => {
+    const c = await startRunMcpServer();
+    const result = await c.callTool({
+      name: "call_mcp_primitive",
+      arguments: {
+        type: "tool",
+        name: "whatever",
+        auto_connect: { command: STARTUP_CRASH_CMD, args: STARTUP_CRASH_ARGS },
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(getText(result)).toContain("cannot find module './db-config.js'");
+  }, 20_000);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// reconnect_to_mcp — the one-call edit-test loop
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("server: reconnect_to_mcp", () => {
+  it("restarts the cached target in one call and reports no changes", async () => {
+    const c = await startRunMcpServer();
+    await c.callTool({
+      name: "connect_to_mcp",
+      arguments: { command: MOCK_SERVER_CMD, args: MOCK_SERVER_ARGS },
+    });
+    const before = getText(await c.callTool({ name: "mcp_server_status", arguments: {} }));
+
+    const result = await c.callTool({ name: "reconnect_to_mcp", arguments: {} });
+    expect(result.isError).toBeFalsy();
+    const text = getText(result);
+    expect(text).toContain("Reconnected to MCP server");
+    expect(text).toContain("Changes since last connection: none");
+
+    // It really is a new process.
+    const after = getText(await c.callTool({ name: "mcp_server_status", arguments: {} }));
+    expect(after).not.toBe(before);
+  }, 30_000);
+
+  it("coaches instead of failing when nothing has been started yet", async () => {
+    const c = await startRunMcpServer();
+    const result = await c.callTool({ name: "reconnect_to_mcp", arguments: {} });
+    expect(result.isError).toBe(true);
+    expect(getText(result)).toContain("connect_to_mcp");
   }, 15_000);
 });
 
@@ -125,7 +179,7 @@ describe("server: tool discovery", () => {
     expect(names).toContain("mcp_server_status");
     expect(names).toContain("call_mcp_primitive");
     expect(names).toContain("list_mcp_primitives");
-    expect(names).toContain("find_tools");
+    expect(names).toContain("reconnect_to_mcp");
     expect(names).toContain("get_mcp_server_stderr");
     expect(names).toContain("list_available_mcp_servers");
     expect(names).toContain("validate_mcp_server");

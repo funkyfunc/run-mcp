@@ -9,7 +9,7 @@ export interface McpServerConfig {
   command: string;
   args?: string[];
   env?: Record<string, string>;
-  /** Optional human description (used by the proxy's server overview). Superset of the standard shape. */
+  /** Optional human description. Superset of the standard shape. */
   description?: string;
   /** Optional remote (Streamable HTTP) backend URL; used as the command when set. */
   url?: string;
@@ -86,8 +86,8 @@ function getConfigPaths(): { source: string; file: string }[] {
 
 /**
  * Load an explicit MCP config file (standard `mcpServers` shape) and return its
- * named servers. Used by the compressing proxy's `--config`. Throws on a missing
- * or malformed file so the caller can report it.
+ * named servers. Throws on a missing or malformed file so the caller can
+ * report it.
  */
 export async function loadMcpServersFile(
   file: string,

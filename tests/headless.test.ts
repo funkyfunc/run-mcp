@@ -394,20 +394,6 @@ describe("headless: persistent sessions", () => {
   }, 30_000);
 });
 
-describe("REPL find command (script mode)", () => {
-  it("ranks tools by relevance to the query", async () => {
-    const scriptPath = resolve(tmpdir(), `test-find-${Date.now()}.txt`);
-    writeFileSync(scriptPath, `find take a screenshot`, "utf8");
-
-    const { stdout, exitCode } = await runCli(["-s", scriptPath, ...TARGET]);
-    unlinkSync(scriptPath);
-
-    expect(exitCode).toBe(0);
-    expect(stdout).toContain("screenshot");
-    expect(stdout).toContain("tools/describe");
-  }, 15_000);
-});
-
 describe("script mode: variable extraction and error handling", () => {
   it("extracts variables using $LAST", async () => {
     const scriptPath = resolve(tmpdir(), `test-script-${Date.now()}.txt`);

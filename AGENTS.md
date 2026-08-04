@@ -18,7 +18,7 @@ All three share the same interception pipeline. The differences are in the input
 
 ### 2. Transparent by Default, Protective When Needed
 
-The proxy should be **invisible** to well-behaved tools. If a tool returns a normal text response under 50KB, the proxy passes it through untouched — no extra latency, no transformation. The interceptor only activates when a response would **harm** the consumer:
+The interceptor should be **invisible** to well-behaved tools. If a tool returns a normal text response under 50KB, it passes through untouched — no extra latency, no transformation. The interceptor only activates when a response would **harm** the consumer:
 
 - A 4MB base64 screenshot that would blow up the agent's context window → saved to disk.
 - A tool call that hangs forever → timed out with an actionable message.
@@ -85,7 +85,7 @@ All three interfaces feed into the same interception pipeline. See `README.md` f
 | **TargetManager**       | `src/target-manager.ts` | Spawns the target MCP server, manages MCP Client connection (stdio, or for http(s) URLs: Streamable HTTP with SSE fallback — `transport` option / `--transport`), auto-reconnect with loop protection, captures stderr, tracks process lifecycle. |
 | **ResponseInterceptor** | `src/interceptor.ts`    | Wraps `callTool` with timeouts (timers cleared on settle), extracts base64 images/audio to disk, detects raw base64 text blobs, and spills oversized text to disk (full payload saved; reply keeps the head + a per-session result id, navigable via `read_result` / `readSpilledResult()`). Configurable via `InterceptorOptions`. |
 | **REPL**                | `src/repl/`             | Interactive readline interface across 8 files: `commands.ts` (command routing), `completer.ts` (tab completion), `history.ts` (persistent history), `index.ts` (entry point), `state.ts` (shared state + `KNOWN_COMMANDS`), `ui.ts` (formatting/output), `wizard.ts` (interactive arg scaffolding), `approval.ts` (pure sampling/elicitation approval decisions — unit-tested). `src/repl.ts` is a re-export barrel. |
-| **Agent Server**        | `src/server.ts`         | MCP Server exposing 10 tools (`connect_to_mcp`, `call_mcp_primitive`, `list_mcp_primitives`, `find_tools`, `read_result`, `disconnect_from_mcp`, `mcp_server_status`, `get_mcp_server_stderr`, `list_available_mcp_servers`, `validate_mcp_server`) for dynamic MCP server testing. Uses `registerTool()` with Zod schemas. |
+| **Agent Server**        | `src/server.ts`         | MCP Server exposing 10 tools (`connect_to_mcp`, `reconnect_to_mcp`, `disconnect_from_mcp`, `mcp_server_status`, `call_mcp_primitive`, `list_mcp_primitives`, `read_result`, `get_mcp_server_stderr`, `list_available_mcp_servers`, `validate_mcp_server`) for dynamic MCP server testing. Connect failures carry the target's stderr inline — see the failure-path note below. Uses `registerTool()` with Zod schemas. |
 | **Headless**            | `src/headless.ts`       | Single-shot executor for CLI subcommands. Connect → execute one operation → output JSON to stdout → exit. All status/progress to stderr for pipe-clean output. |
 | **Validator**           | `src/validator.ts`      | Protocol compliance validator (`run-mcp validate`). Validates handshake, capabilities, tool schemas, resources, and prompts against the MCP JSON Schema. |
 | **Snapshot**            | `src/snapshot.ts`       | Reconnect diffing: takes snapshots of tools/resources/prompts and computes what was added/removed/modified between connections. |
@@ -95,11 +95,29 @@ All three interfaces feed into the same interception pipeline. See `README.md` f
 | **Colors**              | `src/colors.ts`         | Color constants and helpers using `picocolors` for consistent terminal styling across REPL and headless output. |
 | **Plugins**             | `src/plugins.ts`        | Interceptor plugin framework (ordered middleware hooks: `onToolsList`, `onToolResult`, `onResourceResult`, `onPromptResult`) plus the bundled `outputCompressionPlugin` (`--compress-output`: lossless JSON minify + opt-in aggressive whitespace collapse, with an inflation guard — cuts output tokens). |
 | **Cassette**            | `src/cassette.ts`       | Record/replay ("VCR for MCP", `--cassette`/`--record`/`--replay`): captures tool/resource/prompt responses keyed by a canonical (primitive, name, args) hash and replays them deterministically. The interceptor short-circuits the target on a replay hit (offline in headless mode). |
-| **Compression**         | `src/compression.ts`    | Pure helpers for the compressing proxy: format a tool as `<tool>name(args): summary</tool>` per compression level (low/medium/high/max), build the `get_tool_schema` catalog + schema response, flatten MCP results to text, coerce JSON-string args, tool filters, tool-name namespacing (`server__tool`). |
-| **Ranking**             | `src/ranking.ts`        | BM25 relevance ranking (`rankTools`) over tool name + description + arg names/descriptions (Anthropic's tool-search fields), name-weighted. Powers `find_tools` in both the agent server and the multiplexing proxy. Pure/deterministic, no embedding model. |
-| **TargetPool**          | `src/target-pool.ts`    | Manages multiple backend `TargetManager`s for the multiplexing proxy: spawns from config, connects eagerly with failure isolation, assigns collision-free per-server prefixes, resolves prefix→backend. |
-| **ToolListCache**       | `src/tool-cache.ts`     | Cached backend tool lists for the proxy: invalidated by `tools/list_changed`, TTL fallback, coalesced fetches, stale-on-error. |
-| **Proxy**               | `src/proxy.ts`          | `run-mcp proxy` — the transparent compressing proxy. Single backend (B1): `get_tool_schema` + `invoke_tool` (+ `list_tools` at max). Multiple backends (B2): a Dynamic-Context-Loading surface (`list_servers`, `find_tools`, `list_server_tools`, namespaced `get_tool_schema`/`invoke_tool`). Routes calls through the interceptor. |
+
+### The Connect-Failure Path (Agent Server) — Do Not Regress This
+
+A server that fails to start is the most common event in the product's core loop,
+and the target's stderr is the *only* evidence of why. The transport reports an
+opaque `MCP error -32000: Connection closed`; the child's own message ("cannot
+find module …") lives in the `TargetManager` that is about to be discarded.
+
+Three rules keep that evidence alive (`src/server.ts`):
+
+1. **`retireTarget()` is the only way to drop a target.** It copies
+   `getStderrLines()` into the module-scoped `lastStderr` before closing. Never
+   write `target = null` directly.
+2. **`settleStderr()` runs before retiring on the failure path.** `connect()`
+   rejects on transport close, which can beat the child's final stderr `data`
+   event; this polls up to 250ms for it. Failure path only — the happy path
+   pays nothing.
+3. **`formatConnectFailure()` inlines the stderr in the error itself**, so
+   diagnosing a dead server costs zero extra round trips. `get_mcp_server_stderr`
+   also falls back to `lastStderr` when no target is live.
+
+Regression coverage: `tests/server.test.ts` → "server: failed connect surfaces
+the target's stderr", using `tests/fixtures/startup-crash-server.ts`.
 
 ### Auto-Reconnect Logic (TargetManager)
 
@@ -377,7 +395,7 @@ The package is designed to work with `npx run-mcp`:
 - **Client** (`@modelcontextprotocol/sdk/client/index.js`) — used by `TargetManager` to connect to the target server. Not deprecated.
 - **McpServer** (`@modelcontextprotocol/sdk/server/mcp.js`) — used by MCP mode. Non-deprecated. Use `registerTool()` for standard tool registration.
 - **`server.tool()`** — **DEPRECATED**. Use `server.registerTool()` instead.
-- **`Server`** (`@modelcontextprotocol/sdk/server/index.js`) — **DEPRECATED**. Use `McpServer` instead. The proxy accesses `mcpServer.server` for low-level request handlers, but imports `McpServer`.
+- **`Server`** (`@modelcontextprotocol/sdk/server/index.js`) — **DEPRECATED**. Use `McpServer` instead. The agent server accesses `mcpServer.server` for low-level request handlers, but imports `McpServer`.
 
 ---
 

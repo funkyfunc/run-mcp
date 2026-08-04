@@ -23,7 +23,6 @@ export const KNOWN_COMMANDS = [
   "tools/call",
   "tools/scaffold",
   "tools/forget",
-  "find",
   "resources/list",
   "resources/read",
   "resources/templates",

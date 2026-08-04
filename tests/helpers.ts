@@ -27,10 +27,13 @@ export const SECOND_SERVER_ARGS = existsSync(SECOND_SERVER_PATH_JS)
   ? [SECOND_SERVER_PATH_JS]
   : ["--import", "tsx", SECOND_SERVER_PATH_TS];
 
-/** Path to the crash-on-demand fixture (proxy dead-backend tests). Runs via tsx. */
-export const CRASHY_SERVER_PATH_TS = resolve(import.meta.dirname, "fixtures/crashy-server.ts");
-export const CRASHY_SERVER_CMD = "node";
-export const CRASHY_SERVER_ARGS = ["--import", "tsx", CRASHY_SERVER_PATH_TS];
+/** Path to the fixture that writes a diagnostic to stderr then dies at startup. */
+export const STARTUP_CRASH_PATH_TS = resolve(
+  import.meta.dirname,
+  "fixtures/startup-crash-server.ts",
+);
+export const STARTUP_CRASH_CMD = "node";
+export const STARTUP_CRASH_ARGS = ["--import", "tsx", STARTUP_CRASH_PATH_TS];
 
 // ─── Shared unit-test helpers ────────────────────────────────────────────────
 

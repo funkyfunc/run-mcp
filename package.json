@@ -1,7 +1,7 @@
 {
   "name": "run-mcp",
   "version": "1.8.0",
-  "description": "A smart proxy and interactive REPL for Model Context Protocol (MCP) servers",
+  "description": "An interactive REPL and live test harness for Model Context Protocol (MCP) servers",
   "homepage": "https://github.com/funkyfunc/run-mcp#readme",
   "bugs": {
     "url": "https://github.com/funkyfunc/run-mcp/issues"
@@ -21,9 +21,9 @@
   "keywords": [
     "mcp",
     "model-context-protocol",
-    "proxy",
     "repl",
-    "cli"
+    "cli",
+    "testing"
   ],
   "bin": {
     "run-mcp": "dist/index.js"

@@ -1,6 +1,6 @@
 # run-mcp
 
-A smart proxy, interactive REPL, and live test harness for [Model Context Protocol](https://modelcontextprotocol.io) (MCP) servers.
+An interactive REPL and live test harness for [Model Context Protocol](https://modelcontextprotocol.io) (MCP) servers.
 
 `run-mcp` provides three interfaces for interacting with MCP servers:
 
@@ -166,7 +166,6 @@ run-mcp close-session main
 - `daemon <session_name> [target_command...]`
 - `close-session <session_name>`
 - `validate [options] [target_command...]`
-- `proxy [options] [target_command...]`
 <!-- SUBCOMMANDS_END -->
 
 Use `run-mcp <subcommand> --help` for specific command options.
@@ -201,7 +200,7 @@ Then use these tools from your agent:
 | `connect_to_mcp` | Spawn and connect (use include to get tools/resources/prompts) |
 | `call_mcp_primitive` | Call a tool, read a resource, or get a prompt (auto-connects) |
 | `list_mcp_primitives` | List tools, resources, and/or prompts |
-| `find_tools` | Search tools by relevance (compact, avoids the tools tax) |
+| `reconnect_to_mcp` | Restart the target after a code edit and diff what changed |
 | `read_result` | Page through an oversized result spilled to disk |
 | `disconnect_from_mcp` | Tear down and reconnect after changes |
 | `mcp_server_status` | Check connection status |
@@ -221,7 +220,6 @@ Once connected via `run-mcp <command>`, the following shorthand commands are ava
 | `tools/describe <name>` | Show a tool's input schema |
 | `tools/call <name> [json] [opts]` | Call a tool (interactive if no json) |
 | `tools/scaffold <name>` | Generate argument template for a tool |
-| `find <query>` | Find tools by relevance to a query |
 | `resources/list` | List all available resources |
 | `resources/read <uri>` | Read a resource by URI |
 | `resources/templates` | List resource templates |
@@ -303,73 +301,10 @@ run-mcp -s commands.txt -- node my-server.js
 - Lines starting with `#` are treated as comments
 - Exits with code `0` on success, `1` on first error
 
-## Compressing Proxy Mode — Beat the "Tools Tax"
-
-A powerful MCP server can expose dozens or hundreds of tools; sending every
-name, description, and JSON Schema to the model up front wastes thousands of
-tokens before the agent does any work. `run-mcp proxy` sits in front of a backend
-server and replaces its full catalog with a tiny **discovery-on-demand** surface:
-
-- `get_tool_schema` — its description embeds a compact `<tool>name(args): summary</tool>` catalog; call it with a tool name to get that tool's full schema on demand.
-- `invoke_tool` — call the chosen tool by name with a JSON input object.
-- `list_tools` — added only at `max` compression.
-
-Configure it as the command your MCP client spawns:
-
-```json
-{
-  "mcpServers": {
-    "my-server": {
-      "command": "run-mcp",
-      "args": ["proxy", "-c", "medium", "--", "node", "path/to/actual-server.js"]
-    }
-  }
-}
-```
-
-### Fronting a whole fleet (multiplexer)
-
-Point run-mcp at a standard `mcpServers` config (the same shape every agent tool
-uses) and it fronts them all through one entry, with **Dynamic Context Loading**:
-
-```bash
-run-mcp proxy -c medium --config ./mcp-fleet.json
-# or, without a file:
-run-mcp proxy --multi-server "github=npx -y @modelcontextprotocol/server-github" \
-              --multi-server "browser=node ./browser-mcp/dist/index.js"
-```
-
-With two or more backends the surface becomes a five-tool discovery hierarchy —
-your context stays tiny no matter how many servers or tools you front:
-
-- `list_servers` — Level 1: which servers exist and what each is for (this overview is embedded in the tool's own description, so it costs nothing until you go deeper). Descriptions come from each server's own MCP `instructions`, its tool catalog, or an optional `"description"` you add per server in the config.
-- `find_tools` — cross-server BM25 search; returns ranked, namespaced tool names.
-- `list_server_tools` — Level 2: one server's compressed catalog.
-- `get_tool_schema` / `invoke_tool` — Level 3 + execute; tool names are namespaced `server__tool`, and calls route to the owning backend. One backend failing to start doesn't sink the proxy.
-
-### Compression levels (`-c`, default `medium`)
-
-| Level    | Catalog entry format                          |
-| -------- | --------------------------------------------- |
-| `low`    | `<tool>name(args): full description</tool>`   |
-| `medium` | `<tool>name(args): first sentence</tool>`     |
-| `high`   | `<tool>name(args)</tool>`                      |
-| `max`    | `<tool>name</tool>` (+ adds a `list_tools` tool) |
-
-### Options
-
-- `-c, --compression <level>` — `low` / `medium` / `high` / `max`.
-- `--include-tools <names...>` / `--exclude-tools <names...>` — restrict the exposed backend tools (applied before compression).
-- `--compress-output` — also minify backend tool output (lossless JSON minify).
-- `--transport <mode>` — forwarded to the backend.
-
-Calls routed through `invoke_tool` still pass through the interceptor pipeline
-(media extraction, truncation, optional output compression).
-
 ## Agent Server Mode — How It Works
 
 Run with no target command (or `--mcp`), `run-mcp` is itself an MCP server that
-exposes tools (`connect_to_mcp`, `call_mcp_primitive`, `find_tools`, …) so an
+exposes tools (`connect_to_mcp`, `call_mcp_primitive`, `reconnect_to_mcp`, …) so an
 agent can dynamically spawn and test local MCP servers. Tool-call responses are
 processed through the interceptor pipeline:
 

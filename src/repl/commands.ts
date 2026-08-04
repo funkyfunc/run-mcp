@@ -3,7 +3,6 @@ import type { Interface as ReadlineInterface } from "node:readline";
 import { checkbox, confirm, input, search } from "@inquirer/prompts";
 import { colors as pc } from "../colors.js";
 import { ResponseInterceptor } from "../interceptor.js";
-import { rankTools } from "../ranking.js";
 import {
   formatJson,
   formatToolDescription,
@@ -152,10 +151,6 @@ export async function handleCommand(
 
     case "tools/describe":
       await cmdToolsDescribe(target, interceptor, rest);
-      return;
-
-    case "find":
-      await cmdFind(target, interceptor, rest);
       return;
 
     case "tools/call":
@@ -390,43 +385,6 @@ async function cmdToolsDescribe(
     ),
   );
   console.log();
-}
-
-async function cmdFind(
-  target: TargetManager,
-  interceptor: ResponseInterceptor,
-  rest: string,
-): Promise<void> {
-  const query = rest.trim();
-  if (!query) {
-    console.log(pc.yellow("  Usage: find <query>"));
-    console.log(pc.dim("  Ranks tools by relevance so you can discover the right one quickly."));
-    return;
-  }
-
-  const listed = await target.listTools();
-  const { tools } = await interceptor.processToolList(listed.tools as any);
-  const ranked = rankTools(query, tools as any[], 8);
-
-  if (ranked.length === 0) {
-    console.log(
-      pc.dim(`  No tools matched "${query}" (of ${tools.length}). Try broader keywords.`),
-    );
-    return;
-  }
-
-  console.log(pc.dim(`\n  Top ${ranked.length} of ${tools.length} tool(s) for "${query}":`));
-  const nameWidth = Math.max(
-    8,
-    ...ranked.map((r) => sanitizeServerText((r.tool as any).name).length),
-  );
-  for (const { tool } of ranked) {
-    const safeName = sanitizeServerText((tool as any).name);
-    const rawDesc = (tool as any).description ? sanitizeServerText((tool as any).description) : "";
-    const desc = rawDesc.length > 60 ? `${rawDesc.slice(0, 57)}...` : rawDesc;
-    console.log(`  ${pc.green(safeName.padEnd(nameWidth))}  ${pc.dim(desc)}`);
-  }
-  console.log(pc.dim(`\n  Use ${pc.bold("tools/describe <name>")} for the full schema.`));
 }
 
 async function cmdToolsCall(
