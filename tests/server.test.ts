@@ -165,11 +165,108 @@ describe("server: reconnect_to_mcp", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Client-role capabilities — roots, notifications, subscriptions
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("server: roots reach the target", () => {
+  it("a server asking roots/list gets what connect_to_mcp advertised", async () => {
+    const c = await startRunMcpServer();
+    await c.callTool({
+      name: "connect_to_mcp",
+      arguments: {
+        command: MOCK_SERVER_CMD,
+        args: MOCK_SERVER_ARGS,
+        roots: [{ uri: "file:///tmp/project-a", name: "Project A" }],
+      },
+    });
+
+    const result = await c.callTool({
+      name: "call_mcp_primitive",
+      arguments: { type: "tool", name: "what_roots" },
+    });
+    expect(getText(result)).toContain("file:///tmp/project-a");
+  }, 25_000);
+
+  it("without configured roots the server correctly sees an empty list", async () => {
+    const c = await startRunMcpServer();
+    await c.callTool({
+      name: "connect_to_mcp",
+      arguments: { command: MOCK_SERVER_CMD, args: MOCK_SERVER_ARGS },
+    });
+    const result = await c.callTool({
+      name: "call_mcp_primitive",
+      arguments: { type: "tool", name: "what_roots" },
+    });
+    expect(getText(result)).toContain("[]");
+  }, 25_000);
+
+  it("roots survive a reconnect", async () => {
+    const c = await startRunMcpServer();
+    await c.callTool({
+      name: "connect_to_mcp",
+      arguments: {
+        command: MOCK_SERVER_CMD,
+        args: MOCK_SERVER_ARGS,
+        roots: [{ uri: "file:///tmp/persisted" }],
+      },
+    });
+    await c.callTool({ name: "reconnect_to_mcp", arguments: {} });
+
+    const result = await c.callTool({
+      name: "call_mcp_primitive",
+      arguments: { type: "tool", name: "what_roots" },
+    });
+    expect(getText(result)).toContain("file:///tmp/persisted");
+  }, 30_000);
+});
+
+describe("server: notifications and subscriptions", () => {
+  it("surfaces a resources/updated notification after subscribing", async () => {
+    const c = await startRunMcpServer();
+    await c.callTool({
+      name: "connect_to_mcp",
+      arguments: { command: MOCK_SERVER_CMD, args: MOCK_SERVER_ARGS },
+    });
+
+    const sub = await c.callTool({
+      name: "subscribe_to_resource",
+      arguments: { uri: "docs://readme" },
+    });
+    expect(sub.isError).toBeFalsy();
+
+    // Make the server emit the update, then observe it.
+    await c.callTool({
+      name: "call_mcp_primitive",
+      arguments: { type: "tool", name: "touch_resource", arguments: { uri: "docs://readme" } },
+    });
+
+    const notes = await c.callTool({
+      name: "get_server_notifications",
+      arguments: { method: "resources/updated" },
+    });
+    expect(getText(notes)).toContain("docs://readme");
+  }, 30_000);
+
+  it("reports plainly when nothing matched, with a hint", async () => {
+    const c = await startRunMcpServer();
+    await c.callTool({
+      name: "connect_to_mcp",
+      arguments: { command: MOCK_SERVER_CMD, args: MOCK_SERVER_ARGS },
+    });
+    const notes = await c.callTool({
+      name: "get_server_notifications",
+      arguments: { method: "nothing/matches-this" },
+    });
+    expect(getText(notes)).toContain("No notifications");
+  }, 20_000);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Server tool discovery
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("server: tool discovery", () => {
-  it("exposes exactly 10 consolidated tools", async () => {
+  it("exposes exactly 12 consolidated tools", async () => {
     const c = await startRunMcpServer();
     const result = await c.listTools();
     const names = result.tools.map((t) => t.name);
@@ -180,11 +277,13 @@ describe("server: tool discovery", () => {
     expect(names).toContain("call_mcp_primitive");
     expect(names).toContain("list_mcp_primitives");
     expect(names).toContain("reconnect_to_mcp");
+    expect(names).toContain("get_server_notifications");
+    expect(names).toContain("subscribe_to_resource");
     expect(names).toContain("get_mcp_server_stderr");
     expect(names).toContain("list_available_mcp_servers");
     expect(names).toContain("validate_mcp_server");
     expect(names).toContain("read_result");
-    expect(names).toHaveLength(10);
+    expect(names).toHaveLength(12);
   }, 15_000);
 
   it("tools have descriptions", async () => {
@@ -957,7 +1056,7 @@ describe("server: advanced features and protocol compliance", () => {
     const text = getText(result);
     expect(text).toContain("Validation Result: SUCCESS");
     expect(text).toContain("mock-mcp-server");
-    expect(text).toContain("Tools Count: 12");
+    expect(text).toContain("Tools Count: 14");
   }, 25_000);
 
   it("supports deep protocol validation via validate_mcp_server", async () => {

@@ -173,8 +173,6 @@ interface HeadlessOpts {
   record?: boolean;
   replay?: boolean;
   transport?: string;
-  compressOutput?: boolean;
-  compressAggressive?: boolean;
 }
 
 function parseHeadlessOpts(opts: HeadlessOpts) {
@@ -187,8 +185,6 @@ function parseHeadlessOpts(opts: HeadlessOpts) {
     cassettePath: opts.cassette,
     cassetteMode: opts.record ? ("record" as const) : opts.replay ? ("replay" as const) : undefined,
     transport: opts.transport as "auto" | "http" | "sse" | undefined,
-    compressOutput: opts.compressOutput,
-    compressAggressive: opts.compressAggressive,
   };
 }
 
@@ -246,11 +242,6 @@ function registerHeadlessCommand(config: HeadlessCommandConfig) {
     .option(
       "--transport <mode>",
       "Transport for http(s) targets: auto (default), http (Streamable HTTP), sse",
-    )
-    .option("--compress-output", "Minify verbose output text (lossless JSON minify by default)")
-    .option(
-      "--compress-aggressive",
-      "With --compress-output, also collapse blank lines / trailing whitespace (lossy)",
     )
     .allowUnknownOption();
 
@@ -612,14 +603,6 @@ program
     "Transport for http(s) targets: auto (default), http (Streamable HTTP), sse",
   )
   .option(
-    "--compress-output",
-    "Minify verbose output text to save tokens (lossless JSON minify by default) (Agent Mode)",
-  )
-  .option(
-    "--compress-aggressive",
-    "With --compress-output, also collapse blank lines / trailing whitespace (lossy) (Agent Mode)",
-  )
-  .option(
     "-w, --watch",
     "Watch the current directory for file changes and auto-reconnect (REPL Mode only)",
   )
@@ -659,6 +642,8 @@ Agent Mode Tools:
   connect_to_mcp       → Spawn and connect (use include to get tools/resources/prompts)
   call_mcp_primitive   → Call a tool, read a resource, or get a prompt (auto-connects)
   list_mcp_primitives  → List tools, resources, and/or prompts
+  get_server_notifications → Inspect notifications the target emitted (list_changed, updates, logs)
+  subscribe_to_resource → Exercise a server's resource-subscription support
   reconnect_to_mcp     → Restart the target after a code edit and diff what changed
   read_result          → Page through an oversized result spilled to disk
   disconnect_from_mcp  → Tear down and reconnect after changes
@@ -707,8 +692,6 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
         watch?: boolean;
         scan?: boolean;
         transport?: string;
-        compressOutput?: boolean;
-        compressAggressive?: boolean;
       },
     ) => {
       const target = activeTargetCommand ?? targetCommand ?? [];
@@ -738,8 +721,6 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
               : undefined,
             scan: opts.scan,
             transport: opts.transport as any,
-            compressOutput: opts.compressOutput,
-            compressAggressive: opts.compressAggressive,
           });
         } else {
           // Human is running it in a terminal without arguments -> pick a config

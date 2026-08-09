@@ -85,7 +85,7 @@ All three interfaces feed into the same interception pipeline. See `README.md` f
 | **TargetManager**       | `src/target-manager.ts` | Spawns the target MCP server, manages MCP Client connection (stdio, or for http(s) URLs: Streamable HTTP with SSE fallback — `transport` option / `--transport`), auto-reconnect with loop protection, captures stderr, tracks process lifecycle. |
 | **ResponseInterceptor** | `src/interceptor.ts`    | Wraps `callTool` with timeouts (timers cleared on settle), extracts base64 images/audio to disk, detects raw base64 text blobs, and spills oversized text to disk (full payload saved; reply keeps the head + a per-session result id, navigable via `read_result` / `readSpilledResult()`). Configurable via `InterceptorOptions`. |
 | **REPL**                | `src/repl/`             | Interactive readline interface across 8 files: `commands.ts` (command routing), `completer.ts` (tab completion), `history.ts` (persistent history), `index.ts` (entry point), `state.ts` (shared state + `KNOWN_COMMANDS`), `ui.ts` (formatting/output), `wizard.ts` (interactive arg scaffolding), `approval.ts` (pure sampling/elicitation approval decisions — unit-tested). `src/repl.ts` is a re-export barrel. |
-| **Agent Server**        | `src/server.ts`         | MCP Server exposing 10 tools (`connect_to_mcp`, `reconnect_to_mcp`, `disconnect_from_mcp`, `mcp_server_status`, `call_mcp_primitive`, `list_mcp_primitives`, `read_result`, `get_mcp_server_stderr`, `list_available_mcp_servers`, `validate_mcp_server`) for dynamic MCP server testing. Connect failures carry the target's stderr inline — see the failure-path note below. Uses `registerTool()` with Zod schemas. |
+| **Agent Server**        | `src/server.ts`         | MCP Server exposing 12 tools (`connect_to_mcp`, `reconnect_to_mcp`, `disconnect_from_mcp`, `mcp_server_status`, `call_mcp_primitive`, `list_mcp_primitives`, `get_server_notifications`, `subscribe_to_resource`, `read_result`, `get_mcp_server_stderr`, `list_available_mcp_servers`, `validate_mcp_server`) for dynamic MCP server testing. Connect failures carry the target's stderr inline — see the failure-path note below. Uses `registerTool()` with Zod schemas. |
 | **Headless**            | `src/headless.ts`       | Single-shot executor for CLI subcommands. Connect → execute one operation → output JSON to stdout → exit. All status/progress to stderr for pipe-clean output. |
 | **Validator**           | `src/validator.ts`      | Protocol compliance validator (`run-mcp validate`). Validates handshake, capabilities, tool schemas, resources, and prompts against the MCP JSON Schema. |
 | **Snapshot**            | `src/snapshot.ts`       | Reconnect diffing: takes snapshots of tools/resources/prompts and computes what was added/removed/modified between connections. |
@@ -93,8 +93,35 @@ All three interfaces feed into the same interception pipeline. See `README.md` f
 | **Parsing**             | `src/parsing.ts`        | Pure functions: command line splitting, argument parsing, JSON formatting, HTTPie-style args (`key=val`, `key:=json`), Levenshtein distance, typo suggestions. |
 | **Config Scanner**      | `src/config-scanner.ts` | Discovers MCP server configurations across VS Code, Cursor, Claude Desktop, Windsurf, Copilot, Gemini CLI, and local workspace files. Powers `list_available_mcp_servers` and the interactive picker. |
 | **Colors**              | `src/colors.ts`         | Color constants and helpers using `picocolors` for consistent terminal styling across REPL and headless output. |
-| **Plugins**             | `src/plugins.ts`        | Interceptor plugin framework (ordered middleware hooks: `onToolsList`, `onToolResult`, `onResourceResult`, `onPromptResult`) plus the bundled `outputCompressionPlugin` (`--compress-output`: lossless JSON minify + opt-in aggressive whitespace collapse, with an inflation guard — cuts output tokens). |
 | **Cassette**            | `src/cassette.ts`       | Record/replay ("VCR for MCP", `--cassette`/`--record`/`--replay`): captures tool/resource/prompt responses keyed by a canonical (primitive, name, args) hash and replays them deterministically. The interceptor short-circuits the target on a replay hit (offline in headless mode). |
+
+### Client-Role Parity (Agent Server) — Do Not Let This Drift Again
+
+`run-mcp` is a client, and its *client-role* capabilities are part of what a
+server author needs in order to test their server. The REPL had all of them and
+the agent server had none, which meant an agent literally could not exercise a
+server's roots, subscription, or notification code paths.
+
+Worst of these: run-mcp advertises `roots: { listChanged: true }` to every target
+(`target-manager.ts`), so a server is entitled to call `roots/list` and get a real
+answer. Before Aug 2026 the agent had no way to populate that list, so the answer
+was always `[]` — a *wrong answer*, not a missing feature, and one a server author
+would reasonably misread as a bug in their own code.
+
+Rules:
+
+- `roots` and `log_level` are parameters of `connect_to_mcp`/`reconnect_to_mcp`,
+  held in `configuredRoots`/`configuredLogLevel` so they **survive a reconnect** —
+  restarting after an edit must not silently drop the context the server sees.
+- Roots are applied *before* `connect()` (`applyRoots`), because a server may ask
+  as soon as initialization completes. Log level is applied after (needs a live
+  connection) via `applyClientContext`.
+- If you add a client-role capability to the REPL, add it to the agent server in
+  the same change.
+
+Regression coverage: `tests/server.test.ts` → "server: roots reach the target"
+and "server: notifications and subscriptions", using the mock server's
+`what_roots` and `touch_resource` tools.
 
 ### The Connect-Failure Path (Agent Server) — Do Not Regress This
 

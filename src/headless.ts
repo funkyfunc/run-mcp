@@ -17,7 +17,6 @@ import { ResponseInterceptor } from "./interceptor.js";
 import { parseHttpieArgs } from "./parsing.js";
 import { TargetManager } from "./target-manager.js";
 import { Cassette, type CassetteMode } from "./cassette.js";
-import { type InterceptorPlugin, outputCompressionPlugin } from "./plugins.js";
 
 /** Default timeout for headless tool calls (30 seconds). */
 const DEFAULT_HEADLESS_TIMEOUT_MS = 30_000;
@@ -30,10 +29,6 @@ export interface HeadlessOptions {
   cassettePath?: string;
   cassetteMode?: CassetteMode;
   transport?: "auto" | "http" | "sse";
-  /** Compress verbose output text (lossless JSON minify by default). */
-  compressOutput?: boolean;
-  /** When compressing, also collapse blank lines / trailing whitespace (lossy). */
-  compressAggressive?: boolean;
 }
 
 export type HeadlessOperation =
@@ -67,12 +62,6 @@ export async function runHeadless(
     outDir: opts.outDir,
     defaultTimeoutMs: opts.timeoutMs ?? DEFAULT_HEADLESS_TIMEOUT_MS,
     cassette,
-    plugins: (() => {
-      const p: InterceptorPlugin[] = [];
-      if (opts.compressOutput)
-        p.push(outputCompressionPlugin({ aggressive: opts.compressAggressive }));
-      return p;
-    })(),
   });
 
   // Stream or suppress server stderr
@@ -182,7 +171,7 @@ export async function executeOperation(
 
     case "list-tools": {
       const { tools } = await target.listTools();
-      const { tools: scanned } = await interceptor.processToolList(tools as any);
+      const scanned = tools as any[];
       return { result: scanned, hasError: false };
     }
 
@@ -203,7 +192,7 @@ export async function executeOperation(
 
     case "describe": {
       const { tools } = await target.listTools();
-      const { tools: scanned } = await interceptor.processToolList(tools as any);
+      const scanned = tools as any[];
       const tool = (scanned as any[]).find((t) => t.name === operation.tool);
       if (!tool) {
         const available = (scanned as any[]).map((t) => t.name).join(", ");

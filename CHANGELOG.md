@@ -11,7 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A failed connect now carries the target server's stderr.** Previously `connect_to_mcp` reported only the transport's opaque `MCP error -32000: Connection closed`, told the caller to check `get_mcp_server_stderr`, and then discarded the target that held the output — so the follow-up call answered "No target server (current or previous). Nothing to show." A server that won't start is the most common event in the core loop, and its stderr is the only evidence of why; that evidence is now inlined in the failure message (zero extra round trips), retained for `get_mcp_server_stderr` after teardown, and given a brief settle window so it isn't lost to the close/stderr race. Applies to `connect_to_mcp`, `reconnect_to_mcp`, and `call_mcp_primitive`'s auto-connect.
 
+- **The agent can now answer `roots/list`.** `run-mcp` advertises the `roots` capability to every target server, but only the REPL could ever populate the list — so a server that asked an agent-driven session for roots always got `[]`. That is a wrong answer rather than a missing feature, and one a server author would reasonably misread as a bug in their own code. `connect_to_mcp` and `reconnect_to_mcp` now take a `roots` parameter, applied before the handshake and persisted across reconnects.
+
 ### Added
+
+- **Client-role parity for the agent server.** The MCP client at the core of `run-mcp` has always supported roots, resource subscriptions, notification history, and log-level control; the REPL used all of it and the agent server exposed none of it, so an agent could not exercise those code paths in the server it was building. Now: `roots` and `log_level` parameters on `connect_to_mcp`/`reconnect_to_mcp`, plus two tools — **`get_server_notifications`** (inspect `tools/list_changed`, `resources/updated`, and log messages, which travel outside the request/response flow and are otherwise invisible) and **`subscribe_to_resource`**.
 
 - **`reconnect_to_mcp`** — restarts the current target in one call, reusing the command it was started with, and diffs tools/resources/prompts against the previous run. This is the edit-test loop: it replaces `disconnect_from_mcp` + `connect_to_mcp` and always reports what your change did. The REPL and watch mode already had this; the agent did not.
 
@@ -36,8 +40,6 @@ recoverable from git history if that ever changes.
   config files without starting anything, and the CLI's interactive picker and `--scan` are
   unchanged.
 
-The interceptor plugin framework itself is retained, as is `--compress-output`.
-
 Second cut — the compressing proxy and relevance search:
 
 - **`run-mcp proxy`** — both the single-backend `get_tool_schema`/`invoke_tool` surface and
@@ -54,8 +56,22 @@ remote transports, config management, stats) points away from this project. `fin
 was the same instinct one layer in: BM25 search over the catalog of a server the agent
 wrote itself, where `list_mcp_primitives(summary: true)` already covers it.
 
-The agent server exposes 10 tools (was 11: `find_tools` out, `reconnect_to_mcp` in) and the
-root command 15 options (was 25). Bundle: 424KB → 356KB.
+Third cut — the interceptor plugin framework:
+
+- **`src/plugins.ts`** and the plugin plumbing in `src/interceptor.ts`
+  (`processToolList`, `_runResultHooks`, `metadata.findings`), plus
+  **`--compress-output`** / **`--compress-aggressive`**.
+
+The framework was justified by four consumers — tool-poisoning scanning, DLP redaction,
+audit logging, and lazy schema loading — all since removed. It had become an extension
+point with exactly one extension. Output minification is also a different kind of thing
+from what the interceptor otherwise does: media extraction and truncation exist to stop a
+response from *harming* the caller, while minifying JSON is a marginal token optimization.
+That distinction is now the rule for what the interceptor is allowed to touch.
+
+Final surface: the agent server exposes 12 tools (`find_tools` out; `reconnect_to_mcp`,
+`get_server_notifications`, `subscribe_to_resource` in) and the root command 14 options
+(was 25). Bundle: 424KB → 357KB. Suite: 390 tests/26 files → 285/15, ~100s → ~59s.
 
 ## [1.8.0] - 2026-07-14
 

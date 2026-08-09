@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import type { TargetManager } from "./target-manager.js";
-import type { InterceptorPlugin, PluginFinding, ToolDef } from "./plugins.js";
 import type { Cassette } from "./cassette.js";
 
 /** Matches a large base64 blob in text content (1000+ chars of base64 alphabet). */
@@ -21,8 +20,6 @@ export interface InterceptorOptions {
   maxTextLength?: number;
   mediaThresholdKb?: number;
   openMedia?: boolean;
-  /** Ordered middleware plugins run over tools/list and call/read/prompt results. */
-  plugins?: InterceptorPlugin[];
   /** Record/replay cassette. When set, call/read/getPrompt consult and record it. */
   cassette?: Cassette;
 }
@@ -39,8 +36,6 @@ export interface InterceptionMetadata {
   /** Oversized text results spilled to disk (navigable via read_result). */
   resultsSaved: number;
   originalSizeBytes: number;
-  /** Findings surfaced by interceptor plugins while processing this result. */
-  findings: PluginFinding[];
 }
 
 interface ContentItem {
@@ -66,7 +61,6 @@ export class ResponseInterceptor {
   private readonly maxTextLength: number;
   private readonly mediaThresholdKb: number;
   private readonly openMedia: boolean;
-  private readonly plugins: InterceptorPlugin[];
   private readonly cassette?: Cassette;
   private fileCounter = 0;
 
@@ -76,7 +70,6 @@ export class ResponseInterceptor {
     this.maxTextLength = opts.maxTextLength ?? DEFAULT_MAX_TEXT_LENGTH;
     this.mediaThresholdKb = opts.mediaThresholdKb ?? 0;
     this.openMedia = opts.openMedia ?? false;
-    this.plugins = opts.plugins ?? [];
     this.cassette = opts.cassette;
   }
 
@@ -88,7 +81,6 @@ export class ResponseInterceptor {
       audioSaved: 0,
       resultsSaved: 0,
       originalSizeBytes: 0,
-      findings: [],
     };
   }
 
@@ -111,49 +103,6 @@ export class ResponseInterceptor {
       );
     }
     return undefined;
-  }
-
-  /**
-   * Run the `onToolsList` hook of every plugin over a tools array, in order.
-   * Returns the (possibly transformed) tools and any findings the plugins
-   * surfaced (e.g. tool-poisoning warnings). Tools are mutated in place by
-   * plugins that strip content, so callers should use the returned array.
-   */
-  async processToolList(
-    tools: ToolDef[],
-  ): Promise<{ tools: ToolDef[]; findings: PluginFinding[] }> {
-    const findings: PluginFinding[] = [];
-    const report = (f: PluginFinding) => findings.push(f);
-    let current = tools;
-    for (const plugin of this.plugins) {
-      if (plugin.onToolsList) {
-        current = await plugin.onToolsList(current, report);
-      }
-    }
-    return { tools: current, findings };
-  }
-
-  /**
-   * Run a result-transform hook (onToolResult/onResourceResult/onPromptResult)
-   * for every plugin, threading findings into `metadata.findings`.
-   */
-  private async _runResultHooks(
-    hook: "onToolResult" | "onResourceResult" | "onPromptResult",
-    result: Record<string, unknown>,
-    primitive: "tool" | "resource" | "prompt",
-    name: string | undefined,
-    metadata: InterceptionMetadata,
-  ): Promise<Record<string, unknown>> {
-    if (this.plugins.length === 0) return result;
-    const report = (f: PluginFinding) => metadata.findings.push(f);
-    let current = result;
-    for (const plugin of this.plugins) {
-      const fn = plugin[hook];
-      if (fn) {
-        current = await fn.call(plugin, current, { primitive, name, report });
-      }
-    }
-    return current;
   }
 
   /**
@@ -203,7 +152,6 @@ export class ResponseInterceptor {
       audioSaved: 0,
       resultsSaved: 0,
       originalSizeBytes: 0,
-      findings: [],
     };
 
     const replayed = this._replay("resource", params.uri, params);
@@ -229,13 +177,7 @@ export class ResponseInterceptor {
       }
     }
 
-    const finalResult = await this._runResultHooks(
-      "onResourceResult",
-      result as Record<string, unknown>,
-      "resource",
-      params.uri,
-      metadata,
-    );
+    const finalResult = result as Record<string, unknown>;
     this.cassette?.record("resource", params.uri, params, finalResult, new Date().toISOString());
     return finalResult;
   }
@@ -256,7 +198,6 @@ export class ResponseInterceptor {
       audioSaved: 0,
       resultsSaved: 0,
       originalSizeBytes: 0,
-      findings: [],
     };
 
     const replayed = this._replay("prompt", params.name, params.arguments);
@@ -298,13 +239,7 @@ export class ResponseInterceptor {
       }
     }
 
-    const finalResult = await this._runResultHooks(
-      "onPromptResult",
-      result as Record<string, unknown>,
-      "prompt",
-      params.name,
-      metadata,
-    );
+    const finalResult = result as Record<string, unknown>;
     this.cassette?.record(
       "prompt",
       params.name,
@@ -332,7 +267,6 @@ export class ResponseInterceptor {
       audioSaved: 0,
       resultsSaved: 0,
       originalSizeBytes: 0,
-      findings: [],
     };
 
     // Replay from cassette if we have a recording (skips the target entirely).
@@ -367,13 +301,7 @@ export class ResponseInterceptor {
       }
     }
 
-    const finalResult = await this._runResultHooks(
-      "onToolResult",
-      result as Record<string, unknown>,
-      "tool",
-      name,
-      metadata,
-    );
+    const finalResult = result as Record<string, unknown>;
 
     this.cassette?.record("tool", name, args, finalResult, new Date().toISOString());
 

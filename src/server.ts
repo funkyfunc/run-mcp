@@ -3,7 +3,6 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { discoverServers } from "./config-scanner.js";
 import { type InterceptionMetadata, ResponseInterceptor } from "./interceptor.js";
-import { type InterceptorPlugin, outputCompressionPlugin } from "./plugins.js";
 import { suggestCommand } from "./parsing.js";
 import {
   type Snapshot,
@@ -21,10 +20,6 @@ export interface ServerOptions {
   scan?: boolean;
   /** Transport for http(s) targets: auto (default), http (Streamable), or sse. */
   transport?: "auto" | "http" | "sse";
-  /** Compress verbose output text (lossless JSON minify by default). */
-  compressOutput?: boolean;
-  /** When compressing, also collapse blank lines / trailing whitespace (lossy). */
-  compressAggressive?: boolean;
 }
 
 /**
@@ -43,6 +38,8 @@ export interface ServerOptions {
  *   mcp_server_status     → Check connection status
  *   call_mcp_primitive    → Call a tool, read a resource, or get a prompt (auto-connects if needed)
  *   list_mcp_primitives   → List tools, resources, and/or prompts
+ *   get_server_notifications → Inspect notifications the target emitted (list_changed, updates, logs)
+ *   subscribe_to_resource → Exercise a server's resource-subscription support
  *   read_result           → Page through an oversized result spilled to disk
  *   get_mcp_server_stderr → View target server stderr output
  *   list_available_mcp_servers → Discover other local MCP servers from config files
@@ -67,12 +64,6 @@ export async function startServer(opts: ServerOptions): Promise<void> {
     defaultTimeoutMs: opts.timeoutMs,
     maxTextLength: opts.maxTextLength,
     mediaThresholdKb: opts.mediaThresholdKb,
-    plugins: (() => {
-      const p: InterceptorPlugin[] = [];
-      if (opts.compressOutput)
-        p.push(outputCompressionPlugin({ aggressive: opts.compressAggressive }));
-      return p;
-    })(),
   });
 
   const mcpServer = new McpServer(
@@ -211,6 +202,48 @@ export async function startServer(opts: ServerOptions): Promise<void> {
     return lines.join("\n");
   }
 
+  /**
+   * Client-side context the target server can observe: the roots we advertise
+   * and the log verbosity we asked it for.
+   *
+   * run-mcp advertises `roots: { listChanged: true }` to every target, so a
+   * server under development is entitled to ask `roots/list` and get a real
+   * answer. Held here (not on the TargetManager) so it survives reconnects —
+   * the roots you configured must not silently vanish when you restart after an
+   * edit.
+   */
+  let configuredRoots: { uri: string; name?: string }[] = [];
+  let configuredLogLevel: string | null = null;
+
+  /** Seed a not-yet-connected target with the configured roots. */
+  async function applyRoots(t: TargetManager): Promise<void> {
+    for (const root of configuredRoots) await t.addRoot(root);
+  }
+
+  /**
+   * Post-connect half of the client context: the log level (which needs a live
+   * connection) plus a short report of what the server can now see.
+   */
+  async function applyClientContext(t: TargetManager): Promise<string[]> {
+    const notes: string[] = [];
+    if (configuredRoots.length > 0) {
+      notes.push(`Roots advertised to the server: ${configuredRoots.map((r) => r.uri).join(", ")}`);
+    }
+    if (configuredLogLevel) {
+      try {
+        await t.setLoggingLevel(configuredLogLevel);
+        notes.push(`Log level set to "${configuredLogLevel}".`);
+      } catch (err: any) {
+        // A server without the logging capability is not a connect failure.
+        notes.push(
+          `Note: could not set log level "${configuredLogLevel}" — ${err.message}. ` +
+            "Does the server declare the 'logging' capability?",
+        );
+      }
+    }
+    return notes;
+  }
+
   /** Take a snapshot of the current target's primitives. */
   async function takeSnapshot(): Promise<Snapshot> {
     if (!target) return {};
@@ -253,6 +286,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       transport: opts.transport,
     });
     setupTargetListeners(target);
+    await applyRoots(target);
     try {
       await target.connect();
     } catch (err) {
@@ -261,6 +295,9 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       throw Object.assign(new Error(formatConnectFailure(err, cmdToUse, argsToUse ?? [])), {
         alreadyFormatted: true,
       });
+    }
+    if (configuredLogLevel) {
+      await target.setLoggingLevel(configuredLogLevel).catch(() => {});
     }
     cachedSpawnConfig = { command: cmdToUse, args: argsToUse ?? [], env: envToUse };
     return null;
@@ -283,7 +320,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
     if (include.includes("tools")) {
       try {
         const listed = await target.listTools();
-        const { tools } = await interceptor.processToolList(listed.tools as any);
+        const tools = listed.tools as any[];
         let displayTools = summary
           ? tools.map((t: any) => ({ name: t.name, description: t.description }))
           : tools;
@@ -403,9 +440,30 @@ export async function startServer(opts: ServerOptions): Promise<void> {
           .describe(
             "If true, returns only the name and description of each primitive (omitting full schemas) when included to save tokens.",
           ),
+        roots: z
+          .array(
+            z.object({
+              uri: z.string().describe("Root URI, e.g. 'file:///Users/me/project'"),
+              name: z.string().optional().describe("Human-readable label for the root"),
+            }),
+          )
+          .optional()
+          .describe(
+            "Filesystem roots to advertise to the target server. run-mcp declares the " +
+              "'roots' capability, so a server that calls roots/list gets these back — set " +
+              "them if the server under test consumes roots, or it will correctly see none. " +
+              "Persisted across reconnect_to_mcp.",
+          ),
+        log_level: z
+          .enum(["debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"])
+          .optional()
+          .describe(
+            "Ask the target server to set its logging verbosity (requires the server's " +
+              "'logging' capability). Persisted across reconnect_to_mcp.",
+          ),
       },
     },
-    async ({ command, args, env, include, summary }) => {
+    async ({ command, args, env, include, summary, roots, log_level }) => {
       if (target?.connected) {
         return {
           content: [
@@ -421,12 +479,18 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       // Clean up any previous (disconnected) target
       await retireTarget();
 
+      if (roots !== undefined) configuredRoots = roots;
+      if (log_level !== undefined) configuredLogLevel = log_level;
+
       try {
         target = new TargetManager(command, args ?? [], {
           env,
           transport: opts.transport,
         });
         setupTargetListeners(target);
+        // Roots must be in place before connect: a server may ask for them as
+        // soon as initialization completes.
+        await applyRoots(target);
         try {
           await target.connect();
         } catch (err) {
@@ -437,6 +501,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
           });
         }
         cachedSpawnConfig = { command, args: args ?? [], env };
+        const contextNotes = await applyClientContext(target);
 
         const status = target.getStatus();
         const caps = target.getServerCapabilities() ?? {};
@@ -464,7 +529,8 @@ export async function startServer(opts: ServerOptions): Promise<void> {
           `Tools available: ${toolCount}`,
           "",
           "Use call_mcp_primitive to call tools, read resources, or get prompts.",
-          "Use disconnect_from_mcp when done, or to reconnect after code changes.",
+          "Use reconnect_to_mcp after editing your server's code.",
+          ...contextNotes,
         ];
 
         // Take snapshot for future diffs
@@ -560,9 +626,17 @@ export async function startServer(opts: ServerOptions): Promise<void> {
           .boolean()
           .optional()
           .describe("If true, included primitives omit full schemas to save tokens."),
+        roots: z
+          .array(z.object({ uri: z.string(), name: z.string().optional() }))
+          .optional()
+          .describe("Replace the advertised roots. Omit to keep the ones already configured."),
+        log_level: z
+          .enum(["debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"])
+          .optional()
+          .describe("Change the target's log level. Omit to keep the one already configured."),
       },
     },
-    async ({ include, summary }) => {
+    async ({ include, summary, roots, log_level }) => {
       if (!cachedSpawnConfig) {
         return {
           content: [
@@ -579,6 +653,9 @@ export async function startServer(opts: ServerOptions): Promise<void> {
 
       const { command, args, env } = cachedSpawnConfig;
 
+      if (roots !== undefined) configuredRoots = roots;
+      if (log_level !== undefined) configuredLogLevel = log_level;
+
       // Snapshot the outgoing server before tearing it down, so the diff
       // reflects this edit rather than whatever connect_to_mcp last recorded.
       if (target?.connected) {
@@ -588,6 +665,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
 
       target = new TargetManager(command, args, { env, transport: opts.transport });
       setupTargetListeners(target);
+      await applyRoots(target);
       try {
         await target.connect();
       } catch (err) {
@@ -599,10 +677,12 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         };
       }
 
+      const contextNotes = await applyClientContext(target);
       const status = target.getStatus();
       const lines = [
         `Reconnected to MCP server (PID: ${status.pid})`,
         `Command: ${command} ${args.join(" ")}`,
+        ...contextNotes,
       ];
 
       const currentSnapshot = await takeSnapshot();
@@ -716,7 +796,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         try {
           const result = await target.listTools({ cursor });
           // Scan for tool-poisoning before surfacing tool metadata to the agent.
-          const scanned = await interceptor.processToolList(result.tools as any);
+          const scanned = { tools: result.tools as any[] };
           let tools: any[] = scanned.tools;
           if (name) {
             tools = tools.filter((t: any) => t.name === name);
@@ -1242,6 +1322,167 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       }
 
       return result;
+    },
+  );
+
+  // ─── get_server_notifications ───────────────────────────────────────────
+
+  mcpServer.registerTool(
+    "get_server_notifications",
+    {
+      title: "Get Server Notifications",
+      description:
+        "Show the notifications the target server has emitted — tools/resources/prompts " +
+        "list_changed, resource updates from subscriptions, and logging messages. " +
+        "Use this to verify your server actually emits what you think it does: " +
+        "notifications travel outside the request/response flow, so a tool call result " +
+        "will never show them.",
+      inputSchema: {
+        count: z.number().optional().describe("Return only the most recent N notifications."),
+        method: z
+          .string()
+          .optional()
+          .describe(
+            "Only return notifications whose method contains this string, " +
+              "e.g. 'list_changed' or 'resources/updated'.",
+          ),
+        clear: z
+          .boolean()
+          .optional()
+          .describe(
+            "Clear the buffer after reading. Useful to establish a clean baseline " +
+              "before triggering the behavior you want to observe.",
+          ),
+      },
+    },
+    async ({ count, method, clear }) => {
+      if (!target) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "Not connected to a target server. Call connect_to_mcp first.",
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      let records = target.getNotifications(count);
+      if (method) {
+        records = records.filter((r) => r.method.includes(method));
+      }
+      if (clear) target.clearNotifications();
+
+      if (records.length === 0) {
+        const qualifier = method ? ` matching "${method}"` : "";
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text:
+                `No notifications${qualifier} received from the target server.\n\n` +
+                "If you expected one, check that your server actually sends it (e.g. " +
+                "sendToolListChanged / sendResourceUpdated) and that it declares the " +
+                "matching capability.",
+            },
+          ],
+        };
+      }
+
+      const formatted = records.map((r) => ({
+        method: r.method,
+        params: r.params,
+        at: new Date(r.timestamp).toISOString(),
+      }));
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              `${records.length} notification(s) from the target server:\n` +
+              JSON.stringify(formatted, null, 2) +
+              (clear ? "\n\n(buffer cleared)" : ""),
+          },
+        ],
+      };
+    },
+  );
+
+  // ─── subscribe_to_resource ──────────────────────────────────────────────
+
+  mcpServer.registerTool(
+    "subscribe_to_resource",
+    {
+      title: "Subscribe to Resource",
+      description:
+        "Subscribe to (or unsubscribe from) a resource URI so the server sends " +
+        "notifications/resources/updated when it changes. Read those with " +
+        "get_server_notifications. This is the only way to exercise a server's " +
+        "subscription support from here.",
+      inputSchema: {
+        uri: z.string().describe("Resource URI to subscribe to"),
+        unsubscribe: z
+          .boolean()
+          .optional()
+          .describe("If true, unsubscribe from this URI instead of subscribing."),
+      },
+    },
+    async ({ uri, unsubscribe }) => {
+      if (!target?.connected) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "Not connected to a target server. Call connect_to_mcp first.",
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      const caps = target.getServerCapabilities() ?? {};
+      if (!(caps.resources as any)?.subscribe) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text:
+                "The target server does not declare resource subscription support " +
+                "(capabilities.resources.subscribe). If your server should support it, " +
+                "declare the capability — otherwise clients will never subscribe.",
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      try {
+        if (unsubscribe) {
+          await target.unsubscribeResource({ uri });
+          return {
+            content: [{ type: "text" as const, text: `Unsubscribed from "${uri}".` }],
+          };
+        }
+        await target.subscribeResource({ uri });
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text:
+                `Subscribed to "${uri}". Trigger a change, then call ` +
+                "get_server_notifications(method='resources/updated') to confirm the " +
+                "server sent the update.",
+            },
+          ],
+        };
+      } catch (err: any) {
+        return {
+          content: [{ type: "text" as const, text: `Subscription failed: ${err.message}` }],
+          isError: true,
+        };
+      }
     },
   );
 

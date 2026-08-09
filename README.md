@@ -75,8 +75,6 @@ run-mcp [options] [target_command...]
 | `--open-media` | Automatically open intercepted images and audio files using the host OS viewer |
 | `--scan` | Scan the current workspace and parent directories for any JSON files containing mcpServers |
 | `--transport <mode>` | Transport for http(s) targets: auto (default), http (Streamable HTTP), sse |
-| `--compress-output` | Minify verbose output text to save tokens (lossless JSON minify by default) (Agent Mode) |
-| `--compress-aggressive` | With --compress-output, also collapse blank lines / trailing whitespace (lossy) (Agent Mode) |
 | `-w, --watch` | Watch the current directory for file changes and auto-reconnect (REPL Mode only) |
 | `-h, --help` | display help for command |
 <!-- OPTIONS_END -->
@@ -200,6 +198,8 @@ Then use these tools from your agent:
 | `connect_to_mcp` | Spawn and connect (use include to get tools/resources/prompts) |
 | `call_mcp_primitive` | Call a tool, read a resource, or get a prompt (auto-connects) |
 | `list_mcp_primitives` | List tools, resources, and/or prompts |
+| `get_server_notifications` | Inspect notifications the target emitted (list_changed, updates, logs) |
+| `subscribe_to_resource` | Exercise a server's resource-subscription support |
 | `reconnect_to_mcp` | Restart the target after a code edit and diff what changed |
 | `read_result` | Page through an oversized result spilled to disk |
 | `disconnect_from_mcp` | Tear down and reconnect after changes |
@@ -300,6 +300,22 @@ run-mcp -s commands.txt -- node my-server.js
 
 - Lines starting with `#` are treated as comments
 - Exits with code `0` on success, `1` on first error
+
+### Testing your server's client-facing behavior
+
+Some MCP features depend on what the *client* provides. `run-mcp` exposes these so
+an agent can exercise them:
+
+- **Roots** — pass `roots` to `connect_to_mcp` (or `reconnect_to_mcp`) and your
+  server's `roots/list` calls get a real answer. `run-mcp` advertises the roots
+  capability, so without this your server correctly sees an empty list. Roots
+  persist across reconnects.
+- **Log level** — pass `log_level` to raise your server's logging verbosity.
+- **Notifications** — `get_server_notifications` shows what your server emitted
+  (`tools/list_changed`, `resources/updated`, log messages). These travel outside
+  the request/response flow, so a tool result will never reveal them.
+- **Subscriptions** — `subscribe_to_resource`, then trigger a change and confirm
+  with `get_server_notifications(method='resources/updated')`.
 
 ## Agent Server Mode — How It Works
 

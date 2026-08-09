@@ -26,12 +26,21 @@
 
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import {
+  SubscribeRequestSchema,
+  UnsubscribeRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
-const server = new McpServer({
-  name: "mock-mcp-server",
-  version: "1.0.0",
-});
+const server = new McpServer(
+  { name: "mock-mcp-server", version: "1.0.0" },
+  // Declared explicitly so the resource-subscription path is exercisable.
+  { capabilities: { resources: { subscribe: true, listChanged: true }, logging: {} } },
+);
+
+// The SDK requires a subscribe handler once the capability is declared.
+server.server.setRequestHandler(SubscribeRequestSchema, async () => ({}));
+server.server.setRequestHandler(UnsubscribeRequestSchema, async () => ({}));
 
 // ─── Tool: echo ────────────────────────────────────────────────────────────
 
@@ -309,6 +318,39 @@ server.registerTool(
       },
     });
     return { content: [{ type: "text", text: `elicited: ${JSON.stringify(result)}` }] };
+  },
+);
+
+// ─── Tool: what_roots (reports the roots the CLIENT advertises) ────────────
+
+server.registerTool(
+  "what_roots",
+  {
+    description: "Asks the connected client for its roots and reports what came back",
+  },
+  async () => {
+    try {
+      const result = await server.server.listRoots();
+      return {
+        content: [{ type: "text", text: JSON.stringify(result.roots ?? []) }],
+      };
+    } catch (err: any) {
+      return { content: [{ type: "text", text: `roots/list failed: ${err.message}` }] };
+    }
+  },
+);
+
+// ─── Tool: touch_resource (emits notifications/resources/updated) ──────────
+
+server.registerTool(
+  "touch_resource",
+  {
+    description: "Emits a resources/updated notification for a URI, to test subscriptions",
+    inputSchema: { uri: z.string().describe("Resource URI to mark as updated") },
+  },
+  async ({ uri }) => {
+    await server.server.sendResourceUpdated({ uri });
+    return { content: [{ type: "text", text: `notified update for ${uri}` }] };
   },
 );
 

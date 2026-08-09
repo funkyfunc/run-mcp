@@ -146,7 +146,7 @@ export async function handleCommand(
       return;
 
     case "tools/list":
-      await cmdToolsList(target, interceptor);
+      await cmdToolsList(target);
       return;
 
     case "tools/describe":
@@ -287,12 +287,9 @@ export async function handleCommand(
 
 // ─── Command Implementations ────────────────────────────────────────────────
 
-async function cmdToolsList(
-  target: TargetManager,
-  interceptor: ResponseInterceptor,
-): Promise<void> {
+async function cmdToolsList(target: TargetManager): Promise<void> {
   const listed = await target.listTools();
-  const { tools } = await interceptor.processToolList(listed.tools as any);
+  const tools = listed.tools as any[];
 
   if (tools.length === 0) {
     console.log(pc.dim("  No tools available."));
@@ -352,7 +349,7 @@ async function cmdToolsDescribe(
   }
 
   const listed = await target.listTools();
-  const { tools } = await interceptor.processToolList(listed.tools as any);
+  const tools = listed.tools as any[];
   const tool = (tools as any[]).find((t) => t.name === name);
 
   if (!tool) {
