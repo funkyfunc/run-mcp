@@ -5,7 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.0] - 2026-08-09
+
+**Breaking.** This release removes a subcommand, eleven CLI flags, and two agent
+tools. `run-mcp` is now scoped to one thing: a lightweight wrapper around an MCP
+client that lets humans and agents run and use MCP servers — above all a server
+being developed locally. See the migration note at the end of this entry.
 
 ### Fixed
 
@@ -74,6 +79,23 @@ That distinction is now the rule for what the interceptor is allowed to touch.
 Final surface: the agent server exposes 12 tools (`find_tools` out; `reconnect_to_mcp`,
 `get_server_notifications`, `subscribe_to_resource` in) and the root command 14 options
 (was 25). Bundle: 424KB → 357KB. Suite: 390 tests/26 files → 285/15, ~100s → ~59s.
+
+### Migration
+
+| If you used | Do this instead |
+| --- | --- |
+| `run-mcp proxy …` | No replacement. Configure the backend server directly in your MCP client. The implementation is in git history at `d1bd392` if you need to vendor it. |
+| `--sandbox` / `--allow-*` / `--deny-*` | No replacement. Run untrusted servers under your own isolation (container, VM); `run-mcp` no longer claims to provide any. |
+| `--redact-secrets`, `--redact-emails`, `--audit-log`, `--no-scan-tools` | No replacement — all removed with the security layer (`ddf7ab3`). |
+| `--compress-output`, `--compress-aggressive` | No replacement (`255f6ff`). |
+| `find_tools` (agent tool) | `list_mcp_primitives({ type: ["tools"], summary: true })`. |
+| `find <query>` (REPL) | `tools/list`. |
+| `search_all_local_mcp_servers` (agent tool) | `list_available_mcp_servers` — it reads config files without spawning every server on the machine. |
+| `disconnect_from_mcp` + `connect_to_mcp` after an edit | `reconnect_to_mcp` — one call, and it reports what changed. |
+
+Nothing in the core loop was removed: connect, call, list, stderr, validate,
+watch mode, the REPL, headless subcommands, sessions, and cassettes are all
+unchanged.
 
 ## [1.8.0] - 2026-07-14
 

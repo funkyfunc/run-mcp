@@ -1,6 +1,6 @@
 {
   "name": "run-mcp",
-  "version": "1.8.0",
+  "version": "2.0.0",
   "description": "An interactive REPL and live test harness for Model Context Protocol (MCP) servers",
   "homepage": "https://github.com/funkyfunc/run-mcp#readme",
   "bugs": {
@@ -40,7 +40,7 @@
     "pretest": "tsup && npm run build:fixtures",
     "test": "vitest run",
     "update-schema": "node scripts/update-schema.js",
-    "prepublishOnly": "tsup",
+    "prepublishOnly": "npm run build",
     "prepare": "simple-git-hooks"
   },
   "dependencies": {
