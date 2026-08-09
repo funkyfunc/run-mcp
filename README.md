@@ -1,10 +1,19 @@
 # run-mcp
 
-An interactive REPL and live test harness for [Model Context Protocol](https://modelcontextprotocol.io) (MCP) servers.
+### A thin MCP client for humans and agents — test the server you're building without touching a config file.
+
+[![CI](https://github.com/funkyfunc/run-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/funkyfunc/run-mcp/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/run-mcp)](https://www.npmjs.com/package/run-mcp)
+[![license](https://img.shields.io/npm/l/run-mcp)](./LICENSE)
+
+Change your [Model Context Protocol](https://modelcontextprotocol.io) server's code and test it
+immediately — no editing `mcp.json`, no restarting your agent, no publishing to npm first.
+`run-mcp` spawns the server, calls its tools, shows you its stderr when it crashes, and
+restarts it on demand.
 
 `run-mcp` provides three interfaces for interacting with MCP servers:
 
-1. **Agent MCP Server** (`run-mcp`) — An MCP server that exposes tools (`connect_to_mcp`, `call_mcp_tool`) so AI agents can dynamically connect to and test local MCP projects without hardcoding them in configuration files. This is the **default mode** when you run `npx -y run-mcp`.
+1. **Agent MCP Server** (`run-mcp`) — An MCP server that exposes tools (`connect_to_mcp`, `call_mcp_primitive`, `reconnect_to_mcp`) so AI agents can dynamically connect to and test local MCP projects without hardcoding them in configuration files. This is the **default mode** when you run `npx -y run-mcp`.
 2. **Interactive REPL** (`run-mcp -- node server.js`) — A human-friendly CLI for developers to manually test and explore MCP servers using short, memorable commands (`tools/call`, `status`, etc.).
 3. **Headless CLI** (`run-mcp call`, `run-mcp list-tools`, etc.) — Single-shot subcommands that output clean JSON to stdout for CI/CD pipelines, shell scripts, and `jq` workflows.
 

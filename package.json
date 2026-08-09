@@ -1,7 +1,7 @@
 {
   "name": "run-mcp",
   "version": "2.0.0",
-  "description": "An interactive REPL and live test harness for Model Context Protocol (MCP) servers",
+  "description": "A thin MCP client for humans and agents — run any Model Context Protocol server, call its tools, read its stderr, and reconnect after each edit. REPL, headless CLI, or an MCP server your agent drives. No client config edits, no restarts.",
   "homepage": "https://github.com/funkyfunc/run-mcp#readme",
   "bugs": {
     "url": "https://github.com/funkyfunc/run-mcp/issues"
@@ -10,7 +10,7 @@
     "type": "git",
     "url": "git+https://github.com/funkyfunc/run-mcp.git"
   },
-  "license": "ISC",
+  "license": "MIT",
   "author": "funkyfunc",
   "type": "module",
   "main": "dist/index.js",
@@ -20,10 +20,23 @@
   ],
   "keywords": [
     "mcp",
+    "mcp-client",
+    "mcp-server",
     "model-context-protocol",
+    "mcp-testing",
+    "mcp-development",
+    "mcp-inspector",
     "repl",
     "cli",
-    "testing"
+    "test-harness",
+    "testing",
+    "debugging",
+    "developer-tools",
+    "ai-agents",
+    "agent-tools",
+    "claude",
+    "llm",
+    "stdio"
   ],
   "bin": {
     "run-mcp": "dist/index.js"
