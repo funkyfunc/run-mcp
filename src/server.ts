@@ -1313,12 +1313,12 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         };
       }
 
-      // Disconnect after if requested
+      // Disconnect after if requested. Goes through retireTarget so the
+      // server's stderr survives — a tool call that misbehaved is exactly when
+      // you want to read it, and disconnect_after is often set on that call.
       if (disconnect_after && target) {
         previousSnapshot = await takeSnapshot();
-        await target.close();
-        target = null;
-        cachedToolList = null;
+        await retireTarget();
       }
 
       return result;

@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A failed connect now carries the target server's stderr.** Previously `connect_to_mcp` reported only the transport's opaque `MCP error -32000: Connection closed`, told the caller to check `get_mcp_server_stderr`, and then discarded the target that held the output — so the follow-up call answered "No target server (current or previous). Nothing to show." A server that won't start is the most common event in the core loop, and its stderr is the only evidence of why; that evidence is now inlined in the failure message (zero extra round trips), retained for `get_mcp_server_stderr` after teardown, and given a brief settle window so it isn't lost to the close/stderr race. Applies to `connect_to_mcp`, `reconnect_to_mcp`, and `call_mcp_primitive`'s auto-connect.
 
+- **`disconnect_after` no longer discards the target's stderr.** `call_mcp_primitive`'s teardown path closed the target directly instead of going through `retireTarget()`, so a tool call that misbehaved — exactly the call you'd set `disconnect_after` on — left nothing for `get_mcp_server_stderr` to show. Found by driving the official filesystem server rather than a fixture.
+
 - **The agent can now answer `roots/list`.** `run-mcp` advertises the `roots` capability to every target server, but only the REPL could ever populate the list — so a server that asked an agent-driven session for roots always got `[]`. That is a wrong answer rather than a missing feature, and one a server author would reasonably misread as a bug in their own code. `connect_to_mcp` and `reconnect_to_mcp` now take a `roots` parameter, applied before the handshake and persisted across reconnects.
 
 ### Added

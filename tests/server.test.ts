@@ -103,6 +103,26 @@ describe("server: failed connect surfaces the target's stderr", () => {
     expect(text).toContain("Target server stderr");
   }, 20_000);
 
+  it("stderr survives a disconnect_after teardown", async () => {
+    const c = await startRunMcpServer();
+    await c.callTool({
+      name: "connect_to_mcp",
+      arguments: { command: MOCK_SERVER_CMD, args: MOCK_SERVER_ARGS },
+    });
+    await c.callTool({
+      name: "call_mcp_primitive",
+      arguments: {
+        type: "tool",
+        name: "echo",
+        arguments: { text: "hi" },
+        disconnect_after: true,
+      },
+    });
+
+    const stderr = await c.callTool({ name: "get_mcp_server_stderr", arguments: {} });
+    expect(getText(stderr)).toContain("Mock MCP server running on stdio");
+  }, 25_000);
+
   it("get_mcp_server_stderr still works after the failed target is torn down", async () => {
     const c = await startRunMcpServer();
     await c.callTool({

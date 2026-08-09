@@ -134,7 +134,10 @@ Three rules keep that evidence alive (`src/server.ts`):
 
 1. **`retireTarget()` is the only way to drop a target.** It copies
    `getStderrLines()` into the module-scoped `lastStderr` before closing. Never
-   write `target = null` directly.
+   write `target = null` directly. (This has been violated once already, by
+   `call_mcp_primitive`'s `disconnect_after` branch — grep for `target = null`
+   before assuming you're the first.) The sole exception is the
+   `mcpServer.server.onclose` handler, where the process is exiting anyway.
 2. **`settleStderr()` runs before retiring on the failure path.** `connect()`
    rejects on transport close, which can beat the child's final stderr `data`
    event; this polls up to 250ms for it. Failure path only — the happy path
