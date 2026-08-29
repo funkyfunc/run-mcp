@@ -19,6 +19,7 @@ import { startServer } from "./server.js";
 import { TargetManager } from "./target-manager.js";
 import { ResponseInterceptor } from "./interceptor.js";
 import { validateProtocol, type ValidationReport } from "./validator.js";
+import { colors } from "./colors.js";
 import { computeSnapshotDiff, takeSnapshot } from "./snapshot.js";
 
 // ─── Headless subcommand helper ───────────────────────────────────────────────
@@ -628,15 +629,15 @@ program
             process.stdout.write(JSON.stringify(report, null, 2) + "\n");
           } else {
             console.log(
-              `Validation Result: ${report.status === "PASS" ? "\x1b[32mSUCCESS\x1b[0m" : report.status === "WARN" ? "\x1b[33mWARNING\x1b[0m" : "\x1b[31mFAILED\x1b[0m"}\n`,
+              `Validation Result: ${report.status === "PASS" ? colors.green("SUCCESS") : report.status === "WARN" ? colors.yellow("WARNING") : colors.red("FAILED")}\n`,
             );
             for (const check of report.checks) {
               const statusStr =
                 check.status === "PASS"
-                  ? "\x1b[32mPASS\x1b[0m"
+                  ? colors.green("PASS")
                   : check.status === "WARN"
-                    ? "\x1b[33mWARN\x1b[0m"
-                    : "\x1b[31mFAIL\x1b[0m";
+                    ? colors.yellow("WARN")
+                    : colors.red("FAIL");
               console.log(`  [${statusStr}] ${check.name}: ${check.message || ""}`);
             }
           }
@@ -659,7 +660,7 @@ program
                 ) + "\n",
               );
             } else {
-              console.error(`\x1b[31mValidation Result: FAILED\x1b[0m`);
+              console.error(colors.red("Validation Result: FAILED"));
               console.error(`Error: ${handshake?.message || "Unknown error"}`);
             }
             process.exit(1);
@@ -678,7 +679,7 @@ program
               ) + "\n",
             );
           } else {
-            console.log(`\x1b[32mValidation Result: SUCCESS\x1b[0m`);
+            console.log(colors.green("Validation Result: SUCCESS"));
             console.log(`  ${metadata?.message || "Implementation metadata OK."}`);
             console.log(`  ${caps?.message || "Capabilities OK."}`);
             console.log(`  ${tools?.message || "Tools OK."}`);
@@ -691,7 +692,7 @@ program
             JSON.stringify({ success: false, error: err.message }, null, 2) + "\n",
           );
         } else {
-          console.error(`\x1b[31mError: ${err.message}\x1b[0m`);
+          console.error(colors.red(`Error: ${err.message}`));
         }
         process.exit(1);
       }

@@ -48,6 +48,10 @@ other per-call options, and `validate` didn't accept it at all.
   `--media-threshold` was also parsed but never applied in one-shot mode.
 - A call against a session whose server has exited now says so and points at
   `stderr`/`reconnect`, instead of `Error communicating with session daemon`.
+- **`validate` respected neither `NO_COLOR` nor a piped stdout**: its
+  human-readable output was hard-coded ANSI, so an agent reading it through a
+  shell tool saw `[32mValidation Result: SUCCESS[0m`. It now goes through the
+  same colour logic as the REPL (`--color`, `NO_COLOR`, `CLICOLOR`, isatty).
 
 ### Changed
 
