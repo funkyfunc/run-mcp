@@ -1,6 +1,6 @@
 {
   "name": "run-mcp",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "A thin MCP client for humans and agents — run any Model Context Protocol server, call its tools, read its stderr, and reconnect after each edit. REPL, headless CLI, or an MCP server your agent drives. No client config edits, no restarts.",
   "homepage": "https://github.com/funkyfunc/run-mcp#readme",
   "bugs": {

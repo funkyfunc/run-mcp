@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.1.0] - 2026-08-29
 
 Driven by feedback from an agent that used the headless CLI for its dev loop
 and found it "reasonable for a smoke check, not a dev loop": every invocation
