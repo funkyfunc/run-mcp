@@ -20,10 +20,12 @@ const TARGET = ["--", MOCK_SERVER_CMD, ...MOCK_SERVER_ARGS];
  */
 async function runCli(
   args: string[],
+  options: { cwd?: string } = {},
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   try {
     const { stdout, stderr } = await execFileAsync("node", [CLI_PATH, ...args], {
       timeout: 30_000,
+      cwd: options.cwd,
       env: { ...process.env, NODE_NO_WARNINGS: "1" },
     });
     return { stdout, stderr, exitCode: 0 };
@@ -640,4 +642,113 @@ describe("headless: session reconnect after an edit", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 60_000);
+});
+
+describe("headless: session hygiene", () => {
+  it("a server that dies on the first sessioned call reports its stderr and leaves no session", async () => {
+    const { STARTUP_CRASH_CMD, STARTUP_CRASH_ARGS } = await import("./helpers.js");
+    const session = `crash-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const { stderr, exitCode } = await runCli([
+      "list-tools",
+      "--session",
+      session,
+      "--",
+      STARTUP_CRASH_CMD,
+      ...STARTUP_CRASH_ARGS,
+    ]);
+    expect(exitCode).toBe(69);
+    expect(stderr).toContain("--- Target server stderr ---");
+    expect(stderr).toContain("[startup-crash] FATAL");
+    expect(stderr).not.toContain("Failed to spawn background daemon");
+    const listed = JSON.parse((await runCli(["sessions"])).stdout);
+    expect(listed.some((s: any) => s.name === session)).toBe(false);
+  }, 20_000);
+
+  it("lists sessions, refuses a mismatched command or cwd, and honours --idle-timeout", async () => {
+    const { SECOND_SERVER_CMD, SECOND_SERVER_ARGS } = await import("./helpers.js");
+    const session = `hyg-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    try {
+      // 0.05 minutes = 3s idle timeout.
+      const first = await runCli([
+        "call",
+        "echo",
+        "text=hi",
+        "--session",
+        session,
+        "--idle-timeout",
+        "0.05",
+        ...TARGET,
+      ]);
+      expect(first.exitCode).toBe(0);
+
+      // `sessions` shows it with its command, cwd, and idle timeout.
+      const listed = JSON.parse((await runCli(["sessions"])).stdout);
+      const row = listed.find((s: any) => s.name === session);
+      expect(row).toBeDefined();
+      expect(row.command).toBe([MOCK_SERVER_CMD, ...MOCK_SERVER_ARGS].join(" "));
+      expect(row.cwd).toBe(process.cwd());
+      expect(row.pid).toBeGreaterThan(0);
+      expect(row.idle_timeout).toBe("3s");
+
+      // Same command, same cwd: fine. Different command: refused, both shown.
+      const same = await runCli(["call", "echo", "text=same", "--session", session, ...TARGET]);
+      expect(same.exitCode).toBe(0);
+      const other = await runCli([
+        "call",
+        "echo",
+        "text=x",
+        "--session",
+        session,
+        "--",
+        SECOND_SERVER_CMD,
+        ...SECOND_SERVER_ARGS,
+      ]);
+      expect(other.exitCode).toBe(64);
+      expect(other.stderr).toContain("already running a different server");
+      expect(other.stderr).toContain(`close-session ${session}`);
+
+      // Same command from another directory: refused (a relative path would be
+      // a different server). Attaching without a command from there: fine.
+      const elsewhere = await runCli(["call", "echo", "text=x", "--session", session, ...TARGET], {
+        cwd: tmpdir(),
+      });
+      expect(elsewhere.exitCode).toBe(64);
+      expect(elsewhere.stderr).toContain("already running a different server");
+      const attach = await runCli(["call", "echo", "text=attach", "--session", session], {
+        cwd: tmpdir(),
+      });
+      expect(attach.exitCode).toBe(0);
+      expect(JSON.parse(attach.stdout)[0].text).toBe("attach");
+
+      // A later call can change the timeout; `sessions` shows the value in force.
+      await runCli(["call", "echo", "text=y", "--session", session, "--idle-timeout", "0.1"]);
+      const updated = JSON.parse((await runCli(["sessions"])).stdout);
+      expect(updated.find((s: any) => s.name === session).idle_timeout).toBe("6s");
+
+      // ...and then it closes itself.
+      await new Promise((r) => setTimeout(r, 7_500));
+      const after = JSON.parse((await runCli(["sessions"])).stdout);
+      expect(after.some((s: any) => s.name === session)).toBe(false);
+      const gone = await runCli(["call", "echo", "text=z", "--session", session]);
+      expect(gone.exitCode).toBe(64);
+      expect(gone.stderr).toContain("is not running");
+    } finally {
+      await runCli(["close-session", session]);
+    }
+  }, 60_000);
+
+  it("rejects a non-numeric --idle-timeout", async () => {
+    const { stderr, exitCode } = await runCli([
+      "call",
+      "echo",
+      "text=z",
+      "--session",
+      "unused",
+      "--idle-timeout",
+      "soon",
+      ...TARGET,
+    ]);
+    expect(exitCode).toBe(64);
+    expect(stderr).toContain("--idle-timeout must be a positive number of minutes");
+  }, 15_000);
 });

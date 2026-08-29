@@ -180,6 +180,10 @@ run-mcp close-session main
 
 `--show-stderr` on a sessioned call replays the stderr the server wrote *during that call* (the daemon holds the pipe, so it can't stream live). `--out-dir`, `--timeout`, and `--media-threshold` apply per call, exactly as without a session. `--transport` is fixed when the session is created.
 
+**Keeping track of sessions.** `run-mcp sessions` lists what's running — name, pid, command, working directory, uptime, idle timeout — as JSON. A session remembers the command and directory it was started from: if you pass a *different* command (or the same relative command from a different directory) with an existing session name, the call is refused with both commands shown, rather than quietly answered by the wrong server. Omit the command to attach, `close-session` to replace.
+
+**Nothing leaks.** A session lives until you `close-session` it — which means a forgotten one keeps its server (and whatever the server holds, like a browser) alive until reboot. Pass `--idle-timeout <minutes>` on any sessioned call to have it close itself after that long without a command; the value shows up in `sessions`. If the server fails to start on the first sessioned call, the call exits 69 with the server's stderr, and no session is left behind.
+
 ### 🔎 Stderr as data
 
 The server's stderr is the main evidence when something goes wrong, so headless mode makes it available without you having to untangle it from stdout:
@@ -201,6 +205,7 @@ The server's stderr is the main evidence when something goes wrong, so headless 
 - `stderr [options] [count] [target_command...]`
 - `reconnect [options] [target_command...]`
 - `daemon [options] <session_name> [target_command...]`
+- `sessions`
 - `close-session <session_name>`
 - `validate [options] [target_command...]`
 <!-- SUBCOMMANDS_END -->

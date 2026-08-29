@@ -36,6 +36,24 @@ other per-call options, and `validate` didn't accept it at all.
   as a stream to grep out of a merged stdout/stderr.
 - **Headless connect failures now print the server's stderr** under
   `--- Target server stderr ---`, matching the fix the agent server got in 2.0.0.
+  This includes the first call of a session: the daemon's stdio is detached, so
+  a server that died there used to surface only as "Failed to spawn background
+  daemon" after a five-second wait. It now writes a failure record the client
+  reads back, and the call exits 69 with the crash output.
+- **`sessions`** — lists running sessions as JSON: name, pid, command, working
+  directory, uptime, idle timeout. Until now the only way to know what was
+  running was `ls $TMPDIR/run-mcp/sessions`.
+- **`--idle-timeout <minutes>`** — with `--session`, the daemon closes itself
+  after that long without a command. Off by default (a session vanishing
+  mid-task is its own surprise), but a forgotten session otherwise keeps its
+  server — and, say, its browser — alive until reboot. A later call can change
+  the value; `sessions` shows the one in force.
+- **Sessions refuse a mismatched command.** The session file used to hold only
+  a port and a pid, so `--session dev -- node other.js` — or the same relative
+  `node server.js` from a different project — silently reused whichever server
+  was already running under that name. The file now records the command and
+  working directory; passing a different one is an error that shows both and
+  says how to proceed (omit the command, `close-session`, or another name).
 
 ### Fixed
 

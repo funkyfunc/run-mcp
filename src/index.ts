@@ -3,7 +3,7 @@
 import { program } from "commander";
 import { createConnection, createServer } from "node:net";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
@@ -43,28 +43,88 @@ const SESSION_DIR = join(tmpdir(), "run-mcp", "sessions");
 interface SessionData {
   port: number;
   pid: number;
+  /** The server command the daemon was started with. */
+  command: string[];
+  /** Where it was started — a relative `node server.js` means a different server elsewhere. */
+  cwd: string;
+  /** Epoch ms. */
+  startedAt: number;
+  /** Auto-close after this long without a request; absent = never. */
+  idleTimeoutMs?: number;
+}
+
+/**
+ * Written in place of SessionData when the daemon's first connect fails, so the
+ * client that spawned it can report the server's own stderr instead of a
+ * generic "failed to spawn". Consumed (deleted) by that client.
+ */
+interface SessionFailure {
+  failed: true;
+  error: string;
+  stderr: string[];
 }
 
 function getSessionPath(name: string): string {
   return join(SESSION_DIR, `${name}.json`);
 }
 
-async function getSession(name: string): Promise<SessionData | null> {
+async function readSessionFile(name: string): Promise<SessionData | SessionFailure | null> {
   const path = getSessionPath(name);
   if (!existsSync(path)) return null;
   try {
-    const data = await readFile(path, "utf8");
-    const parsed = JSON.parse(data) as SessionData;
-    try {
-      process.kill(parsed.pid, 0);
-      return parsed;
-    } catch {
-      await rm(path, { force: true }).catch(() => {});
-      return null;
-    }
+    return JSON.parse(await readFile(path, "utf8"));
   } catch {
     return null;
   }
+}
+
+/** A live session, or null. Prunes the file if its daemon is gone. */
+async function getSession(name: string): Promise<SessionData | null> {
+  const parsed = await readSessionFile(name);
+  if (!parsed || "failed" in parsed) return null;
+  try {
+    process.kill(parsed.pid, 0);
+    return parsed;
+  } catch {
+    await rm(getSessionPath(name), { force: true }).catch(() => {});
+    return null;
+  }
+}
+
+/** Every live session (dead ones are pruned on the way). */
+async function listSessions(): Promise<Array<SessionData & { name: string }>> {
+  if (!existsSync(SESSION_DIR)) return [];
+  const names = (await readdir(SESSION_DIR))
+    .filter((f) => f.endsWith(".json"))
+    .map((f) => f.slice(0, -".json".length));
+  const live: Array<SessionData & { name: string }> = [];
+  for (const name of names) {
+    const session = await getSession(name);
+    if (session) live.push({ name, ...session });
+  }
+  return live.sort((a, b) => a.startedAt - b.startedAt);
+}
+
+function formatUptime(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  return `${h}h${m % 60 ? ` ${m % 60}m` : ""}`;
+}
+
+/** Minutes (fractions allowed) → ms, or exit 64 on garbage. */
+function parseIdleTimeout(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const minutes = Number.parseFloat(value);
+  if (!Number.isFinite(minutes) || minutes <= 0) {
+    process.stderr.write(
+      `Error: --idle-timeout must be a positive number of minutes, got "${value}".\n`,
+    );
+    process.exit(64);
+  }
+  return Math.round(minutes * 60_000);
 }
 
 function sendDaemonRequest<T = OperationOutcome>(port: number, request: unknown): Promise<T> {
@@ -108,6 +168,27 @@ async function handleHeadlessSession(
 ): Promise<void> {
   let session = await getSession(sessionName);
 
+  // Attaching with an explicit command that isn't the one the session runs is
+  // almost always a mistake (two projects sharing a name, or an edited command
+  // the caller expects to take effect). Refuse rather than quietly answer from
+  // the wrong server.
+  if (session && activeTargetCommand) {
+    const sameCommand = JSON.stringify(activeTargetCommand) === JSON.stringify(session.command);
+    const sameCwd = session.cwd === process.cwd();
+    if (!sameCommand || !sameCwd) {
+      const running = `${session.command.join(" ")}  (in ${session.cwd})`;
+      const asked = `${activeTargetCommand.join(" ")}  (in ${process.cwd()})`;
+      process.stderr.write(
+        `Error: Session "${sessionName}" is already running a different server.\n` +
+          `  running: ${running}\n` +
+          `  asked:   ${asked}\n` +
+          `Either omit the command to use the running server, run \`run-mcp close-session ${sessionName}\` first, ` +
+          `or pick another session name.\n`,
+      );
+      process.exit(64);
+    }
+  }
+
   if (!session) {
     // Check if we have activeTargetCommand. If not, fail with coaching error
     if (!activeTargetCommand) {
@@ -124,6 +205,7 @@ async function handleHeadlessSession(
     const binPath = resolve(import.meta.dirname, "./index.js");
     const daemonArgs = ["daemon", sessionName];
     if (opts.transport) daemonArgs.push("--transport", opts.transport);
+    if (opts.idleTimeoutMs) daemonArgs.push("--idle-timeout-ms", String(opts.idleTimeoutMs));
     daemonArgs.push("--", ...target);
     const daemonProcess = spawn("node", [binPath, ...daemonArgs], {
       detached: true,
@@ -131,9 +213,26 @@ async function handleHeadlessSession(
     });
     daemonProcess.unref();
 
-    // Poll until session file exists and is readable (up to 5s)
+    // Poll until the session file appears (up to 5s). The daemon's stdio is
+    // detached, so a server that dies on this first start reports through the
+    // same file: a failure record carrying its stderr.
     let attempts = 0;
     while (attempts < 50) {
+      const record = await readSessionFile(sessionName);
+      if (record && "failed" in record) {
+        await rm(getSessionPath(sessionName), { force: true }).catch(() => {});
+        process.stderr.write(`Error: ${record.error}\n`);
+        process.stderr.write(`Command: ${target.join(" ")}\n`);
+        if (record.stderr.length > 0) {
+          process.stderr.write(`--- Target server stderr ---\n${record.stderr.join("\n")}\n`);
+        } else {
+          process.stderr.write(
+            "The target produced no stderr output before exiting. Check that the command " +
+              "runs standalone in a shell.\n",
+          );
+        }
+        process.exit(69);
+      }
       session = await getSession(sessionName);
       if (session) break;
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -183,10 +282,12 @@ interface HeadlessOpts {
   record?: boolean;
   replay?: boolean;
   transport?: string;
+  idleTimeout?: string;
 }
 
 function parseHeadlessOpts(opts: HeadlessOpts) {
   return {
+    idleTimeoutMs: parseIdleTimeout(opts.idleTimeout),
     outDir: opts.outDir,
     timeoutMs: opts.timeout ? Number.parseInt(opts.timeout, 10) : undefined,
     raw: opts.raw,
@@ -245,6 +346,10 @@ function registerHeadlessCommand(config: HeadlessCommandConfig) {
     .option(
       "--session <name>",
       "Keep the server running between commands: spawned on the first call, reused after (skips the cold start)",
+    )
+    .option(
+      "--idle-timeout <minutes>",
+      "With --session: close the session after this long without a command (default: never)",
     )
     .option(
       "--cassette <file>",
@@ -404,154 +509,226 @@ program
     "--transport <mode>",
     "Transport for http(s) targets: auto (default), http (Streamable HTTP), sse",
   )
+  .option("--idle-timeout-ms <ms>", "Exit after this long without a request")
   .description("Start run-mcp in background session daemon mode")
   .allowUnknownOption()
-  .action(async (sessionName: string, targetCommand: string[], opts: { transport?: string }) => {
-    const targetCmd = activeTargetCommand ?? targetCommand;
-    if (!targetCmd || targetCmd.length === 0) {
-      process.stderr.write("Error: No target command provided for daemon.\n");
-      process.exit(64);
-    }
-
-    const [command, ...args] = targetCmd;
-    const commandLine = [command, ...args].join(" ");
-    const transport = opts.transport as "auto" | "http" | "sse" | undefined;
-    const spawnTarget = () => new TargetManager(command, args, { transport });
-
-    const server = createServer();
-    server.listen(0, "127.0.0.1", async () => {
-      const addr = server.address();
-      const port = (addr as any).port;
-
-      // Mutable: `reconnect` swaps in a fresh instance. A failed reconnect keeps
-      // the dead instance around so `stderr` can still show why it died.
-      let target = spawnTarget();
-
-      try {
-        await target.connect();
-      } catch (err: any) {
-        process.stderr.write(`Daemon failed to connect to target: ${err.message}\n`);
-        process.exit(1);
+  .action(
+    async (
+      sessionName: string,
+      targetCommand: string[],
+      opts: { transport?: string; idleTimeoutMs?: string },
+    ) => {
+      const targetCmd = activeTargetCommand ?? targetCommand;
+      if (!targetCmd || targetCmd.length === 0) {
+        process.stderr.write("Error: No target command provided for daemon.\n");
+        process.exit(64);
       }
 
-      // The daemon accepts commands over a loopback TCP socket whose port lives
-      // in this session file. Restrict the dir/file to the owner so other local
-      // users can't discover the port and drive the target. (Same-user local
-      // processes are already inside the trust boundary — they run as you.)
-      await mkdir(SESSION_DIR, { recursive: true, mode: 0o700 });
-      await writeFile(getSessionPath(sessionName), JSON.stringify({ port, pid: process.pid }), {
-        encoding: "utf8",
-        mode: 0o600,
-      });
+      const [command, ...args] = targetCmd;
+      const commandLine = [command, ...args].join(" ");
+      const startedAt = Date.now();
+      const transport = opts.transport as "auto" | "http" | "sse" | undefined;
+      const spawnTarget = () => new TargetManager(command, args, { transport });
 
-      /** Wait briefly for a dying target's stderr, the way the agent server does. */
-      const settleStderr = async (t: TargetManager) => {
-        for (let waited = 0; waited < 250; waited += 25) {
-          if (t.getStderrLines().length > 0) return;
-          await new Promise((r) => setTimeout(r, 25));
-        }
-      };
+      const server = createServer();
+      server.listen(0, "127.0.0.1", async () => {
+        const addr = server.address();
+        const port = (addr as any).port;
 
-      /** Restart the target and diff its primitives against the outgoing run. */
-      const reconnect = async (): Promise<OperationOutcome> => {
-        const previous = await takeSnapshot(target);
-        await target.close().catch(() => {});
+        // Mutable: `reconnect` swaps in a fresh instance. A failed reconnect keeps
+        // the dead instance around so `stderr` can still show why it died.
+        let target = spawnTarget();
 
-        const next = spawnTarget();
-        target = next;
+        /** Wait briefly for a dying target's stderr, the way the agent server does. */
+        const settleStderr = async (t: TargetManager) => {
+          for (let waited = 0; waited < 250; waited += 25) {
+            if (t.getStderrLines().length > 0) return;
+            await new Promise((r) => setTimeout(r, 25));
+          }
+        };
+
+        // The daemon accepts commands over a loopback TCP socket whose port lives
+        // in this session file. Restrict the dir/file to the owner so other local
+        // users can't discover the port and drive the target. (Same-user local
+        // processes are already inside the trust boundary — they run as you.)
+        await mkdir(SESSION_DIR, { recursive: true, mode: 0o700 });
+        const writeSessionFile = (record: SessionData | SessionFailure) =>
+          writeFile(getSessionPath(sessionName), JSON.stringify(record), {
+            encoding: "utf8",
+            mode: 0o600,
+          });
+
         try {
-          await next.connect();
+          await target.connect();
         } catch (err: any) {
-          await settleStderr(next);
-          const stderr = next.getStderrLines(40);
+          // Our stdio is detached; the failure record is how the spawning client
+          // learns why (and gets the server's stderr, which is the actual answer).
+          await settleStderr(target);
+          await writeSessionFile({
+            failed: true,
+            error: `Failed to connect: ${err?.message ?? String(err)}`,
+            stderr: target.getStderrLines(40),
+          });
+          process.exit(1);
+        }
+
+        let idleTimeoutMs = opts.idleTimeoutMs
+          ? Number.parseInt(opts.idleTimeoutMs, 10)
+          : undefined;
+        const sessionRecord = (): SessionData => ({
+          port,
+          pid: process.pid,
+          command: targetCmd,
+          cwd: process.cwd(),
+          startedAt,
+          ...(idleTimeoutMs ? { idleTimeoutMs } : {}),
+        });
+        await writeSessionFile(sessionRecord());
+
+        // Idle timeout: a forgotten session would otherwise keep its server (and
+        // whatever the server holds — a browser, say) alive until reboot.
+        let idleTimer: NodeJS.Timeout | undefined;
+        const shutdown = async () => {
+          await target.close().catch(() => {});
+          await rm(getSessionPath(sessionName), { force: true }).catch(() => {});
+          process.exit(0);
+        };
+        const touch = () => {
+          if (idleTimer) clearTimeout(idleTimer);
+          idleTimer = undefined;
+          if (idleTimeoutMs) {
+            idleTimer = setTimeout(() => void shutdown(), idleTimeoutMs);
+            idleTimer.unref?.();
+          }
+        };
+        touch();
+
+        /** Restart the target and diff its primitives against the outgoing run. */
+        const reconnect = async (): Promise<OperationOutcome> => {
+          const previous = await takeSnapshot(target);
+          await target.close().catch(() => {});
+
+          const next = spawnTarget();
+          target = next;
+          try {
+            await next.connect();
+          } catch (err: any) {
+            await settleStderr(next);
+            const stderr = next.getStderrLines(40);
+            return {
+              result: {
+                reconnected: false,
+                error: `Failed to connect: ${err?.message ?? String(err)}`,
+                command: commandLine,
+                stderr,
+                hint:
+                  stderr.length > 0
+                    ? "The server's stderr above is almost certainly the cause. Fix it and run reconnect again."
+                    : "The server produced no stderr before exiting. Check that it runs standalone in a shell.",
+              },
+              hasError: true,
+            };
+          }
+
+          const current = await takeSnapshot(next);
+          const changes = computeSnapshotDiff(previous, current).filter((line) => line !== "");
           return {
             result: {
-              reconnected: false,
-              error: `Failed to connect: ${err?.message ?? String(err)}`,
+              reconnected: true,
+              pid: next.getStatus().pid,
               command: commandLine,
-              stderr,
-              hint:
-                stderr.length > 0
-                  ? "The server's stderr above is almost certainly the cause. Fix it and run reconnect again."
-                  : "The server produced no stderr before exiting. Check that it runs standalone in a shell.",
+              changes,
             },
-            hasError: true,
+            hasError: false,
           };
-        }
-
-        const current = await takeSnapshot(next);
-        const changes = computeSnapshotDiff(previous, current).filter((line) => line !== "");
-        return {
-          result: {
-            reconnected: true,
-            pid: next.getStatus().pid,
-            command: commandLine,
-            changes,
-          },
-          hasError: false,
         };
-      };
 
-      server.on("connection", (socket) => {
-        let buffer = "";
-        socket.on("data", async (data) => {
-          buffer += data.toString();
-          const lines = buffer.split("\n");
-          buffer = lines.pop() ?? "";
+        server.on("connection", (socket) => {
+          let buffer = "";
+          socket.on("data", async (data) => {
+            buffer += data.toString();
+            const lines = buffer.split("\n");
+            buffer = lines.pop() ?? "";
 
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed) continue;
-            try {
-              const req = JSON.parse(trimmed);
-              const reply = (result: unknown) => {
-                socket.write(JSON.stringify({ jsonrpc: "2.0", result, id: req.id }) + "\n");
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed) continue;
+              try {
+                const req = JSON.parse(trimmed);
+                const reply = (result: unknown) => {
+                  socket.write(JSON.stringify({ jsonrpc: "2.0", result, id: req.id }) + "\n");
+                  socket.end();
+                };
+
+                touch();
+                if (req.method === "execute") {
+                  const { operation, opts } = req.params;
+                  // A later call may change the idle timeout; it is recorded so
+                  // `sessions` shows the value actually in force.
+                  if (opts.idleTimeoutMs && opts.idleTimeoutMs !== idleTimeoutMs) {
+                    idleTimeoutMs = opts.idleTimeoutMs;
+                    touch();
+                    await writeSessionFile(sessionRecord());
+                  }
+                  if (operation.type === "reconnect") {
+                    reply(await reconnect());
+                    continue;
+                  }
+                  // Per-call interceptor so --out-dir/--timeout/--media-threshold
+                  // mean the same thing they do without a session.
+                  const interceptor = new ResponseInterceptor({
+                    outDir: opts.outDir,
+                    defaultTimeoutMs: opts.timeoutMs ?? DEFAULT_HEADLESS_TIMEOUT_MS,
+                    mediaThresholdKb: opts.mediaThresholdKb,
+                  });
+                  if (!target.connected && operation.type !== "stderr") {
+                    throw new Error(
+                      "The session's target server is not connected (it exited or failed to " +
+                        `restart). See why with: run-mcp stderr --session ${sessionName} — ` +
+                        `then: run-mcp reconnect --session ${sessionName}`,
+                    );
+                  }
+                  const stderrStart = target.getStatus().stderrLineCount;
+                  reply(await executeOperation(target, interceptor, operation, opts, stderrStart));
+                } else if (req.method === "validate") {
+                  const report = await validateProtocol(command, args, undefined, { target });
+                  reply(report);
+                } else if (req.method === "close") {
+                  reply({ ok: true });
+                  await shutdown();
+                } else {
+                  throw new Error(`Unknown daemon method: ${req.method}`);
+                }
+              } catch (err: any) {
+                socket.write(
+                  JSON.stringify({ jsonrpc: "2.0", error: { message: err.message }, id: 1 }) + "\n",
+                );
                 socket.end();
-              };
-
-              if (req.method === "execute") {
-                const { operation, opts } = req.params;
-                if (operation.type === "reconnect") {
-                  reply(await reconnect());
-                  continue;
-                }
-                // Per-call interceptor so --out-dir/--timeout/--media-threshold
-                // mean the same thing they do without a session.
-                const interceptor = new ResponseInterceptor({
-                  outDir: opts.outDir,
-                  defaultTimeoutMs: opts.timeoutMs ?? DEFAULT_HEADLESS_TIMEOUT_MS,
-                  mediaThresholdKb: opts.mediaThresholdKb,
-                });
-                if (!target.connected && operation.type !== "stderr") {
-                  throw new Error(
-                    "The session's target server is not connected (it exited or failed to " +
-                      `restart). See why with: run-mcp stderr --session ${sessionName} — ` +
-                      `then: run-mcp reconnect --session ${sessionName}`,
-                  );
-                }
-                const stderrStart = target.getStatus().stderrLineCount;
-                reply(await executeOperation(target, interceptor, operation, opts, stderrStart));
-              } else if (req.method === "validate") {
-                const report = await validateProtocol(command, args, undefined, { target });
-                reply(report);
-              } else if (req.method === "close") {
-                reply({ ok: true });
-                await target.close().catch(() => {});
-                await rm(getSessionPath(sessionName), { force: true }).catch(() => {});
-                process.exit(0);
-              } else {
-                throw new Error(`Unknown daemon method: ${req.method}`);
               }
-            } catch (err: any) {
-              socket.write(
-                JSON.stringify({ jsonrpc: "2.0", error: { message: err.message }, id: 1 }) + "\n",
-              );
-              socket.end();
             }
-          }
+          });
         });
       });
-    });
+    },
+  );
+
+// ─── Subcommand: sessions ────────────────────────────────────────────────────
+
+program
+  .command("sessions")
+  .description("List running sessions as JSON: name, pid, command, cwd, uptime, idle timeout")
+  .action(async () => {
+    const now = Date.now();
+    const rows = (await listSessions()).map((s) => ({
+      name: s.name,
+      pid: s.pid,
+      command: s.command.join(" "),
+      cwd: s.cwd,
+      started_at: new Date(s.startedAt).toISOString(),
+      uptime: formatUptime(now - s.startedAt),
+      idle_timeout: s.idleTimeoutMs ? formatUptime(s.idleTimeoutMs) : null,
+    }));
+    process.stdout.write(`${JSON.stringify(rows, null, 2)}\n`);
   });
 
 // ─── Subcommand: close-session ───────────────────────────────────────────────
@@ -773,6 +950,8 @@ Headless Sessions (the loop from a shell — the server stays up between command
   $ run-mcp stderr --session dev                                   # its stderr so far
   $ run-mcp reconnect --session dev             # after an edit: restart + diff primitives
   $ run-mcp validate --deep --session dev
+  $ run-mcp sessions                            # what's running, with what command, since when
+  $ run-mcp call echo text=hi --session dev --idle-timeout 30 -- node my-server.js   # auto-close after 30 idle minutes
   $ run-mcp close-session dev
 
 Agent Mode Configuration (mcp.json):
