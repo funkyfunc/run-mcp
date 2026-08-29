@@ -8,12 +8,18 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
 import { pickDiscoveredServer } from "./config-scanner.js";
-import { runHeadless, executeOperation } from "./headless.js";
+import {
+  runHeadless,
+  executeOperation,
+  DEFAULT_HEADLESS_TIMEOUT_MS,
+  type OperationOutcome,
+} from "./headless.js";
 import { startRepl } from "./repl.js";
 import { startServer } from "./server.js";
 import { TargetManager } from "./target-manager.js";
 import { ResponseInterceptor } from "./interceptor.js";
-import { validateProtocol } from "./validator.js";
+import { validateProtocol, type ValidationReport } from "./validator.js";
+import { computeSnapshotDiff, takeSnapshot } from "./snapshot.js";
 
 // ─── Headless subcommand helper ───────────────────────────────────────────────
 
@@ -60,10 +66,7 @@ async function getSession(name: string): Promise<SessionData | null> {
   }
 }
 
-function sendDaemonRequest(
-  port: number,
-  request: unknown,
-): Promise<{ result: unknown; hasError: boolean }> {
+function sendDaemonRequest<T = OperationOutcome>(port: number, request: unknown): Promise<T> {
   return new Promise((resolve, reject) => {
     const socket = createConnection({ port });
     let buffer = "";
@@ -82,7 +85,7 @@ function sendDaemonRequest(
         if (parsed.error) {
           reject(new Error(parsed.error.message));
         } else {
-          resolve(parsed.result as { result: unknown; hasError: boolean });
+          resolve(parsed.result as T);
         }
       } catch (err) {
         reject(new Error(`Failed to parse daemon response: ${err}`));
@@ -119,6 +122,7 @@ async function handleHeadlessSession(
     // with `--` so it isn't swallowed during the daemon's re-parse.
     const binPath = resolve(import.meta.dirname, "./index.js");
     const daemonArgs = ["daemon", sessionName];
+    if (opts.transport) daemonArgs.push("--transport", opts.transport);
     daemonArgs.push("--", ...target);
     const daemonProcess = spawn("node", [binPath, ...daemonArgs], {
       detached: true,
@@ -152,10 +156,15 @@ async function handleHeadlessSession(
       id: 1,
     });
 
+    // The daemon holds the target's stderr pipe, so `--show-stderr` can't stream
+    // live; it comes back with the response and is replayed here, still on stderr.
+    if (response.stderr && response.stderr.length > 0) {
+      process.stderr.write(`${response.stderr.join("\n")}\n`);
+    }
     process.stdout.write(`${JSON.stringify(response.result, null, 2)}\n`);
     process.exit(response.hasError ? 1 : 0);
   } catch (err: any) {
-    process.stderr.write(`Error communicating with session daemon: ${err.message}\n`);
+    process.stderr.write(`Error (session "${sessionName}"): ${err.message}\n`);
     process.exit(1);
   }
 }
@@ -232,7 +241,10 @@ function registerHeadlessCommand(config: HeadlessCommandConfig) {
       "Media size threshold in KB to save to disk (0 to always save, -1 to keep inline)",
     )
     .option("--show-stderr", "Stream target server stderr to process stderr")
-    .option("--session <name>", "Persistent session name")
+    .option(
+      "--session <name>",
+      "Keep the server running between commands: spawned on the first call, reused after (skips the cold start)",
+    )
     .option(
       "--cassette <file>",
       "Record/replay responses to a cassette file (auto: replay if present, else record)",
@@ -264,6 +276,13 @@ function registerHeadlessCommand(config: HeadlessCommandConfig) {
 
     if (opts.session) {
       await handleHeadlessSession(opts.session, targetCommand, operation, parsedOpts, usageStr);
+    } else if (operation.type === "reconnect") {
+      process.stderr.write(
+        "Error: reconnect restarts the server behind a running session; pass --session <name>.\n" +
+          "Without a session every command already starts a fresh server.\n\n" +
+          `Usage: ${usageStr}\n`,
+      );
+      process.exit(64);
     } else {
       // Offline replay (call/read/get-prompt) needs no target command — the
       // response comes from the cassette. Every other case requires the target.
@@ -353,28 +372,59 @@ registerHeadlessCommand({
   usageHint: "get-prompt <name> [json_args] -- <server_command...>",
 });
 
+registerHeadlessCommand({
+  name: "stderr",
+  description:
+    "Print the target server's captured stderr as a JSON array of lines (with --session: everything since it started; otherwise: its startup output)",
+  args: [{ name: "count", required: false, description: "Only the last N lines" }],
+  buildOperation: (count?: string) => ({
+    type: "stderr" as const,
+    count: count ? Number.parseInt(count, 10) : undefined,
+  }),
+  usageHint: "stderr [count] --session <name>  (or: stderr -- <server_command...>)",
+});
+
+registerHeadlessCommand({
+  name: "reconnect",
+  description:
+    "Restart the server behind a session after a code edit and report which tools/resources/prompts changed",
+  args: [],
+  buildOperation: () => ({ type: "reconnect" as const }),
+  usageHint: "reconnect --session <name>",
+});
+
 // ─── Subcommand: daemon ───────────────────────────────────────────────────────
 
 program
   .command("daemon")
   .argument("<session_name>", "Session name")
   .argument("[target_command...]", "Target server command")
+  .option(
+    "--transport <mode>",
+    "Transport for http(s) targets: auto (default), http (Streamable HTTP), sse",
+  )
   .description("Start run-mcp in background session daemon mode")
   .allowUnknownOption()
-  .action(async (sessionName: string, targetCommand: string[], _opts: Record<string, never>) => {
+  .action(async (sessionName: string, targetCommand: string[], opts: { transport?: string }) => {
     const targetCmd = activeTargetCommand ?? targetCommand;
     if (!targetCmd || targetCmd.length === 0) {
       process.stderr.write("Error: No target command provided for daemon.\n");
       process.exit(64);
     }
 
+    const [command, ...args] = targetCmd;
+    const commandLine = [command, ...args].join(" ");
+    const transport = opts.transport as "auto" | "http" | "sse" | undefined;
+    const spawnTarget = () => new TargetManager(command, args, { transport });
+
     const server = createServer();
     server.listen(0, "127.0.0.1", async () => {
       const addr = server.address();
       const port = (addr as any).port;
 
-      const target = new TargetManager(targetCmd[0], targetCmd.slice(1), {});
-      const interceptor = new ResponseInterceptor();
+      // Mutable: `reconnect` swaps in a fresh instance. A failed reconnect keeps
+      // the dead instance around so `stderr` can still show why it died.
+      let target = spawnTarget();
 
       try {
         await target.connect();
@@ -393,6 +443,54 @@ program
         mode: 0o600,
       });
 
+      /** Wait briefly for a dying target's stderr, the way the agent server does. */
+      const settleStderr = async (t: TargetManager) => {
+        for (let waited = 0; waited < 250; waited += 25) {
+          if (t.getStderrLines().length > 0) return;
+          await new Promise((r) => setTimeout(r, 25));
+        }
+      };
+
+      /** Restart the target and diff its primitives against the outgoing run. */
+      const reconnect = async (): Promise<OperationOutcome> => {
+        const previous = await takeSnapshot(target);
+        await target.close().catch(() => {});
+
+        const next = spawnTarget();
+        target = next;
+        try {
+          await next.connect();
+        } catch (err: any) {
+          await settleStderr(next);
+          const stderr = next.getStderrLines(40);
+          return {
+            result: {
+              reconnected: false,
+              error: `Failed to connect: ${err?.message ?? String(err)}`,
+              command: commandLine,
+              stderr,
+              hint:
+                stderr.length > 0
+                  ? "The server's stderr above is almost certainly the cause. Fix it and run reconnect again."
+                  : "The server produced no stderr before exiting. Check that it runs standalone in a shell.",
+            },
+            hasError: true,
+          };
+        }
+
+        const current = await takeSnapshot(next);
+        const changes = computeSnapshotDiff(previous, current).filter((line) => line !== "");
+        return {
+          result: {
+            reconnected: true,
+            pid: next.getStatus().pid,
+            command: commandLine,
+            changes,
+          },
+          hasError: false,
+        };
+      };
+
       server.on("connection", (socket) => {
         let buffer = "";
         socket.on("data", async (data) => {
@@ -405,27 +503,43 @@ program
             if (!trimmed) continue;
             try {
               const req = JSON.parse(trimmed);
+              const reply = (result: unknown) => {
+                socket.write(JSON.stringify({ jsonrpc: "2.0", result, id: req.id }) + "\n");
+                socket.end();
+              };
+
               if (req.method === "execute") {
                 const { operation, opts } = req.params;
-                const { result, hasError } = await executeOperation(
-                  target,
-                  interceptor,
-                  operation,
-                  opts,
-                );
-                socket.write(
-                  JSON.stringify({ jsonrpc: "2.0", result: { result, hasError }, id: req.id }) +
-                    "\n",
-                );
-                socket.end();
+                if (operation.type === "reconnect") {
+                  reply(await reconnect());
+                  continue;
+                }
+                // Per-call interceptor so --out-dir/--timeout/--media-threshold
+                // mean the same thing they do without a session.
+                const interceptor = new ResponseInterceptor({
+                  outDir: opts.outDir,
+                  defaultTimeoutMs: opts.timeoutMs ?? DEFAULT_HEADLESS_TIMEOUT_MS,
+                  mediaThresholdKb: opts.mediaThresholdKb,
+                });
+                if (!target.connected && operation.type !== "stderr") {
+                  throw new Error(
+                    "The session's target server is not connected (it exited or failed to " +
+                      `restart). See why with: run-mcp stderr --session ${sessionName} — ` +
+                      `then: run-mcp reconnect --session ${sessionName}`,
+                  );
+                }
+                const stderrStart = target.getStatus().stderrLineCount;
+                reply(await executeOperation(target, interceptor, operation, opts, stderrStart));
+              } else if (req.method === "validate") {
+                const report = await validateProtocol(command, args, undefined, { target });
+                reply(report);
               } else if (req.method === "close") {
-                socket.write(
-                  JSON.stringify({ jsonrpc: "2.0", result: { ok: true }, id: req.id }) + "\n",
-                );
-                socket.end();
+                reply({ ok: true });
                 await target.close().catch(() => {});
                 await rm(getSessionPath(sessionName), { force: true }).catch(() => {});
                 process.exit(0);
+              } else {
+                throw new Error(`Unknown daemon method: ${req.method}`);
               }
             } catch (err: any) {
               socket.write(
@@ -478,89 +592,111 @@ program
   .argument("[target_command...]", "Target server command")
   .option("--deep", "Perform deep protocol and schema compliance checks")
   .option("--json", "Format output as JSON")
+  .option("--session <name>", "Validate the server already running behind a session")
   .allowUnknownOption()
-  .action(async (targetCommand: string[], opts: { deep?: boolean; json?: boolean }) => {
-    const target = activeTargetCommand ?? targetCommand ?? [];
-    if (target.length === 0) {
-      process.stderr.write("Error: Target server command must be provided.\n");
-      process.exit(64);
-    }
+  .action(
+    async (targetCommand: string[], opts: { deep?: boolean; json?: boolean; session?: string }) => {
+      const target = activeTargetCommand ?? targetCommand ?? [];
+      if (!opts.session && target.length === 0) {
+        process.stderr.write("Error: Target server command must be provided.\n");
+        process.exit(64);
+      }
 
-    try {
-      if (opts.deep) {
-        const report = await validateProtocol(target[0], target.slice(1));
-        if (opts.json) {
-          process.stdout.write(JSON.stringify(report, null, 2) + "\n");
-        } else {
-          console.log(
-            `Validation Result: ${report.status === "PASS" ? "\x1b[32mSUCCESS\x1b[0m" : report.status === "WARN" ? "\x1b[33mWARNING\x1b[0m" : "\x1b[31mFAILED\x1b[0m"}\n`,
+      /** Run the checks against a fresh spawn, or the session's live target. */
+      const runValidation = async (): Promise<ValidationReport> => {
+        if (!opts.session) return validateProtocol(target[0], target.slice(1));
+        const session = await getSession(opts.session);
+        if (!session) {
+          process.stderr.write(
+            `Error: Session "${opts.session}" is not running. Start it with any headless command, e.g.\n` +
+              `  run-mcp list-tools --session ${opts.session} -- <server_command...>\n`,
           );
-          for (const check of report.checks) {
-            const statusStr =
-              check.status === "PASS"
-                ? "\x1b[32mPASS\x1b[0m"
-                : check.status === "WARN"
-                  ? "\x1b[33mWARN\x1b[0m"
-                  : "\x1b[31mFAIL\x1b[0m";
-            console.log(`  [${statusStr}] ${check.name}: ${check.message || ""}`);
-          }
+          process.exit(64);
         }
-        process.exit(report.status === "FAIL" ? 1 : 0);
-      } else {
-        const report = await validateProtocol(target[0], target.slice(1));
+        return sendDaemonRequest<ValidationReport>(session.port, {
+          jsonrpc: "2.0",
+          method: "validate",
+          params: {},
+          id: 1,
+        });
+      };
 
-        const handshake = report.checks.find((c) => c.name === "handshake_connection");
-        const metadata = report.checks.find((c) => c.name === "implementation_metadata");
-        const tools = report.checks.find((c) => c.name === "tools_capability");
-        const caps = report.checks.find((c) => c.name === "server_capabilities");
+      try {
+        if (opts.deep) {
+          const report = await runValidation();
+          if (opts.json) {
+            process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+          } else {
+            console.log(
+              `Validation Result: ${report.status === "PASS" ? "\x1b[32mSUCCESS\x1b[0m" : report.status === "WARN" ? "\x1b[33mWARNING\x1b[0m" : "\x1b[31mFAILED\x1b[0m"}\n`,
+            );
+            for (const check of report.checks) {
+              const statusStr =
+                check.status === "PASS"
+                  ? "\x1b[32mPASS\x1b[0m"
+                  : check.status === "WARN"
+                    ? "\x1b[33mWARN\x1b[0m"
+                    : "\x1b[31mFAIL\x1b[0m";
+              console.log(`  [${statusStr}] ${check.name}: ${check.message || ""}`);
+            }
+          }
+          process.exit(report.status === "FAIL" ? 1 : 0);
+        } else {
+          const report = await runValidation();
 
-        if (report.status === "FAIL") {
+          const handshake = report.checks.find((c) => c.name === "handshake_connection");
+          const metadata = report.checks.find((c) => c.name === "implementation_metadata");
+          const tools = report.checks.find((c) => c.name === "tools_capability");
+          const caps = report.checks.find((c) => c.name === "server_capabilities");
+
+          if (report.status === "FAIL") {
+            if (opts.json) {
+              process.stdout.write(
+                JSON.stringify(
+                  { success: false, error: handshake?.message || "Validation failed" },
+                  null,
+                  2,
+                ) + "\n",
+              );
+            } else {
+              console.error(`\x1b[31mValidation Result: FAILED\x1b[0m`);
+              console.error(`Error: ${handshake?.message || "Unknown error"}`);
+            }
+            process.exit(1);
+          }
+
           if (opts.json) {
             process.stdout.write(
               JSON.stringify(
-                { success: false, error: handshake?.message || "Validation failed" },
+                {
+                  success: true,
+                  serverName: metadata?.message?.match(/"([^"]+)"/)?.[1] || "unknown",
+                  capabilities: caps?.message || "none",
+                },
                 null,
                 2,
               ) + "\n",
             );
           } else {
-            console.error(`\x1b[31mValidation Result: FAILED\x1b[0m`);
-            console.error(`Error: ${handshake?.message || "Unknown error"}`);
+            console.log(`\x1b[32mValidation Result: SUCCESS\x1b[0m`);
+            console.log(`  ${metadata?.message || "Implementation metadata OK."}`);
+            console.log(`  ${caps?.message || "Capabilities OK."}`);
+            console.log(`  ${tools?.message || "Tools OK."}`);
           }
-          process.exit(1);
+          process.exit(0);
         }
-
+      } catch (err: any) {
         if (opts.json) {
           process.stdout.write(
-            JSON.stringify(
-              {
-                success: true,
-                serverName: metadata?.message?.match(/"([^"]+)"/)?.[1] || "unknown",
-                capabilities: caps?.message || "none",
-              },
-              null,
-              2,
-            ) + "\n",
+            JSON.stringify({ success: false, error: err.message }, null, 2) + "\n",
           );
         } else {
-          console.log(`\x1b[32mValidation Result: SUCCESS\x1b[0m`);
-          console.log(`  ${metadata?.message || "Implementation metadata OK."}`);
-          console.log(`  ${caps?.message || "Capabilities OK."}`);
-          console.log(`  ${tools?.message || "Tools OK."}`);
+          console.error(`\x1b[31mError: ${err.message}\x1b[0m`);
         }
-        process.exit(0);
+        process.exit(1);
       }
-    } catch (err: any) {
-      if (opts.json) {
-        process.stdout.write(
-          JSON.stringify({ success: false, error: err.message }, null, 2) + "\n",
-        );
-      } else {
-        console.error(`\x1b[31mError: ${err.message}\x1b[0m`);
-      }
-      process.exit(1);
-    }
-  });
+    },
+  );
 
 // ─── Default: REPL or Agent Server ───────────────────────────────────────────
 
@@ -618,7 +754,7 @@ Examples:
   $ run-mcp --out-dir ./test-output               # Agent mode with options
   $ run-mcp --out-dir ./screenshots -- node srv.js # REPL mode with options
 
-Headless Commands (pipe-friendly, JSON output):
+Headless Commands (one call per invocation, JSON on stdout):
   $ run-mcp call echo '{"text":"hi"}' -- node my-server.js
   $ run-mcp list-tools -- node my-server.js | jq '.[].name'
   $ run-mcp list-resources -- node my-server.js
@@ -627,6 +763,16 @@ Headless Commands (pipe-friendly, JSON output):
   $ run-mcp describe echo -- node my-server.js
   $ run-mcp get-prompt greeting '{"name":"Ada"}' -- node my-server.js
   $ run-mcp validate --deep -- node my-server.js
+  $ run-mcp stderr -- node my-server.js                # what the server printed at startup
+  $ run-mcp call echo text=hi --raw -- node my-server.js   # full result + "stderr" field
+
+Headless Sessions (the loop from a shell — the server stays up between commands):
+  $ run-mcp call echo text=hi --session dev -- node my-server.js   # first call spawns it
+  $ run-mcp call echo text=again --session dev                     # reused, no cold start
+  $ run-mcp stderr --session dev                                   # its stderr so far
+  $ run-mcp reconnect --session dev             # after an edit: restart + diff primitives
+  $ run-mcp validate --deep --session dev
+  $ run-mcp close-session dev
 
 Agent Mode Configuration (mcp.json):
   {

@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Driven by feedback from an agent that used the headless CLI for its dev loop
+and found it "reasonable for a smoke check, not a dev loop": every invocation
+cold-started its server (a browser, in its case), and the output interleaved
+with the server's stderr audit lines in its shell tool. `--session` already
+solved the first problem, but it was invisible and incomplete — the session
+daemon had no reconnect, no way to read stderr, ignored `--show-stderr` and the
+other per-call options, and `validate` didn't accept it at all.
+
+### Added
+
+- **`reconnect --session <name>`** — restarts the server behind a session after
+  a code edit and reports a diff of tools/resources/prompts, as JSON. The REPL,
+  watch mode, and the agent server all had this; the headless loop did not, so
+  an edit meant `close-session` plus a cold start. If the new code fails to
+  start, the result carries the crash output inline (`{ reconnected: false,
+  error, stderr: [...] }`) and the dead instance is kept so `stderr` still shows
+  why; run `reconnect` again once it's fixed.
+- **`stderr [count]`** — the target's captured stderr as a JSON array of lines.
+  With `--session`: everything since the server started (or the last N). Without:
+  what a fresh spawn writes at startup.
+- **`validate [--deep] --session <name>`** — runs the compliance checks against
+  the session's already-running server instead of spawning a second copy.
+  Previously `--session` was swallowed as the server command (`spawn --session
+  ENOENT`).
+- **`call --raw` now carries a `stderr` field** — the lines the server wrote
+  during the call — so stderr arrives as data in the JSON envelope rather than
+  as a stream to grep out of a merged stdout/stderr.
+- **Headless connect failures now print the server's stderr** under
+  `--- Target server stderr ---`, matching the fix the agent server got in 2.0.0.
+
+### Fixed
+
+- **`--show-stderr` was silently ignored on sessioned calls.** The daemon holds
+  the pipe, so it now returns the lines written during the call and the CLI
+  replays them on stderr.
+- **`--out-dir`, `--timeout`, and `--media-threshold` were ignored on sessioned
+  calls** (the daemon built one default interceptor at startup). They now apply
+  per call. `--transport` is passed through when the session is created.
+  `--media-threshold` was also parsed but never applied in one-shot mode.
+- A call against a session whose server has exited now says so and points at
+  `stderr`/`reconnect`, instead of `Error communicating with session daemon`.
+
+### Changed
+
+- `--help` and the README now present sessions as the headless dev loop, with
+  examples, rather than a footnote under CI usage.
+
 ## [2.0.0] - 2026-08-09
 
 **Breaking.** This release removes a subcommand, eleven CLI flags, and two agent

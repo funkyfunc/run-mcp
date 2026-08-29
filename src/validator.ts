@@ -74,9 +74,17 @@ export async function validateProtocol(
   command: string,
   args: string[],
   env?: Record<string, string>,
+  options: {
+    /**
+     * Validate an already-running target instead of spawning a fresh one (used by
+     * `validate --session`). The caller keeps ownership: it is never closed here.
+     */
+    target?: TargetManager;
+  } = {},
 ): Promise<ValidationReport> {
   const checks: ValidationCheck[] = [];
   let target: TargetManager | null = null;
+  const ownsTarget = !options.target;
 
   // Helper to push checks
   const addCheck = (name: string, status: "PASS" | "WARN" | "FAIL", message?: string) => {
@@ -105,19 +113,43 @@ export async function validateProtocol(
     // 1. Connection check. Custom env is threaded into the child via TargetManager
     // rather than mutated onto the parent process.env (which leaks and, for the
     // long-lived agent server, would bleed one target's secrets into the next).
-    target = new TargetManager(command, args, { env });
+    if (options.target) {
+      target = options.target;
+      if (!target.connected) {
+        addCheck(
+          "handshake_connection",
+          "FAIL",
+          "The session's target server is not connected (it may have crashed — see its stderr).",
+        );
+        return finalizeReport(checks);
+      }
+      addCheck(
+        "handshake_connection",
+        "PASS",
+        "Validated against the already-running session target (handshake completed earlier).",
+      );
+    } else {
+      target = new TargetManager(command, args, { env });
 
-    try {
-      await Promise.race([
-        target.connect(),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("Handshake connection timed out after 5000ms")), 5000),
-        ),
-      ]);
-      addCheck("handshake_connection", "PASS", "Connected and completed initialization handshake.");
-    } catch (err: any) {
-      addCheck("handshake_connection", "FAIL", `Failed to connect/initialize: ${err.message}`);
-      return finalizeReport(checks);
+      try {
+        await Promise.race([
+          target.connect(),
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () => reject(new Error("Handshake connection timed out after 5000ms")),
+              5000,
+            ),
+          ),
+        ]);
+        addCheck(
+          "handshake_connection",
+          "PASS",
+          "Connected and completed initialization handshake.",
+        );
+      } catch (err: any) {
+        addCheck("handshake_connection", "FAIL", `Failed to connect/initialize: ${err.message}`);
+        return finalizeReport(checks);
+      }
     }
 
     // 2. Server Implementation Metadata Check
@@ -500,7 +532,7 @@ export async function validateProtocol(
       `Validator ran into an unhandled exception: ${err.message}`,
     );
   } finally {
-    if (target) {
+    if (target && ownsTarget) {
       await target.close().catch(() => {});
     }
   }

@@ -19,13 +19,14 @@ import { TargetManager } from "./target-manager.js";
 import { Cassette, type CassetteMode } from "./cassette.js";
 
 /** Default timeout for headless tool calls (30 seconds). */
-const DEFAULT_HEADLESS_TIMEOUT_MS = 30_000;
+export const DEFAULT_HEADLESS_TIMEOUT_MS = 30_000;
 
 export interface HeadlessOptions {
   outDir?: string;
   timeoutMs?: number;
   raw?: boolean;
   showStderr?: boolean;
+  mediaThresholdKb?: number;
   cassettePath?: string;
   cassetteMode?: CassetteMode;
   transport?: "auto" | "http" | "sse";
@@ -38,7 +39,42 @@ export type HeadlessOperation =
   | { type: "list-prompts" }
   | { type: "read"; uri: string }
   | { type: "describe"; tool: string }
-  | { type: "get-prompt"; name: string; args?: string };
+  | { type: "get-prompt"; name: string; args?: string }
+  | { type: "stderr"; count?: number }
+  | { type: "reconnect" };
+
+/** What an operation produced, plus the target stderr it generated on the way. */
+export interface OperationOutcome {
+  result: unknown;
+  hasError: boolean;
+  /**
+   * Target stderr lines written while this operation ran. Only populated when
+   * the caller asked for them (`--show-stderr` in session mode, where the
+   * daemon holds the pipe and the caller can't stream it live).
+   */
+  stderr?: string[];
+}
+
+/**
+ * Target stderr lines written after `startCount` lines had already been seen.
+ * The TargetManager keeps a bounded buffer, so the window is clamped to what
+ * is still retained.
+ */
+export function stderrSince(target: TargetManager, startCount: number): string[] {
+  const all = target.getStderrLines();
+  const total = target.getStatus().stderrLineCount;
+  const fresh = Math.max(0, total - startCount);
+  return fresh >= all.length ? all : all.slice(all.length - fresh);
+}
+
+/**
+ * Give the target's trailing stderr a moment to arrive. Stdout and stderr are
+ * separate pipes, so a line written just before the JSON-RPC response can
+ * still be in flight when the response has already been parsed.
+ */
+async function settleStderr(): Promise<void> {
+  await new Promise((r) => setTimeout(r, 30));
+}
 
 /**
  * Connect → execute one operation → print JSON to stdout → exit.
@@ -61,8 +97,17 @@ export async function runHeadless(
   const interceptor = new ResponseInterceptor({
     outDir: opts.outDir,
     defaultTimeoutMs: opts.timeoutMs ?? DEFAULT_HEADLESS_TIMEOUT_MS,
+    mediaThresholdKb: opts.mediaThresholdKb,
     cassette,
   });
+
+  if (operation.type === "reconnect") {
+    process.stderr.write(
+      "Error: reconnect restarts the server behind a running session; pass --session <name>.\n" +
+        "Without a session every command already starts a fresh server.\n",
+    );
+    process.exit(64);
+  }
 
   // Stream or suppress server stderr
   if (opts.showStderr) {
@@ -111,6 +156,16 @@ export async function runHeadless(
       exitCode = 69; // EX_UNAVAILABLE
     }
 
+    // A server that dies on connect explains itself on stderr — surface it here
+    // rather than discarding it with the process (the agent server does the same).
+    if (!opts.showStderr) {
+      await settleStderr();
+      const lines = target.getStderrLines(40);
+      if (lines.length > 0) {
+        process.stderr.write(`--- Target server stderr ---\n${lines.join("\n")}\n`);
+      }
+    }
+
     await target.close().catch(() => {});
     process.exit(exitCode);
   }
@@ -127,7 +182,28 @@ export async function executeOperation(
   interceptor: ResponseInterceptor,
   operation: HeadlessOperation,
   opts: HeadlessOptions,
-): Promise<{ result: unknown; hasError: boolean }> {
+  /**
+   * Stderr lines already seen before this operation began. Zero (the default)
+   * means "everything since spawn", which is what a one-shot run wants; a
+   * session daemon passes the current count so the window covers this call only.
+   */
+  stderrStart = 0,
+): Promise<OperationOutcome> {
+  const outcome = await runOperation(target, interceptor, operation, opts, stderrStart);
+  if (opts.showStderr && stderrStart > 0) {
+    await settleStderr();
+    outcome.stderr = stderrSince(target, stderrStart);
+  }
+  return outcome;
+}
+
+async function runOperation(
+  target: TargetManager,
+  interceptor: ResponseInterceptor,
+  operation: HeadlessOperation,
+  opts: HeadlessOptions,
+  stderrStart: number,
+): Promise<OperationOutcome> {
   switch (operation.type) {
     case "call": {
       let parsedArgs: Record<string, unknown> = {};
@@ -147,6 +223,14 @@ export async function executeOperation(
       }
 
       const result = await interceptor.callTool(target, operation.tool, parsedArgs);
+
+      // `--raw` is the "give me everything" envelope, so it also carries what the
+      // server wrote to stderr during this call — as data, not as a stream the
+      // caller has to disentangle from stdout.
+      if (opts.raw) {
+        await settleStderr();
+        (result as Record<string, unknown>).stderr = stderrSince(target, stderrStart);
+      }
 
       // Check for isError and exit 1
       if ((result as any).isError) {
@@ -226,6 +310,18 @@ export async function executeOperation(
         arguments: parsedArgs,
       });
       return { result, hasError: false };
+    }
+
+    case "stderr": {
+      await settleStderr();
+      return { result: target.getStderrLines(operation.count), hasError: false };
+    }
+
+    case "reconnect": {
+      // Only meaningful for a long-lived target; the session daemon handles it
+      // (it owns the TargetManager and has to swap it out). runHeadless rejects
+      // it before we get here.
+      throw new Error("reconnect is only available with --session");
     }
   }
 }

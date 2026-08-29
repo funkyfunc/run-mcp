@@ -15,7 +15,7 @@ restarts it on demand.
 
 1. **Agent MCP Server** (`run-mcp`) — An MCP server that exposes tools (`connect_to_mcp`, `call_mcp_primitive`, `reconnect_to_mcp`) so AI agents can dynamically connect to and test local MCP projects without hardcoding them in configuration files. This is the **default mode** when you run `npx -y run-mcp`.
 2. **Interactive REPL** (`run-mcp -- node server.js`) — A human-friendly CLI for developers to manually test and explore MCP servers using short, memorable commands (`tools/call`, `status`, etc.).
-3. **Headless CLI** (`run-mcp call`, `run-mcp list-tools`, etc.) — Single-shot subcommands that output clean JSON to stdout for CI/CD pipelines, shell scripts, and `jq` workflows.
+3. **Headless CLI** (`run-mcp call`, `run-mcp list-tools`, etc.) — Subcommands that print clean JSON to stdout. This is the loop an agent uses from a shell when it can't (or doesn't want to) add run-mcp to its own MCP config: add `--session <name>` and the server stays up between commands, with `reconnect`, `stderr`, and `validate` available against the running instance. Also works one-shot for CI, shell scripts, and `jq`.
 
 ### Interception Rules (Agent Server & REPL)
 
@@ -112,9 +112,11 @@ On each file change, `run-mcp` will:
 
 Common directories like `node_modules`, `.git`, `dist`, and `build` are automatically ignored.
 
-## Headless Mode (Single-Shot CI/CD)
+## Headless Mode (from a shell, one command at a time)
 
-For CI/CD pipelines, shell scripts, or parsing via `jq`, `run-mcp` exposes a suite of headless subcommands that pipe clean JSON to stdout and isolate standard errors and progress updates to stderr.
+`run-mcp` exposes a suite of headless subcommands that print clean JSON to stdout and keep status messages on stderr. Without `--session` each command spawns the server fresh — fine for CI and `jq` one-liners. **For a dev loop, use [sessions](#-persistent-sessions-the-dev-loop-from-a-shell)**: the server stays up, and `reconnect`/`stderr`/`validate` work against the running instance.
+
+> **If you're an agent driving run-mcp through a shell tool** that merges stdout and stderr: use `--session`. A sessioned call prints nothing but the JSON result, and the server's stderr is reachable as data (`run-mcp stderr --session <name>`, or the `stderr` field of `call --raw`) instead of interleaving with your output.
 
 ### ⚠️ Double-Dash `--` Separator
 
@@ -145,20 +147,46 @@ _Example:_
 run-mcp call greet name=Alice count:=5 -- node my-server.js
 ```
 
-### 🔄 Stateful/Persistent CLI Sessions
+### 🔄 Persistent Sessions (the dev loop from a shell)
 
-Normally, every headless command spawns a fresh process of the target server, which is slow and discards connection state. By passing `--session <name>`, `run-mcp` will spawn a persistent background daemon on the first call. Subsequent commands will dynamically attach to the same running session:
+Without a session, every headless command spawns a fresh process of the target server — slow (a server that launches a browser pays that cost on every call) and stateless. Pass `--session <name>` and the first call spawns a background daemon that keeps the server running; every later command with the same name attaches to it, needs no target command, and prints nothing but the result:
 
 ```bash
-# Spawns a background session daemon & launches a browser
+# First call spawns the session (and, say, launches the browser)
 run-mcp call browser_launch headless:=true --session main -- node browser-server.js
 
-# Navigates the browser on the active running session (no target command needed!)
+# Later calls reuse the running server — no cold start, no progress lines
 run-mcp call browser_navigate url=https://google.com --session main
+run-mcp list-tools --session main
 
-# Closes the session and stops the background target server
+# The server's stderr, as a JSON array of lines (everything since it started, or the last N)
+run-mcp stderr --session main
+run-mcp stderr 20 --session main
+
+# Edit your server's code, then restart it and see what your edit changed
+run-mcp reconnect --session main
+#   { "reconnected": true, "pid": 4242, "command": "node browser-server.js",
+#     "changes": ["Changes since last connection:", "  Tools: +1 added (browser_pdf)"] }
+# If the new code fails to start, the result carries the crash output inline
+# ({ "reconnected": false, "error": ..., "stderr": [...] }); the old process is
+# gone, `stderr --session` still shows why, and `reconnect` again once it's fixed.
+
+# Spec-compliance checks against the running instance
+run-mcp validate --deep --session main
+
+# Stop the server and the daemon
 run-mcp close-session main
 ```
+
+`--show-stderr` on a sessioned call replays the stderr the server wrote *during that call* (the daemon holds the pipe, so it can't stream live). `--out-dir`, `--timeout`, and `--media-threshold` apply per call, exactly as without a session. `--transport` is fixed when the session is created.
+
+### 🔎 Stderr as data
+
+The server's stderr is the main evidence when something goes wrong, so headless mode makes it available without you having to untangle it from stdout:
+
+- `run-mcp call <tool> --raw` includes a `stderr` array in the result envelope: the lines written during that call (in one-shot mode: everything since the server was spawned, startup output included).
+- `run-mcp stderr -- node server.js` prints what a fresh spawn writes at startup.
+- A server that dies during connect has its stderr printed under `--- Target server stderr ---`, instead of just `Connection closed`.
 
 ### Available Headless Subcommands
 
@@ -170,7 +198,9 @@ run-mcp close-session main
 - `read [options] <uri> [target_command...]`
 - `describe [options] <tool> [target_command...]`
 - `get-prompt [options] <name> [json_args] [target_command...]`
-- `daemon <session_name> [target_command...]`
+- `stderr [options] [count] [target_command...]`
+- `reconnect [options] [target_command...]`
+- `daemon [options] <session_name> [target_command...]`
 - `close-session <session_name>`
 - `validate [options] [target_command...]`
 <!-- SUBCOMMANDS_END -->

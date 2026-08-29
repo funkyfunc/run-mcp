@@ -432,3 +432,212 @@ describe("headless: separator relaxing", () => {
     expect(result[0].text).toBe("no double-dash test");
   }, 15_000);
 });
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Stderr as data, and the session dev loop (stderr / reconnect / validate)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe("headless: stderr as data (one-shot)", () => {
+  it("`stderr` prints the server's startup output as a JSON array", async () => {
+    const { stdout, exitCode } = await runCli(["stderr", ...TARGET]);
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout)).toContain("Mock MCP server running on stdio");
+  }, 15_000);
+
+  it("`call --raw` carries a stderr field with what the server wrote", async () => {
+    const { stdout, exitCode } = await runCli([
+      "call",
+      "log_stderr",
+      "line=audit-raw",
+      "--raw",
+      ...TARGET,
+    ]);
+    expect(exitCode).toBe(0);
+    const result = JSON.parse(stdout);
+    expect(result.content[0].text).toBe("logged: audit-raw");
+    expect(result.stderr).toContain("Mock MCP server running on stdio");
+    expect(result.stderr).toContain("audit-raw");
+  }, 15_000);
+
+  it("a server that dies on connect has its stderr printed, not just 'Connection closed'", async () => {
+    const { STARTUP_CRASH_CMD, STARTUP_CRASH_ARGS } = await import("./helpers.js");
+    const { stderr, exitCode } = await runCli([
+      "list-tools",
+      "--",
+      STARTUP_CRASH_CMD,
+      ...STARTUP_CRASH_ARGS,
+    ]);
+    expect(exitCode).toBe(69);
+    expect(stderr).toContain("--- Target server stderr ---");
+    expect(stderr).toContain("[startup-crash] FATAL");
+  }, 20_000);
+
+  it("`reconnect` without a session is refused with a pointer to --session", async () => {
+    const { stderr, exitCode } = await runCli(["reconnect", ...TARGET]);
+    expect(exitCode).toBe(64);
+    expect(stderr).toContain("--session");
+  }, 15_000);
+});
+
+describe("headless: session dev loop", () => {
+  const session = `dev-loop-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  it("stderr, --show-stderr, --raw, reconnect, validate, and --timeout all work on a session", async () => {
+    try {
+      // Spawn the session.
+      const first = await runCli(["list-tools", "--session", session, ...TARGET]);
+      expect(first.exitCode).toBe(0);
+      expect(JSON.parse(first.stdout).some((t: any) => t.name === "log_stderr")).toBe(true);
+
+      // A sessioned call prints nothing but the result.
+      const quiet = await runCli(["call", "echo", "text=quiet", "--session", session]);
+      expect(quiet.exitCode).toBe(0);
+      expect(quiet.stderr).toBe("");
+      expect(JSON.parse(quiet.stdout)[0].text).toBe("quiet");
+
+      // --show-stderr replays only what this call wrote (not the startup line).
+      const shown = await runCli([
+        "call",
+        "log_stderr",
+        "line=audit-shown",
+        "--session",
+        session,
+        "--show-stderr",
+      ]);
+      expect(shown.exitCode).toBe(0);
+      expect(shown.stderr).toContain("audit-shown");
+      expect(shown.stderr).not.toContain("Mock MCP server running on stdio");
+
+      // --raw carries the per-call stderr window.
+      const raw = await runCli([
+        "call",
+        "log_stderr",
+        "line=audit-raw",
+        "--session",
+        session,
+        "--raw",
+      ]);
+      expect(raw.exitCode).toBe(0);
+      expect(JSON.parse(raw.stdout).stderr).toEqual(["audit-raw"]);
+
+      // `stderr` shows everything since the server started; `stderr N` the tail.
+      const all = await runCli(["stderr", "--session", session]);
+      expect(all.exitCode).toBe(0);
+      const lines = JSON.parse(all.stdout);
+      expect(lines[0]).toBe("Mock MCP server running on stdio");
+      expect(lines).toContain("audit-shown");
+      expect(lines).toContain("audit-raw");
+      const tail = await runCli(["stderr", "1", "--session", session]);
+      expect(JSON.parse(tail.stdout)).toEqual(["audit-raw"]);
+
+      // --timeout applies per call.
+      const slow = await runCli([
+        "call",
+        "slow",
+        "ms:=10000",
+        "--timeout",
+        "500",
+        "--session",
+        session,
+      ]);
+      expect(slow.exitCode).toBe(1);
+      expect(slow.stderr).toContain("timed out");
+
+      // validate runs against the running instance.
+      const quick = await runCli(["validate", "--json", "--session", session]);
+      expect(quick.exitCode).toBe(0);
+      expect(JSON.parse(quick.stdout).success).toBe(true);
+      const deep = await runCli(["validate", "--deep", "--json", "--session", session]);
+      expect(deep.exitCode).toBe(0);
+      const report = JSON.parse(deep.stdout);
+      expect(report.status).toBe("PASS");
+      expect(report.checks[0].name).toBe("handshake_connection");
+      expect(report.checks[0].message).toContain("already-running session");
+
+      // reconnect restarts the server: fresh PID, fresh stderr buffer, diff reported.
+      const before = JSON.parse((await runCli(["stderr", "--session", session])).stdout);
+      expect(before.length).toBeGreaterThan(1);
+      const rc = await runCli(["reconnect", "--session", session]);
+      expect(rc.exitCode).toBe(0);
+      const rcResult = JSON.parse(rc.stdout);
+      expect(rcResult.reconnected).toBe(true);
+      expect(typeof rcResult.pid).toBe("number");
+      expect(rcResult.changes).toEqual(["Changes since last connection: none"]);
+      const after = JSON.parse((await runCli(["stderr", "--session", session])).stdout);
+      expect(after).toEqual(["Mock MCP server running on stdio"]);
+
+      // Still usable afterwards.
+      const again = await runCli(["call", "echo", "text=after", "--session", session]);
+      expect(JSON.parse(again.stdout)[0].text).toBe("after");
+    } finally {
+      await runCli(["close-session", session]);
+    }
+  }, 60_000);
+
+  it("validate on a session that isn't running exits 64 with a hint", async () => {
+    const { stderr, exitCode } = await runCli(["validate", "--session", "no-such-session-xyz"]);
+    expect(exitCode).toBe(64);
+    expect(stderr).toContain("is not running");
+    expect(stderr).toContain("--session no-such-session-xyz");
+  }, 15_000);
+});
+
+describe("headless: session reconnect after an edit", () => {
+  it("diffs primitives, keeps a crashed target's stderr readable, and recovers", async () => {
+    const { STARTUP_CRASH_CMD, STARTUP_CRASH_ARGS, SECOND_SERVER_CMD, SECOND_SERVER_ARGS } =
+      await import("./helpers.js");
+    const dir = join(tmpdir(), `run-mcp-edit-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const pointer = join(dir, "target.txt");
+    const wrapper = join(dir, "wrap.sh");
+    const session = `edit-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const point = (cmd: string, args: string[]) =>
+      writeFileSync(pointer, [cmd, ...args].join(" ") + "\n");
+
+    // The "edit": a wrapper whose target is whatever the pointer file names.
+    const { mkdirSync, chmodSync } = await import("node:fs");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(wrapper, `#!/bin/sh\nexec $(cat "${pointer}")\n`);
+    chmodSync(wrapper, 0o755);
+
+    try {
+      point(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
+      const first = await runCli(["list-tools", "--session", session, "--", wrapper]);
+      expect(first.exitCode).toBe(0);
+
+      // Edit to a server with a different tool set → the diff says so.
+      point(SECOND_SERVER_CMD, SECOND_SERVER_ARGS);
+      const swapped = JSON.parse((await runCli(["reconnect", "--session", session])).stdout);
+      expect(swapped.reconnected).toBe(true);
+      expect(swapped.changes.join("\n")).toMatch(/Tools: .*removed/);
+
+      // Edit to a server that crashes at startup → failure carries stderr inline.
+      point(STARTUP_CRASH_CMD, STARTUP_CRASH_ARGS);
+      const crashed = await runCli(["reconnect", "--session", session]);
+      expect(crashed.exitCode).toBe(1);
+      const crash = JSON.parse(crashed.stdout);
+      expect(crash.reconnected).toBe(false);
+      expect(crash.stderr.join("\n")).toContain("[startup-crash] FATAL");
+
+      // The dead target's stderr stays readable; calls say what to do.
+      const post = JSON.parse((await runCli(["stderr", "--session", session])).stdout);
+      expect(post.join("\n")).toContain("[startup-crash] FATAL");
+      const dead = await runCli(["call", "echo", "text=x", "--session", session]);
+      expect(dead.exitCode).toBe(1);
+      expect(dead.stderr).toContain("not connected");
+      expect(dead.stderr).toContain(`reconnect --session ${session}`);
+      const deadValidate = await runCli(["validate", "--json", "--session", session]);
+      expect(deadValidate.exitCode).toBe(1);
+      expect(JSON.parse(deadValidate.stdout).success).toBe(false);
+
+      // Fix the edit → reconnect recovers.
+      point(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
+      const fixed = JSON.parse((await runCli(["reconnect", "--session", session])).stdout);
+      expect(fixed.reconnected).toBe(true);
+      const alive = await runCli(["call", "echo", "text=alive", "--session", session]);
+      expect(JSON.parse(alive.stdout)[0].text).toBe("alive");
+    } finally {
+      await runCli(["close-session", session]);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+});

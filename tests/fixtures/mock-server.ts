@@ -55,6 +55,20 @@ server.registerTool(
   }),
 );
 
+// ─── Tool: log_stderr (writes a line to stderr, then answers) ─────────────
+
+server.registerTool(
+  "log_stderr",
+  {
+    description: "Writes the given line to the server's stderr and echoes it back",
+    inputSchema: { line: z.string().describe("Line to write to stderr") },
+  },
+  async ({ line }) => {
+    process.stderr.write(`${line}\n`);
+    return { content: [{ type: "text", text: `logged: ${line}` }] };
+  },
+);
+
 // ─── Tool: greet (with annotations) ───────────────────────────────────────
 
 server.registerTool(
