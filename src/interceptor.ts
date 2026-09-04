@@ -1,9 +1,8 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import type { TargetManager } from "./target-manager.js";
-import type { Cassette } from "./cassette.js";
 
 /** Matches a large base64 blob in text content (1000+ chars of base64 alphabet). */
 const BASE64_PATTERN = /^[A-Za-z0-9+/]{1000,}={0,2}$/;
@@ -20,8 +19,6 @@ export interface InterceptorOptions {
   maxTextLength?: number;
   mediaThresholdKb?: number;
   openMedia?: boolean;
-  /** Record/replay cassette. When set, call/read/getPrompt consult and record it. */
-  cassette?: Cassette;
 }
 
 /**
@@ -61,7 +58,6 @@ export class ResponseInterceptor {
   private readonly maxTextLength: number;
   private readonly mediaThresholdKb: number;
   private readonly openMedia: boolean;
-  private readonly cassette?: Cassette;
   private fileCounter = 0;
 
   constructor(opts: InterceptorOptions = {}) {
@@ -70,11 +66,9 @@ export class ResponseInterceptor {
     this.maxTextLength = opts.maxTextLength ?? DEFAULT_MAX_TEXT_LENGTH;
     this.mediaThresholdKb = opts.mediaThresholdKb ?? 0;
     this.openMedia = opts.openMedia ?? false;
-    this.cassette = opts.cassette;
   }
 
-  /** Empty interception metadata (used for replayed results). */
-  private _emptyMetadata(): InterceptionMetadata {
+  private _newMetadata(): InterceptionMetadata {
     return {
       truncated: false,
       imagesSaved: 0,
@@ -82,27 +76,6 @@ export class ResponseInterceptor {
       resultsSaved: 0,
       originalSizeBytes: 0,
     };
-  }
-
-  /**
-   * Consult the cassette for a recorded result. Returns it on a hit; in replay
-   * mode a miss throws (the cassette is stale for this request).
-   */
-  private _replay(
-    primitive: "tool" | "resource" | "prompt",
-    name: string,
-    args: unknown,
-  ): Record<string, unknown> | undefined {
-    if (!this.cassette) return undefined;
-    const hit = this.cassette.match(primitive, name, args);
-    if (hit) return hit.result as Record<string, unknown>;
-    if (this.cassette.mode === "replay") {
-      throw new Error(
-        `No cassette recording for ${primitive} "${name}" with the given arguments (replay mode). ` +
-          `Re-record with --record, or check the arguments match.`,
-      );
-    }
-    return undefined;
   }
 
   /**
@@ -146,16 +119,7 @@ export class ResponseInterceptor {
     maxTextLength?: number,
   ): Promise<Record<string, unknown>> {
     const timeout = timeoutMs ?? this.defaultTimeoutMs;
-    const metadata: InterceptionMetadata = {
-      truncated: false,
-      imagesSaved: 0,
-      audioSaved: 0,
-      resultsSaved: 0,
-      originalSizeBytes: 0,
-    };
-
-    const replayed = this._replay("resource", params.uri, params);
-    if (replayed !== undefined) return replayed;
+    const metadata = this._newMetadata();
 
     const targetCall = target.readResource(params);
     targetCall.catch(() => {});
@@ -177,9 +141,7 @@ export class ResponseInterceptor {
       }
     }
 
-    const finalResult = result as Record<string, unknown>;
-    this.cassette?.record("resource", params.uri, params, finalResult, new Date().toISOString());
-    return finalResult;
+    return result as Record<string, unknown>;
   }
 
   /**
@@ -192,16 +154,7 @@ export class ResponseInterceptor {
     maxTextLength?: number,
   ): Promise<Record<string, unknown>> {
     const timeout = timeoutMs ?? this.defaultTimeoutMs;
-    const metadata: InterceptionMetadata = {
-      truncated: false,
-      imagesSaved: 0,
-      audioSaved: 0,
-      resultsSaved: 0,
-      originalSizeBytes: 0,
-    };
-
-    const replayed = this._replay("prompt", params.name, params.arguments);
-    if (replayed !== undefined) return replayed;
+    const metadata = this._newMetadata();
 
     const targetCall = target.getPrompt(params);
     targetCall.catch(() => {});
@@ -239,15 +192,7 @@ export class ResponseInterceptor {
       }
     }
 
-    const finalResult = result as Record<string, unknown>;
-    this.cassette?.record(
-      "prompt",
-      params.name,
-      params.arguments,
-      finalResult,
-      new Date().toISOString(),
-    );
-    return finalResult;
+    return result as Record<string, unknown>;
   }
 
   /**
@@ -261,19 +206,7 @@ export class ResponseInterceptor {
     maxTextLength?: number,
   ): Promise<{ result: Record<string, unknown>; metadata: InterceptionMetadata }> {
     const timeout = timeoutMs ?? this.defaultTimeoutMs;
-    const metadata: InterceptionMetadata = {
-      truncated: false,
-      imagesSaved: 0,
-      audioSaved: 0,
-      resultsSaved: 0,
-      originalSizeBytes: 0,
-    };
-
-    // Replay from cassette if we have a recording (skips the target entirely).
-    const replayed = this._replay("tool", name, args);
-    if (replayed !== undefined) {
-      return { result: replayed, metadata: this._emptyMetadata() };
-    }
+    const metadata = this._newMetadata();
 
     // Start the target call. We attach a dummy .catch to prevent unhandled
     // promise rejections if the real call fails AFTER our Promise.race times out.
@@ -301,11 +234,7 @@ export class ResponseInterceptor {
       }
     }
 
-    const finalResult = result as Record<string, unknown>;
-
-    this.cassette?.record("tool", name, args, finalResult, new Date().toISOString());
-
-    return { result: finalResult, metadata };
+    return { result: result as Record<string, unknown>, metadata };
   }
 
   /**
@@ -464,7 +393,6 @@ export class ResponseInterceptor {
   ): Promise<{ text: string; totalChars: number; offset: number; filepath: string } | undefined> {
     const entry = this._spilledResults.get(id);
     if (!entry) return undefined;
-    const { readFile } = await import("node:fs/promises");
     const full = await readFile(entry.filepath, "utf8");
     const offset = Math.max(0, Math.floor(offsetChars));
     const length = Math.max(1, Math.floor(maxChars));

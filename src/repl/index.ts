@@ -6,7 +6,7 @@ import { groupToolsByPrefix, interpolateString } from "../parsing.js";
 import { type Snapshot, computeSnapshotDiff, takeSnapshot } from "../snapshot.js";
 import type { ServerNotification } from "../target-manager.js";
 import { TargetManager } from "../target-manager.js";
-import { FileWatcher } from "../watcher.js";
+import { FileWatcher, resolveWatchRoot } from "../watcher.js";
 import {
   activeRl,
   setActiveRl,
@@ -150,8 +150,6 @@ export async function startRepl(targetCommand: string[], opts: ReplOptions): Pro
     outDir: opts.outDir,
     mediaThresholdKb: opts.mediaThresholdKb,
     openMedia: opts.openMedia,
-    // Tool-poisoning defense: strip invisible chars + flag injection phrasing in
-    // tools/list metadata before it's shown to the human.
   });
 
   setIsScriptMode(!!opts.script);
@@ -306,7 +304,7 @@ export async function startRepl(targetCommand: string[], opts: ReplOptions): Pro
   let watchSnapshot: Snapshot | null = null;
 
   if (opts.watch && !isScriptMode) {
-    const watchPath = process.cwd();
+    const { path: watchPath, reason } = resolveWatchRoot(process.cwd(), args);
     const watcher = new FileWatcher(watchPath);
 
     // Take initial snapshot for diffing
@@ -365,6 +363,11 @@ export async function startRepl(targetCommand: string[], opts: ReplOptions): Pro
 
     watcher.start();
     console.log(pc.dim(`  👁 Watching ${watchPath} for changes`));
+    if (reason === "build-output") {
+      console.log(
+        pc.dim("    (the server runs from a build output, so reconnects follow the rebuild)"),
+      );
+    }
 
     // Clean up watcher on process exit
     const cleanup = () => watcher.stop();

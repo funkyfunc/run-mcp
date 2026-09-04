@@ -24,6 +24,13 @@ describe("Protocol Validator", () => {
     const outputSchemas = report.checks.find((c) => c.name === "tool_output_schema_validation");
     expect(outputSchemas?.status).toBe("PASS");
     expect(outputSchemas?.message).toContain("declare structured output");
+
+    // The facts the quick summary is built from travel as fields, not as
+    // text to regex back out of a check message.
+    expect(report.serverName).toBe("mock-mcp-server");
+    expect(report.serverVersion).toBe("1.0.0");
+    expect(report.capabilities).toEqual(expect.arrayContaining(["tools", "resources", "logging"]));
+    expect(report.toolCount).toBe(16);
   }, 15_000);
 
   it("flags broken outputSchemas (invalid schema, required prop not in properties)", async () => {

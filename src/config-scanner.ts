@@ -25,12 +25,19 @@ export interface DiscoveredServer {
   source: string;
 }
 
+export interface DiscoverOptions {
+  /** Also walk up from cwd looking for any JSON file with an `mcpServers` block. */
+  scan?: boolean;
+  /** Override the home directory (tests plant configs in a temp home). */
+  home?: string;
+  /** Override the working directory. */
+  cwd?: string;
+}
+
 /**
  * Returns possible paths for common MCP environments.
  */
-function getConfigPaths(): { source: string; file: string }[] {
-  const home = homedir();
-  const cwd = process.cwd();
+function getConfigPaths(home: string, cwd: string): { source: string; file: string }[] {
   const isWin = process.platform === "win32";
   const isMac = process.platform === "darwin";
 
@@ -74,7 +81,11 @@ function getConfigPaths(): { source: string; file: string }[] {
     { source: "Copilot CLI (Global)", file: path.join(home, ".copilot", "mcp-config.json") },
     { source: "Gemini CLI (Global)", file: path.join(home, ".gemini", "settings.json") },
     { source: "Gemini CLI (Project)", file: path.join(cwd, ".gemini", "settings.json") },
+    // Claude Code "user" scope lives at the top level of ~/.claude.json; its
+    // "local" scope is nested per project in the same file (see
+    // collectClaudeCodeLocalScope). "project" scope is .mcp.json in the repo.
     { source: "Claude Code (Global)", file: path.join(home, ".claude.json") },
+    { source: "Claude Code (~/.claude/mcp.json)", file: path.join(home, ".claude", "mcp.json") },
     { source: "Claude Code (Project)", file: path.join(cwd, ".mcp.json") },
     { source: "Antigravity", file: path.join(home, ".gemini", "antigravity", "mcp_config.json") },
     {
@@ -82,6 +93,61 @@ function getConfigPaths(): { source: string; file: string }[] {
       file: path.join(home, ".gemini", "config", "mcp_config.json"),
     },
   ];
+}
+
+/** Pull the `mcpServers`-style map out of a parsed config, whatever it's wrapped in. */
+function extractServerMap(json: any): McpConfigMap | undefined {
+  if (!json || typeof json !== "object") return undefined;
+  if (json.mcpServers && typeof json.mcpServers === "object") return json.mcpServers;
+  if (json.mcp?.servers && typeof json.mcp.servers === "object") return json.mcp.servers;
+  if (json.servers && typeof json.servers === "object") return json.servers;
+  return undefined;
+}
+
+/**
+ * Normalize one config entry into something TargetManager can spawn, or null
+ * if it can't be launched. A remote (`url`) entry becomes a command of its URL,
+ * which TargetManager connects to over Streamable HTTP / SSE.
+ */
+function normalizeConfig(raw: unknown): McpServerConfig | null {
+  if (!raw || typeof raw !== "object") return null;
+  const config = raw as McpServerConfig;
+  if (typeof config.command === "string" && config.command) return config;
+  if (typeof config.url === "string" && config.url) {
+    return { ...config, command: config.url, args: [] };
+  }
+  return null;
+}
+
+/** Append every launchable entry of a server map, tagged with its source. */
+function collectServers(map: McpConfigMap | undefined, source: string, out: DiscoveredServer[]) {
+  if (!map) return;
+  for (const [name, raw] of Object.entries(map)) {
+    const config = normalizeConfig(raw);
+    if (config) out.push({ name, config, source });
+  }
+}
+
+/** Shorten a project path for display: `~/Development/fearch`. */
+function displayPath(dir: string, home: string): string {
+  return dir.startsWith(home) ? `~${dir.slice(home.length)}` : dir;
+}
+
+/**
+ * Claude Code's `claude mcp add` defaults to "local" scope: the server is
+ * stored in ~/.claude.json under `projects[<project dir>].mcpServers`, not at
+ * the top level. Those are the servers a developer is most likely to be
+ * working on, so every project's local-scope servers are listed, each labelled
+ * with the project it belongs to.
+ */
+function collectClaudeCodeLocalScope(json: any, home: string, out: DiscoveredServer[]) {
+  const projects = json?.projects;
+  if (!projects || typeof projects !== "object") return;
+  for (const [dir, project] of Object.entries(projects)) {
+    const map = (project as any)?.mcpServers;
+    if (!map || typeof map !== "object") continue;
+    collectServers(map, `Claude Code (Local: ${displayPath(dir, home)})`, out);
+  }
 }
 
 /**
@@ -93,60 +159,39 @@ export async function loadMcpServersFile(
   file: string,
 ): Promise<{ name: string; config: McpServerConfig }[]> {
   const content = await readFile(file, "utf8");
-  const json = JSON.parse(content);
-  const map: McpConfigMap | undefined =
-    json.mcpServers ?? json.mcp?.servers ?? json.servers ?? undefined;
-  if (!map || typeof map !== "object") {
+  const map = extractServerMap(JSON.parse(content));
+  if (!map) {
     throw new Error(`No "mcpServers" object found in ${file}`);
   }
-  const out: { name: string; config: McpServerConfig }[] = [];
-  for (const [name, config] of Object.entries(map)) {
-    if (config && (config.command || config.url)) out.push({ name, config });
-  }
-  return out;
+  const out: DiscoveredServer[] = [];
+  collectServers(map, file, out);
+  return out.map(({ name, config }) => ({ name, config }));
 }
 
 /**
  * Parses JSON configs and extracts mcpServers.
  */
-export async function discoverServers(options?: { scan?: boolean }): Promise<DiscoveredServer[]> {
+export async function discoverServers(options?: DiscoverOptions): Promise<DiscoveredServer[]> {
+  const home = options?.home ?? homedir();
+  const cwd = options?.cwd ?? process.cwd();
   const servers: DiscoveredServer[] = [];
-  const paths = getConfigPaths();
 
-  for (const { source, file } of paths) {
+  for (const { source, file } of getConfigPaths(home, cwd)) {
     if (!existsSync(file)) continue;
 
     try {
-      const content = await readFile(file, "utf8");
-      const json = JSON.parse(content);
-
-      let mcpServers: McpConfigMap | undefined;
-
-      // Some configs wrap in mcpServers, some might be direct
-      if (json.mcpServers && typeof json.mcpServers === "object") {
-        mcpServers = json.mcpServers;
-      } else if (json.mcp?.servers && typeof json.mcp.servers === "object") {
-        mcpServers = json.mcp.servers;
-      } else if (json.servers && typeof json.servers === "object") {
-        mcpServers = json.servers;
-      }
-
-      if (mcpServers) {
-        for (const [name, config] of Object.entries(mcpServers)) {
-          if (config.command) {
-            servers.push({ name, config, source });
-          }
-        }
-      }
+      const json = JSON.parse(await readFile(file, "utf8"));
+      collectServers(extractServerMap(json), source, servers);
+      if (source === "Claude Code (Global)") collectClaudeCodeLocalScope(json, home, servers);
     } catch {
       // Ignore parsing errors for individual files
     }
   }
 
-  // Dynamic scanning: walk up from process.cwd() and search for any JSON files containing "mcpServers"
+  // Dynamic scanning: walk up from cwd and search for any JSON files containing "mcpServers"
   if (options?.scan) {
     try {
-      let currentDir = process.cwd();
+      let currentDir = cwd;
       const visited = new Set<string>();
       while (currentDir && !visited.has(currentDir)) {
         visited.add(currentDir);
@@ -154,36 +199,26 @@ export async function discoverServers(options?: { scan?: boolean }): Promise<Dis
         if (existsSync(currentDir)) {
           const files = await readdir(currentDir, { withFileTypes: true });
           for (const file of files) {
-            if (file.isFile() && file.name.endsWith(".json")) {
-              // Ignore common heavy / unrelated configuration files to be fast and safe
-              if (
-                file.name === "package-lock.json" ||
-                file.name === "package.json" ||
-                file.name === "tsconfig.json"
-              ) {
-                continue;
-              }
+            if (!file.isFile() || !file.name.endsWith(".json")) continue;
+            // Ignore common heavy / unrelated configuration files to be fast and safe
+            if (
+              file.name === "package-lock.json" ||
+              file.name === "package.json" ||
+              file.name === "tsconfig.json"
+            ) {
+              continue;
+            }
 
-              const filePath = path.join(currentDir, file.name);
-              try {
-                const content = await readFile(filePath, "utf8");
-                if (content.includes("mcpServers")) {
-                  const json = JSON.parse(content);
-                  if (json.mcpServers && typeof json.mcpServers === "object") {
-                    for (const [name, config] of Object.entries(json.mcpServers)) {
-                      if (config && typeof config === "object" && (config as any).command) {
-                        servers.push({
-                          name,
-                          config: config as any,
-                          source: `Local Workspace (${file.name})`,
-                        });
-                      }
-                    }
-                  }
-                }
-              } catch {
-                // Ignore individual parsing/reading errors
+            const filePath = path.join(currentDir, file.name);
+            try {
+              const content = await readFile(filePath, "utf8");
+              if (!content.includes("mcpServers")) continue;
+              const json = JSON.parse(content);
+              if (json.mcpServers && typeof json.mcpServers === "object") {
+                collectServers(json.mcpServers, `Local Workspace (${file.name})`, servers);
               }
+            } catch {
+              // Ignore individual parsing/reading errors
             }
           }
         }
@@ -201,32 +236,34 @@ export async function discoverServers(options?: { scan?: boolean }): Promise<Dis
 }
 
 /**
+ * Collapse duplicates (the same name + command + args from several files),
+ * preferring the more specific source: a project/local/workspace entry wins
+ * over a global one.
+ */
+export function dedupeServers(servers: DiscoveredServer[]): DiscoveredServer[] {
+  const unique = new Map<string, DiscoveredServer>();
+  const isSpecific = (s: DiscoveredServer) =>
+    /Project|Local/.test(s.source) || s.source.includes("Local Workspace");
+  for (const s of servers) {
+    const key = `${s.name}::${s.config.command}::${(s.config.args || []).join(" ")}`;
+    if (!unique.has(key) || isSpecific(s)) unique.set(key, s);
+  }
+  return Array.from(unique.values());
+}
+
+/**
  * Shows an interactive picker using inquirer.
  */
 export async function pickDiscoveredServer(options?: {
   scan?: boolean;
 }): Promise<DiscoveredServer | null> {
-  const servers = await discoverServers(options);
+  const servers = dedupeServers(await discoverServers(options));
 
   if (servers.length === 0) {
     return null;
   }
 
-  // Deduplicate by name + command (to prevent project & global showing twice if identical)
-  const uniqueServers = new Map<string, DiscoveredServer>();
-  for (const s of servers) {
-    const key = `${s.name}::${s.config.command}::${(s.config.args || []).join(" ")}`;
-    if (!uniqueServers.has(key)) {
-      uniqueServers.set(key, s);
-    } else {
-      // Favor Project/Local Workspace configs over global by overwriting if source includes 'Project' or 'Local Workspace'
-      if (s.source.includes("Project") || s.source.includes("Local Workspace")) {
-        uniqueServers.set(key, s);
-      }
-    }
-  }
-
-  const choices: any[] = Array.from(uniqueServers.values()).map((s) => {
+  const choices: any[] = servers.map((s) => {
     return {
       name: `${s.name} (from ${s.source})`,
       value: s,

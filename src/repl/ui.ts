@@ -83,11 +83,10 @@ ${tH}
   ${tC("tools/list")}                         ${tD("List all available tools")}
   ${tC("tools/describe")} <name>              ${tD("Show a tool's input schema")}
   ${tC("tools/call")} <name> [json] [opts]    ${tD("Call a tool (interactive if no json)")}
-    ${tD("Options:")} ${pc.dim("--timeout <ms>")}            ${tD("Override default timeout (60s)")}
+    ${tD("Options:")} ${pc.dim("--timeout <ms>")}            ${tD("Override default timeout (5 minutes)")}
              ${pc.dim("--clear")}                  ${tD("Ignore remembered argument defaults")}
   ${tC("tools/scaffold")} <name>              ${tD("Generate a template for a tool's arguments")}
   ${tC("tools/forget")} [name]                ${tD("Clear remembered interactive defaults")}
-  ${tC("find")} <query>                       ${tD("Find tools by relevance to a query")}
 
 ${rH}
 

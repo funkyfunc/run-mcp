@@ -910,14 +910,14 @@ async function cmdResourcesList(target: TargetManager): Promise<void> {
 async function cmdResourcesRead(
   target: TargetManager,
   rest: string,
-  interceptor?: ResponseInterceptor,
+  interceptor: ResponseInterceptor,
 ): Promise<any> {
   const uri = rest.trim();
 
   // Change 5: Inline help hint
   if (!uri) {
     // In interactive mode with cached resources: launch the fuzzy picker
-    if (!isScriptMode && cachedResourceUris.length > 0 && process.stdin.isTTY && interceptor) {
+    if (!isScriptMode && cachedResourceUris.length > 0 && process.stdin.isTTY) {
       const picked = await withSuspendedReadline(target, interceptor, async () => {
         const { resources } = await target.listResources();
         return pickInteractive(
@@ -943,14 +943,16 @@ async function cmdResourcesRead(
     return;
   }
 
+  // Through the interceptor, like tools/call: timeouts, media saved to disk,
+  // oversized text spilled — the same pipeline every interface shares.
   const startTime = Date.now();
-  const result = await target.readResource({ uri });
+  const result = await interceptor.readResource(target, { uri });
   const elapsed = Date.now() - startTime;
 
   console.log();
   printResultBlock({ label: "Resource", labelColor: "cyan", elapsed, detail: uri });
 
-  for (const item of result.contents) {
+  for (const item of (result as any).contents ?? []) {
     if ((item as any).text !== undefined) {
       const text = (item as any).text;
       const safeText = sanitizeServerText(text);
@@ -1032,14 +1034,14 @@ async function cmdPromptsList(target: TargetManager): Promise<void> {
 async function cmdPromptsGet(
   target: TargetManager,
   rest: string,
-  interceptor?: ResponseInterceptor,
+  interceptor: ResponseInterceptor,
 ): Promise<any> {
   const { toolName: promptName, jsonArgs } = parseCallArgs(rest);
 
   // Change 5: Inline help hint
   if (!promptName) {
     // In interactive mode with cached prompts: launch the fuzzy picker
-    if (!isScriptMode && cachedPromptNames.length > 0 && process.stdin.isTTY && interceptor) {
+    if (!isScriptMode && cachedPromptNames.length > 0 && process.stdin.isTTY) {
       const picked = await withSuspendedReadline(target, interceptor, async () => {
         const { prompts } = await target.listPrompts();
         return pickInteractive(
@@ -1049,7 +1051,7 @@ async function cmdPromptsGet(
       });
       if (!picked) return;
       // Recurse with the selected prompt name
-      return cmdPromptsGet(target, picked);
+      return cmdPromptsGet(target, picked, interceptor);
     }
 
     console.log(pc.yellow("  Usage: prompts/get <name> [json_args]"));
@@ -1094,10 +1096,13 @@ async function cmdPromptsGet(
     return { isError: true, content: [{ type: "text", text: `Prompt not found: ${promptName}` }] };
   }
   const startTime = Date.now();
-  const result = await target.getPrompt({ name: promptName, arguments: promptArgs });
+  const result = (await interceptor.getPrompt(target, {
+    name: promptName,
+    arguments: promptArgs,
+  })) as { messages: any[] };
   const elapsed = Date.now() - startTime;
 
-  if (result.messages.length === 0) {
+  if (!result.messages || result.messages.length === 0) {
     console.log(pc.dim("  No messages returned."));
     return;
   }
@@ -1597,9 +1602,9 @@ async function showMainMenu(
     if (answer.type === "tool") {
       await cmdToolsCall(target, interceptor, answer.name);
     } else if (answer.type === "resource") {
-      await cmdResourcesRead(target, answer.uri);
+      await cmdResourcesRead(target, answer.uri, interceptor);
     } else if (answer.type === "prompt") {
-      await cmdPromptsGet(target, answer.name);
+      await cmdPromptsGet(target, answer.name, interceptor);
     } else if (answer.type === "command") {
       if (answer.name === "status") {
         cmdStatus(target);

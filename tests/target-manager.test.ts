@@ -47,6 +47,26 @@ describe("connection lifecycle", () => {
     expect(process.env[key]).toBeUndefined();
   }, 10_000);
 
+  it("threads the caller's env into the child while inheriting almost nothing else", async () => {
+    const key = "RUN_MCP_ENV_REACHES_CHILD";
+    process.env[key] = "from-parent";
+    try {
+      target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS, { env: { [key]: "explicit" } });
+      await target.connect();
+      const explicit = await target.callTool("env_echo", { name: key });
+      expect((explicit.content as any[])[0].text).toBe("explicit");
+      await target.close();
+
+      // Same variable, no explicit env: the parent's value does not leak through.
+      target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
+      await target.connect();
+      const inherited = await target.callTool("env_echo", { name: key });
+      expect((inherited.content as any[])[0].text).toBe("<unset>");
+    } finally {
+      delete process.env[key];
+    }
+  }, 15_000);
+
   it("reports status after connecting", async () => {
     target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
     await target.connect();

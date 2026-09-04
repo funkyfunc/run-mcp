@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, rmSync, writeFileSync, unlinkSync } from "node:fs";
+import { rmSync, writeFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -42,64 +42,33 @@ async function runCli(
 // Headless CLI Integration Tests
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe("headless: record & replay", () => {
-  it("records a tool response then replays it offline with no target", async () => {
-    const cassette = join(
-      tmpdir(),
-      `run-mcp-cass-${Date.now()}-${Math.random().toString(36).slice(2)}.json`,
-    );
-    try {
-      // Record against the live mock server.
-      const rec = await runCli([
-        "call",
-        "echo",
-        '{"text":"vcr"}',
-        "--cassette",
-        cassette,
-        "--record",
-        ...TARGET,
-      ]);
-      expect(rec.exitCode).toBe(0);
-      expect(JSON.parse(rec.stdout)[0].text).toBe("vcr");
-      expect(existsSync(cassette)).toBe(true);
+describe("headless: --env", () => {
+  it("passes --env values to the target, which otherwise inherits almost nothing", async () => {
+    // Without --env: the parent's variable does not reach the child (only a
+    // PATH/HOME-style whitelist is inherited), so a server reading an API key
+    // from its environment would see nothing.
+    const inherited = await runCli(["call", "env_echo", "name=RUN_MCP_TEST_SECRET", ...TARGET]);
+    expect(inherited.exitCode).toBe(0);
+    expect(JSON.parse(inherited.stdout)[0].text).toBe("<unset>");
 
-      // Replay offline: NO target command provided at all.
-      const rep = await runCli([
-        "call",
-        "echo",
-        '{"text":"vcr"}',
-        "--cassette",
-        cassette,
-        "--replay",
-      ]);
-      expect(rep.exitCode).toBe(0);
-      expect(JSON.parse(rep.stdout)[0].text).toBe("vcr");
-      expect(rep.stderr).toContain("Replaying from cassette");
-      expect(rep.stderr).not.toContain("Connecting");
-    } finally {
-      if (existsSync(cassette)) rmSync(cassette, { force: true });
-    }
+    const passed = await runCli([
+      "call",
+      "env_echo",
+      "name=RUN_MCP_TEST_SECRET",
+      "--env",
+      "RUN_MCP_TEST_SECRET=hunter=2",
+      ...TARGET,
+    ]);
+    expect(passed.exitCode).toBe(0);
+    // The first "=" splits key from value, so values may contain "=".
+    expect(JSON.parse(passed.stdout)[0].text).toBe("hunter=2");
   }, 20_000);
 
-  it("errors on a replay miss", async () => {
-    const cassette = join(
-      tmpdir(),
-      `run-mcp-cass-${Date.now()}-${Math.random().toString(36).slice(2)}.json`,
-    );
-    try {
-      const res = await runCli([
-        "call",
-        "echo",
-        '{"text":"never recorded"}',
-        "--cassette",
-        cassette,
-        "--replay",
-      ]);
-      expect(res.exitCode).not.toBe(0);
-      expect(res.stderr).toContain("No cassette recording");
-    } finally {
-      if (existsSync(cassette)) rmSync(cassette, { force: true });
-    }
+  it("rejects a malformed --env token", async () => {
+    const { stderr, exitCode } = await runCli(["call", "echo", "--env", "NOEQUALS", ...TARGET]);
+    expect(exitCode).toBe(64);
+    expect(stderr).toContain("--env expects KEY=VALUE");
+    expect(stderr).toContain("NOEQUALS");
   }, 15_000);
 });
 
@@ -736,6 +705,81 @@ describe("headless: session hygiene", () => {
       await runCli(["close-session", session]);
     }
   }, 60_000);
+
+  it("spawns the daemon with --env, and refuses a later call that asks for different env", async () => {
+    const session = `env-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    try {
+      const first = await runCli([
+        "call",
+        "env_echo",
+        "name=RUN_MCP_SESSION_SECRET",
+        "--session",
+        session,
+        "--env",
+        "RUN_MCP_SESSION_SECRET=s3cret",
+        ...TARGET,
+      ]);
+      expect(first.exitCode).toBe(0);
+      expect(JSON.parse(first.stdout)[0].text).toBe("s3cret");
+
+      // `sessions` names the keys, never the values.
+      const listed = JSON.parse((await runCli(["sessions"])).stdout);
+      expect(listed.find((s: any) => s.name === session).env_keys).toEqual([
+        "RUN_MCP_SESSION_SECRET",
+      ]);
+      expect(JSON.stringify(listed)).not.toContain("s3cret");
+
+      // Attaching with no --env: fine, the running server keeps its env.
+      const attach = await runCli([
+        "call",
+        "env_echo",
+        "name=RUN_MCP_SESSION_SECRET",
+        "--session",
+        session,
+      ]);
+      expect(JSON.parse(attach.stdout)[0].text).toBe("s3cret");
+
+      // Same env again: fine. A different value: refused, key named, value not shown.
+      const same = await runCli([
+        "call",
+        "echo",
+        "text=ok",
+        "--session",
+        session,
+        "--env",
+        "RUN_MCP_SESSION_SECRET=s3cret",
+        ...TARGET,
+      ]);
+      expect(same.exitCode).toBe(0);
+      const changed = await runCli([
+        "call",
+        "echo",
+        "text=x",
+        "--session",
+        session,
+        "--env",
+        "RUN_MCP_SESSION_SECRET=leaked-value-xyz",
+      ]);
+      expect(changed.exitCode).toBe(64);
+      expect(changed.stderr).toContain("env differs for: RUN_MCP_SESSION_SECRET");
+      expect(changed.stderr).not.toContain("leaked-value-xyz");
+    } finally {
+      await runCli(["close-session", session]);
+    }
+  }, 30_000);
+
+  it("rejects a session name that is not a safe file name", async () => {
+    const { stderr, exitCode } = await runCli([
+      "call",
+      "echo",
+      "text=z",
+      "--session",
+      "../escape",
+      ...TARGET,
+    ]);
+    expect(exitCode).toBe(64);
+    expect(stderr).toContain('Session name "../escape" is invalid');
+  }, 15_000);
 
   it("rejects a non-numeric --idle-timeout", async () => {
     const { stderr, exitCode } = await runCli([

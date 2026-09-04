@@ -68,6 +68,21 @@ export interface ValidationReport {
   success: boolean;
   status: "PASS" | "WARN" | "FAIL";
   checks: ValidationCheck[];
+  /** From the initialize handshake; absent if the connection never completed. */
+  serverName?: string;
+  serverVersion?: string;
+  /** Capability names the server advertised (empty if none, or no connection). */
+  capabilities: string[];
+  /** Number of tools returned by tools/list, when it succeeded. */
+  toolCount?: number;
+}
+
+/** Facts gathered along the way, reported alongside the checks. */
+interface ReportFacts {
+  serverName?: string;
+  serverVersion?: string;
+  capabilities: string[];
+  toolCount?: number;
 }
 
 export async function validateProtocol(
@@ -83,6 +98,7 @@ export async function validateProtocol(
   } = {},
 ): Promise<ValidationReport> {
   const checks: ValidationCheck[] = [];
+  const facts: ReportFacts = { capabilities: [] };
   let target: TargetManager | null = null;
   const ownsTarget = !options.target;
 
@@ -121,7 +137,7 @@ export async function validateProtocol(
           "FAIL",
           "The session's target server is not connected (it may have crashed — see its stderr).",
         );
-        return finalizeReport(checks);
+        return finalizeReport(checks, facts);
       }
       addCheck(
         "handshake_connection",
@@ -148,13 +164,15 @@ export async function validateProtocol(
         );
       } catch (err: any) {
         addCheck("handshake_connection", "FAIL", `Failed to connect/initialize: ${err.message}`);
-        return finalizeReport(checks);
+        return finalizeReport(checks, facts);
       }
     }
 
     // 2. Server Implementation Metadata Check
     const versionInfo = target.getServerVersion();
     if (versionInfo) {
+      facts.serverName = versionInfo.name;
+      facts.serverVersion = versionInfo.version;
       const valid = v.implementation(versionInfo);
       if (valid) {
         addCheck(
@@ -184,6 +202,7 @@ export async function validateProtocol(
       const valid = v.serverCapabilities(capabilities);
       if (valid) {
         const capsList = Object.keys(capabilities).filter((k) => (capabilities as any)[k]);
+        facts.capabilities = capsList;
         addCheck(
           "server_capabilities",
           "PASS",
@@ -205,6 +224,7 @@ export async function validateProtocol(
     const hasToolsCap = !!capabilities?.tools;
     try {
       const toolsResult = (await requestWithTimeout("tools/list")) as any;
+      if (Array.isArray(toolsResult?.tools)) facts.toolCount = toolsResult.tools.length;
       if (!hasToolsCap) {
         // Did not advertise tools, but listing tools returned something
         if (toolsResult?.tools && toolsResult.tools.length > 0) {
@@ -537,10 +557,10 @@ export async function validateProtocol(
     }
   }
 
-  return finalizeReport(checks);
+  return finalizeReport(checks, facts);
 }
 
-function finalizeReport(checks: ValidationCheck[]): ValidationReport {
+function finalizeReport(checks: ValidationCheck[], facts: ReportFacts): ValidationReport {
   let hasFail = false;
   let hasWarn = false;
 
@@ -554,5 +574,6 @@ function finalizeReport(checks: ValidationCheck[]): ValidationReport {
     success: !hasFail,
     status,
     checks,
+    ...facts,
   };
 }

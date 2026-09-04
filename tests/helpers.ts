@@ -19,7 +19,7 @@ export const MOCK_SERVER_ARGS = existsSync(MOCK_SERVER_PATH_JS)
   ? [MOCK_SERVER_PATH_JS]
   : ["--import", "tsx", MOCK_SERVER_PATH_TS];
 
-/** Path to the minimal second backend used by the multiplexing-proxy tests. */
+/** A minimal second server with a different tool set (reconnect-diff and session-mismatch tests). */
 export const SECOND_SERVER_PATH_TS = resolve(import.meta.dirname, "fixtures/second-server.ts");
 export const SECOND_SERVER_PATH_JS = resolve(import.meta.dirname, "fixtures/dist/second-server.js");
 export const SECOND_SERVER_CMD = "node";

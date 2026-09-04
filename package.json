@@ -1,6 +1,6 @@
 {
   "name": "run-mcp",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "A thin MCP client for humans and agents — run any Model Context Protocol server, call its tools, read its stderr, and reconnect after each edit. REPL, headless CLI, or an MCP server your agent drives. No client config edits, no restarts.",
   "homepage": "https://github.com/funkyfunc/run-mcp#readme",
   "bugs": {
@@ -41,9 +41,12 @@
   "bin": {
     "run-mcp": "dist/index.js"
   },
+  "engines": {
+    "node": ">=20.11"
+  },
   "scripts": {
     "build": "tsup && node scripts/update-readme-help.js",
-    "build:fixtures": "tsup tests/fixtures/mock-server.ts tests/fixtures/second-server.ts --format esm --target node18 --out-dir tests/fixtures/dist",
+    "build:fixtures": "tsup tests/fixtures/mock-server.ts tests/fixtures/second-server.ts --format esm --target node20 --out-dir tests/fixtures/dist",
     "dev": "tsup --watch",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",

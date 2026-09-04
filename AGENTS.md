@@ -86,14 +86,26 @@ All three interfaces feed into the same interception pipeline. See `README.md` f
 | **ResponseInterceptor** | `src/interceptor.ts`    | Wraps `callTool` with timeouts (timers cleared on settle), extracts base64 images/audio to disk, detects raw base64 text blobs, and spills oversized text to disk (full payload saved; reply keeps the head + a per-session result id, navigable via `read_result` / `readSpilledResult()`). Configurable via `InterceptorOptions`. |
 | **REPL**                | `src/repl/`             | Interactive readline interface across 8 files: `commands.ts` (command routing), `completer.ts` (tab completion), `history.ts` (persistent history), `index.ts` (entry point), `state.ts` (shared state + `KNOWN_COMMANDS`), `ui.ts` (formatting/output), `wizard.ts` (interactive arg scaffolding), `approval.ts` (pure sampling/elicitation approval decisions — unit-tested). `src/repl.ts` is a re-export barrel. |
 | **Agent Server**        | `src/server.ts`         | MCP Server exposing 12 tools (`connect_to_mcp`, `reconnect_to_mcp`, `disconnect_from_mcp`, `mcp_server_status`, `call_mcp_primitive`, `list_mcp_primitives`, `get_server_notifications`, `subscribe_to_resource`, `read_result`, `get_mcp_server_stderr`, `list_available_mcp_servers`, `validate_mcp_server`) for dynamic MCP server testing. Connect failures carry the target's stderr inline — see the failure-path note below. Uses `registerTool()` with Zod schemas. |
-| **Headless**            | `src/headless.ts`       | Single-shot executor for CLI subcommands. Connect → execute one operation → output JSON to stdout → exit. All status/progress to stderr for pipe-clean output. |
+| **Headless**            | `src/headless.ts`       | Single-shot executor for CLI subcommands. Connect → execute one operation → output JSON to stdout → exit. All status/progress to stderr for pipe-clean output. `executeOperation()` is shared with the session daemon. |
+| **Session**             | `src/session.ts`        | `--session`: the session record (`$TMPDIR/run-mcp/sessions/<name>.json` — command, cwd, env, pid, idle timeout), the pure mismatch check (`describeSessionMismatch`), the client side (`spawnSessionDaemon`, `sendDaemonRequest`, `closeSession`), and the daemon itself (`runSessionDaemon`). The daemon listens on a Unix socket in the owner-only session dir (named pipe on Windows) and is spawned on `process.execPath`. |
 | **Validator**           | `src/validator.ts`      | Protocol compliance validator (`run-mcp validate`). Validates handshake, capabilities, tool schemas, resources, and prompts against the MCP JSON Schema. |
 | **Snapshot**            | `src/snapshot.ts`       | Reconnect diffing: takes snapshots of tools/resources/prompts and computes what was added/removed/modified between connections. |
 | **Watcher**             | `src/watcher.ts`        | File watcher for `--watch` mode. Debounced `fs.watch` with automatic ignore patterns (node_modules, .git, dist, etc.). |
 | **Parsing**             | `src/parsing.ts`        | Pure functions: command line splitting, argument parsing, JSON formatting, HTTPie-style args (`key=val`, `key:=json`), Levenshtein distance, typo suggestions. |
 | **Config Scanner**      | `src/config-scanner.ts` | Discovers MCP server configurations across VS Code, Cursor, Claude Desktop, Windsurf, Copilot, Gemini CLI, and local workspace files. Powers `list_available_mcp_servers` and the interactive picker. |
 | **Colors**              | `src/colors.ts`         | Color constants and helpers using `picocolors` for consistent terminal styling across REPL and headless output. |
-| **Cassette**            | `src/cassette.ts`       | Record/replay ("VCR for MCP", `--cassette`/`--record`/`--replay`): captures tool/resource/prompt responses keyed by a canonical (primitive, name, args) hash and replays them deterministically. The interceptor short-circuits the target on a replay hit (offline in headless mode). |
+
+### The Target's Environment
+
+`TargetManager` starts the child with a whitelist (`PATH`, `HOME`, `SHELL`, `USER` and the
+Windows equivalents) plus whatever the caller passes as `env` — never the parent's full
+environment, and never by mutating `process.env` (the agent server is long-lived; one
+target's secrets must not bleed into the next). So a server that reads an API key gets
+nothing unless the interface hands it over. Every interface must therefore have a way to
+pass env: `--env KEY=VAL` (repeatable) on the REPL, every headless subcommand, `validate`
+and `daemon`; `env` on `connect_to_mcp` / `auto_connect` in the agent server. A session
+records the env it was started with and refuses an attach that asks for a different one.
+If you add an interface, thread env through it in the same change.
 
 ### Client-Role Parity (Agent Server) — Do Not Let This Drift Again
 
@@ -174,7 +186,7 @@ If an AI Agent is trying to provide parameters to a mock tool and accidentally l
 ### TypeScript & ESM
 
 - **Pure ESM** — `"type": "module"` in package.json. All imports use `.js` extensions (TypeScript resolves them to `.ts` at compile time).
-- **tsup for bundling** — Produces a single `dist/index.js` (~424KB; ajv, ajv-formats, and @inquirer/prompts are bundled in, while `@modelcontextprotocol/sdk`, `commander`, `picocolors`, and `zod` stay external). No source maps in dist.
+- **tsup for bundling** — Produces a single `dist/index.js` (~370KB; ajv, ajv-formats, and @inquirer/prompts are bundled in, while `@modelcontextprotocol/sdk`, `commander`, `picocolors`, and `zod` stay external). No source maps in dist.
 - **tsc for type-checking only** — `tsconfig.json` has `noEmit: true`. Run `npm run typecheck`.
 - **Strict mode** — `strict: true` in tsconfig. No implicit any.
 
@@ -263,7 +275,7 @@ Headless subcommands use the `registerHeadlessCommand()` pattern in `src/index.t
 2. **Add the operation type** to `HeadlessOperation` in `src/headless.ts` and handle it in `executeOperation()`.
 3. **Add tests** in `tests/headless.test.ts`.
 
-All headless subcommands automatically get shared options (`--out-dir`, `--timeout`, `--session`) and the `[target_command...]` variadic argument.
+All headless subcommands automatically get shared options (`--out-dir`, `--timeout`, `--env`, `--session`, …) and the `[target_command...]` variadic argument. The session daemon runs the same `executeOperation()`, so a new operation type works in both one-shot and session mode without extra wiring — unless it needs the daemon to do something to its target (like `reconnect`), in which case it's handled in `src/session.ts`.
 
 ### Adding a New Interceptor Behavior
 
@@ -290,7 +302,8 @@ All headless subcommands automatically get shared options (`--out-dir`, `--timeo
 | `tests/target-manager.test.ts` | Full integration: spawns the mock server, tests connect/disconnect/listTools/callTool/auto-reconnect                          |
 | `tests/e2e.test.ts`            | End-to-end: TargetManager + ResponseInterceptor against the mock server                                                               |
 | `tests/server.test.ts`         | Agent MCP Server: tool surface (call_mcp_primitive, list_mcp_primitives), auto-connect, disconnect_after, reconnect diff, diagnostics |
-| `tests/headless.test.ts`       | Headless CLI subcommands: call, list-tools, list-resources, describe, sessions                                                        |
+| `tests/headless.test.ts`       | Headless CLI subcommands: call, list-tools, list-resources, describe, `--env`, sessions (spawn, reconnect, mismatch, idle timeout)  |
+| `tests/session.test.ts`        | Pure session logic: mismatch descriptions, session-name validation, socket paths                                                     |
 | `tests/validator.test.ts`      | Protocol compliance validation against mock server                                                                                    |
 
 ### Running Tests
@@ -359,9 +372,15 @@ Tests run **sequentially** (`fileParallelism: false` in vitest.config.ts) becaus
 | `multi_content` | Returns multiple content items                                                  |
 | `audio_tool`    | Returns a fake base64 WAV clip (audio interception testing)                     |
 | `error_tool`    | Returns `isError: true` (error passthrough testing)                             |
+| `log_stderr`    | Writes a line to stderr, then answers (stderr-as-data testing)                  |
+| `env_echo`      | Returns an environment variable as the server process sees it (`--env` testing) |
 | `request_sampling` | Calls the client's `sampling/createMessage` (tests sampling forwarding)      |
 | `request_elicitation` | Calls the client's `elicitation/create` (tests elicitation forwarding)    |
-| `json_data`     | Returns pretty-printed JSON with declared `outputSchema` + `structuredContent` (compression + structured-output testing) |
+| `json_data`     | Returns pretty-printed JSON with declared `outputSchema` + `structuredContent` (structured-output testing) |
+| `what_roots`    | Asks the client for `roots/list` and reports the answer (client-role testing)   |
+| `touch_resource` | Emits `notifications/resources/updated` for a URI (subscription testing)       |
+
+Tool count assertions (`Tools Count: 16`) live in `tests/server.test.ts` and `tests/validator.test.ts` — update them when you add a tool.
 
 **Resources:**
 
@@ -417,8 +436,9 @@ The package is designed to work with `npx run-mcp`:
 
 - `"bin": { "run-mcp": "dist/index.js" }` — the shebang (`#!/usr/bin/env node`) is preserved by tsup.
 - `"files": ["dist"]` — only `dist/index.js` is published (no source, no tests, no source maps).
-- `"prepublishOnly": "tsup"` — auto-builds before `npm publish`. (Note: unlike `build`, this does not refresh the README help tables — run `npm run build` before publishing if CLI help changed.)
-- Bundled `dist/index.js` is ~424KB (ajv + @inquirer/prompts bundled); compressed tarball is a few tens of KB.
+- `"prepublishOnly": "npm run build"` — the full build, README help tables included, before `npm publish`.
+- `"engines": { "node": ">=20.11" }` — the session daemon uses `import.meta.dirname` (20.11+) and `--watch` needs recursive `fs.watch` on Linux (20+). Keep the tsup `target` in step with it.
+- Bundled `dist/index.js` is ~370KB (ajv + @inquirer/prompts bundled); compressed tarball is a few tens of KB.
 
 ### MCP SDK Usage
 

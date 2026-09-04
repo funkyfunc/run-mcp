@@ -498,7 +498,7 @@ export class TargetManager extends EventEmitter {
    * protocol-level cancellation requests to the target server if the agent gives up.
    * This allows long-running builds (like mobile app compiling) to finish in the background.
    */
-  async callTool(name: string, args: Record<string, unknown> = {}, _timeoutMs?: number) {
+  async callTool(name: string, args: Record<string, unknown> = {}) {
     this._assertConnected();
     const requestOptions = { timeout: 3600_000 * 10 }; // 10 hours
     const start = Date.now();
@@ -527,6 +527,18 @@ export class TargetManager extends EventEmitter {
     return result;
   }
 
+  /** Every resource, following pagination to exhaustion (see `listAllTools`). */
+  async listAllResources(): Promise<{ resources: any[] }> {
+    const resources: any[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.listResources(cursor ? { cursor } : undefined);
+      resources.push(...(page.resources ?? []));
+      cursor = (page as any).nextCursor;
+    } while (cursor);
+    return { resources };
+  }
+
   /**
    * List resource templates exposed by the target MCP server.
    * Supports cursor-based pagination.
@@ -538,6 +550,18 @@ export class TargetManager extends EventEmitter {
     this.recordResponse();
     this._addHistory("resources/templates/list", params, result, Date.now() - start);
     return result;
+  }
+
+  /** Every resource template, following pagination to exhaustion (see `listAllTools`). */
+  async listAllResourceTemplates(): Promise<{ resourceTemplates: any[] }> {
+    const resourceTemplates: any[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.listResourceTemplates(cursor ? { cursor } : undefined);
+      resourceTemplates.push(...(page.resourceTemplates ?? []));
+      cursor = (page as any).nextCursor;
+    } while (cursor);
+    return { resourceTemplates };
   }
 
   /**
@@ -591,6 +615,18 @@ export class TargetManager extends EventEmitter {
     return result;
   }
 
+  /** Every prompt, following pagination to exhaustion (see `listAllTools`). */
+  async listAllPrompts(): Promise<{ prompts: any[] }> {
+    const prompts: any[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.listPrompts(cursor ? { cursor } : undefined);
+      prompts.push(...(page.prompts ?? []));
+      cursor = (page as any).nextCursor;
+    } while (cursor);
+    return { prompts };
+  }
+
   /**
    * Get a specific prompt by name from the target MCP server.
    */
@@ -629,20 +665,6 @@ export class TargetManager extends EventEmitter {
     return result;
   }
 
-  // ─── Completion ─────────────────────────────────────────────────────────────
-
-  /**
-   * Request completion from the target MCP server (for autocomplete UX).
-   */
-  async complete(params: Record<string, unknown>) {
-    this._assertConnected();
-    const start = Date.now();
-    const result = await this.client!.complete(params as any);
-    this.recordResponse();
-    this._addHistory("completion/complete", params, result, Date.now() - start);
-    return result;
-  }
-
   // ─── Request History ────────────────────────────────────────────────────────
 
   /**
@@ -674,9 +696,7 @@ export class TargetManager extends EventEmitter {
     if (this._history.length > MAX_HISTORY) {
       this._history = this._history.slice(-MAX_HISTORY);
     }
-    // Emit for audit sinks (e.g. the JSONL AuditLogger) with the FULL result.
-    // Kept separate from the size-bounded in-memory ring buffer so nothing is
-    // dropped from the audit trail.
+    // The event carries the FULL result; only the retained ring buffer is bounded.
     this.emit("history", record);
   }
 
@@ -693,7 +713,7 @@ export class TargetManager extends EventEmitter {
       _historyElided: true,
       note:
         `Result (${serialized.length.toLocaleString()} serialized chars) elided from ` +
-        `in-memory history to bound memory. Use --audit-log to capture full traffic.`,
+        `in-memory history to bound memory.`,
     };
   }
 
@@ -763,17 +783,6 @@ export class TargetManager extends EventEmitter {
     }
   }
 
-  // ─── Notification forwarding ────────────────────────────────────────────────
-
-  /**
-   * Access the underlying MCP client for advanced use cases like
-   * subscribing to notifications with proper SDK schemas.
-   * Prefer the typed methods above when possible.
-   */
-  getRawClient(): Client | null {
-    return this.client;
-  }
-
   // ─── Status & lifecycle ─────────────────────────────────────────────────────
 
   /**
@@ -783,6 +792,22 @@ export class TargetManager extends EventEmitter {
   getStderrLines(count?: number): string[] {
     if (!count || count >= this._stderrLines.length) return [...this._stderrLines];
     return this._stderrLines.slice(-count);
+  }
+
+  /**
+   * Wait briefly for a dying target's stderr to arrive.
+   *
+   * `connect()` rejects when the transport closes, which can win the race
+   * against the child's final stderr 'data' event. Resolves as soon as any
+   * stderr has been captured, or after `deadlineMs`. Meant for failure paths
+   * only, so the happy path pays nothing.
+   */
+  async waitForStderr(deadlineMs = 250): Promise<void> {
+    const POLL_MS = 25;
+    for (let waited = 0; waited < deadlineMs; waited += POLL_MS) {
+      if (this._stderrLines.length > 0) return;
+      await new Promise((r) => setTimeout(r, POLL_MS));
+    }
   }
 
   /**

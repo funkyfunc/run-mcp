@@ -5,6 +5,92 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-09-03
+
+A fresh-eyes review of the whole repo, applied. One real gap closed (`--env`),
+one file put back into shape (the session daemon), and the last feature with
+no evidence of use removed.
+
+### Added
+
+- **`--env KEY=VALUE`** (repeatable, also `-e`) on the REPL, every headless
+  subcommand, `validate`, and the session daemon. The target server never
+  inherited the caller's environment — like every MCP client, `run-mcp` starts
+  it with a `PATH`/`HOME`-style whitelist — and outside the agent server there
+  was no way to add to it, so a server that reads an API key could not be
+  started from a shell at all. The first `=` splits key from value. A session
+  records the env it was started with: attach without repeating it, or pass the
+  same values; a *different* `--env` is refused, naming the keys that differ
+  (never the values). `sessions` lists `env_keys`.
+- **`engines.node >= 20.11`** is declared. The session daemon already relied on
+  `import.meta.dirname` (Node 20.11+) and `--watch` needs recursive `fs.watch`
+  on Linux (20+), so Node 18 was only nominally supported; the bundle target now
+  matches.
+
+### Fixed
+
+- **Servers added with `claude mcp add` were not discovered.** Claude Code's
+  default ("local") scope stores them in `~/.claude.json` under
+  `projects[<dir>].mcpServers`, and the scanner only read the file's top level,
+  so `run-mcp` with no arguments (and `list_available_mcp_servers`) showed a
+  developer's globally-added servers but not the one for the project they were
+  working on. Every project's local-scope servers are now listed, labelled
+  `Claude Code (Local: ~/path/to/project)`. `~/.claude/mcp.json` is read too,
+  and a `url`-only entry (`type: "http"`) is offered as a remote target instead
+  of being dropped. `list_available_mcp_servers` reports each entry's `env_keys`
+  so an agent knows what to pass to `connect_to_mcp` (values are never shown).
+
+### Changed
+
+- **The session daemon lives in `src/session.ts`**, not inline in a commander
+  action in the entrypoint. The session record, the pure mismatch check, the
+  client side, and the daemon are separate functions, and the pure parts have
+  unit tests.
+- **The daemon listens on a Unix domain socket** inside the owner-only session
+  directory (a named pipe on Windows) instead of a loopback TCP port. File
+  permissions hid the port number but not the port: any local user could have
+  found it by scanning and driven your server. Session names are now validated
+  (letters, digits, `.`, `_`, `-`), since they become file names. A session
+  daemon left running by 2.1.0 is not reachable this way; `close-session` it
+  (or let it be pruned) and start it again.
+- **The daemon is spawned on `process.execPath`**, not a bare `node` from
+  `PATH`. Under nvm or volta those can be different Node versions.
+- **Headless `list-tools`, `list-resources`, `list-prompts`, and `describe`
+  follow pagination to exhaustion.** They fetched one page, so a paginating
+  server yielded a silently partial catalog. `list_mcp_primitives` in the agent
+  server does the same when called without a cursor; with a cursor it now
+  requires exactly one `type`, because a cursor belongs to the list it came from
+  (it used to be passed to all four lists).
+- **The REPL's `resources/read` and `prompts/get` go through the interceptor**,
+  like `tools/call` always did: timeouts apply, and a resource that returns a
+  large blob is saved to disk rather than dumped. "Three interfaces, one
+  pipeline" is now true of the REPL too.
+- **`validate` reports structured fields** — `serverName`, `serverVersion`,
+  `capabilities`, `toolCount` — in its JSON, instead of the quick summary
+  regex-parsing the server name back out of a check message.
+- **`--watch` follows the rebuild when the server runs from a build output.**
+  With `node dist/index.js` and a separate compile step, a source save used to
+  reconnect before the rebuild landed and spawn the stale code. If the target
+  script lives under an ignored build directory, that directory is watched
+  instead of the working directory.
+- The README leads with `npx -y run-mcp` and the mcp.json snippet instead of
+  clone-and-build.
+- `TargetManager.waitForStderr()` replaces three copies of the same
+  "give a dying server 250ms to explain itself" loop.
+
+### Removed
+
+- **Record & replay cassettes** (`--cassette`, `--record`, `--replay`). The one
+  remaining feature with no evidence of use and no relationship to the scope
+  test ("does this make the server under development more legible?"). It added
+  three flags to every headless subcommand and a branch in every interceptor
+  path. Recoverable from git history if a real need appears.
+- Dead code and stale text left over from the August cuts: an unused raw-client
+  accessor and completion method on `TargetManager`, comments referring to the
+  deleted audit log and tool-poisoning scanner, a `find` command in the REPL
+  help that no longer existed, and a REPL help line claiming a 60s default
+  timeout (it is 5 minutes).
+
 ## [2.1.0] - 2026-08-29
 
 Driven by feedback from an agent that used the headless CLI for its dev loop

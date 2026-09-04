@@ -15,6 +15,7 @@
  *  - multi_content: returns multiple content items of different types
  *  - audio_tool: returns a fake base64 audio clip (for audio interception testing)
  *  - error_tool: returns isError: true (for error passthrough testing)
+ *  - env_echo: returns an environment variable as the server process sees it
  *
  * Resources:
  *  - docs://readme: a text resource
@@ -274,7 +275,7 @@ server.registerPrompt(
   }),
 );
 
-// ─── Tool: json_data (pretty-printed JSON, for compression testing) ────────
+// ─── Tool: json_data (pretty-printed JSON with a declared outputSchema) ────────
 
 server.registerTool(
   "json_data",
@@ -295,6 +296,19 @@ server.registerTool(
       structuredContent: data,
     };
   },
+);
+
+// ─── Tool: env_echo (reports an environment variable as the server sees it) ─
+
+server.registerTool(
+  "env_echo",
+  {
+    description: "Returns the value of an environment variable in the server process",
+    inputSchema: { name: z.string().describe("Variable name") },
+  },
+  async ({ name }) => ({
+    content: [{ type: "text", text: process.env[name] ?? "<unset>" }],
+  }),
 );
 
 // ─── Tool: request_sampling (server → client sampling round-trip) ──────────

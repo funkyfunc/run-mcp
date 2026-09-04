@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { discoverServers } from "./config-scanner.js";
+import { dedupeServers, discoverServers } from "./config-scanner.js";
 import { type InterceptionMetadata, ResponseInterceptor } from "./interceptor.js";
 import { suggestCommand } from "./parsing.js";
 import {
@@ -148,22 +148,6 @@ export async function startServer(opts: ServerOptions): Promise<void> {
    */
   let lastStderr: string[] = [];
 
-  /**
-   * Wait briefly for a dying target's stderr to arrive.
-   *
-   * `connect()` rejects when the transport closes, which can win the race
-   * against the child's final stderr 'data' event. Only ever runs on the
-   * failure path, so the happy path pays nothing.
-   */
-  async function settleStderr(t: TargetManager): Promise<void> {
-    const DEADLINE_MS = 250;
-    const POLL_MS = 25;
-    for (let waited = 0; waited < DEADLINE_MS; waited += POLL_MS) {
-      if (t.getStderrLines().length > 0) return;
-      await new Promise((r) => setTimeout(r, POLL_MS));
-    }
-  }
-
   /** Tear down a target, preserving its stderr for post-mortem reads. */
   async function retireTarget(): Promise<void> {
     if (!target) return;
@@ -290,7 +274,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
     try {
       await target.connect();
     } catch (err) {
-      await settleStderr(target);
+      await target.waitForStderr();
       await retireTarget();
       throw Object.assign(new Error(formatConnectFailure(err, cmdToUse, argsToUse ?? [])), {
         alreadyFormatted: true,
@@ -494,7 +478,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         try {
           await target.connect();
         } catch (err) {
-          await settleStderr(target);
+          await target.waitForStderr();
           await retireTarget();
           throw Object.assign(new Error(formatConnectFailure(err, command, args ?? [])), {
             alreadyFormatted: true,
@@ -513,14 +497,9 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         if (caps.prompts) capSummary.push("prompts");
         if (caps.logging) capSummary.push("logging");
 
-        // Try to count tools for a helpful summary
-        let toolCount = 0;
-        try {
-          const tools = await target.listTools();
-          toolCount = tools.tools.length;
-        } catch {
-          /* ignore */
-        }
+        // The snapshot doubles as the tool count for the summary line.
+        const currentSnapshot = await takeSnapshot();
+        const toolCount = currentSnapshot.tools?.length ?? 0;
 
         const lines = [
           `Connected to MCP server (PID: ${status.pid})`,
@@ -532,9 +511,6 @@ export async function startServer(opts: ServerOptions): Promise<void> {
           "Use reconnect_to_mcp after editing your server's code.",
           ...contextNotes,
         ];
-
-        // Take snapshot for future diffs
-        const currentSnapshot = await takeSnapshot();
 
         // Compute diff if we have a previous snapshot and include was requested
         if (previousSnapshot && include && include.length > 0) {
@@ -669,7 +645,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       try {
         await target.connect();
       } catch (err) {
-        await settleStderr(target);
+        await target.waitForStderr();
         await retireTarget();
         return {
           content: [{ type: "text" as const, text: formatConnectFailure(err, command, args) }],
@@ -772,7 +748,11 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         cursor: z
           .string()
           .optional()
-          .describe("Cursor for pagination (returned from a previous list call)"),
+          .describe(
+            "Cursor for pagination, returned from a previous list call. A cursor belongs to " +
+              "one list, so pass exactly one 'type' with it. Without a cursor every page is " +
+              "fetched and the full catalog is returned.",
+          ),
       },
     },
     async ({ type, name, summary, cursor }) => {
@@ -792,16 +772,34 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       const requested = type ?? ["tools", "resources", "resource_templates", "prompts"];
       const sections: string[] = [];
 
+      if (cursor && requested.length !== 1) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text:
+                "A cursor is only valid for the list it came from. Pass exactly one 'type' " +
+                `together with 'cursor' (got ${requested.length}).`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      const t = target;
+      const listTools = () => (cursor ? t.listTools({ cursor }) : t.listAllTools());
+      const listResources = () => (cursor ? t.listResources({ cursor }) : t.listAllResources());
+      const listResourceTemplates = () =>
+        cursor ? t.listResourceTemplates({ cursor }) : t.listAllResourceTemplates();
+      const listPrompts = () => (cursor ? t.listPrompts({ cursor }) : t.listAllPrompts());
+
       if (requested.includes("tools") && caps.tools) {
         try {
-          const result = await target.listTools({ cursor });
-          // Scan for tool-poisoning before surfacing tool metadata to the agent.
-          const scanned = { tools: result.tools as any[] };
-          let tools: any[] = scanned.tools;
+          const result = (await listTools()) as { tools: any[]; nextCursor?: string };
+          let tools: any[] = result.tools;
           if (name) {
             tools = tools.filter((t: any) => t.name === name);
             if (tools.length === 0) {
-              const available = scanned.tools.map((t: any) => t.name).join(", ");
+              const available = result.tools.map((t: any) => t.name).join(", ");
               sections.push("--- Tools ---", `Tool "${name}" not found.\nAvailable: ${available}`);
             } else {
               sections.push("--- Tools ---", JSON.stringify(tools[0], null, 2));
@@ -822,7 +820,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
 
       if (requested.includes("resources") && caps.resources) {
         try {
-          const result = await target.listResources({ cursor });
+          const result = (await listResources()) as { resources: any[]; nextCursor?: string };
           let resources = result.resources;
           if (name) {
             resources = resources.filter((r: any) => r.uri === name || r.name === name);
@@ -855,7 +853,10 @@ export async function startServer(opts: ServerOptions): Promise<void> {
 
       if (requested.includes("resource_templates") && caps.resources) {
         try {
-          const result = await target.listResourceTemplates({ cursor });
+          const result = (await listResourceTemplates()) as {
+            resourceTemplates: any[];
+            nextCursor?: string;
+          };
           let templates = result.resourceTemplates;
           if (name) {
             templates = templates.filter((t: any) => t.uriTemplate === name || t.name === name);
@@ -888,12 +889,12 @@ export async function startServer(opts: ServerOptions): Promise<void> {
 
       if (requested.includes("prompts") && caps.prompts) {
         try {
-          const result = await target.listPrompts({ cursor });
+          const result = (await listPrompts()) as { prompts: any[]; nextCursor?: string };
           let prompts = result.prompts;
           if (name) {
-            prompts = prompts.filter((p) => p.name === name);
+            prompts = prompts.filter((p: any) => p.name === name);
             if (prompts.length === 0) {
-              const available = result.prompts.map((p) => p.name).join(", ");
+              const available = result.prompts.map((p: any) => p.name).join(", ");
               sections.push(
                 "--- Prompts ---",
                 `Prompt "${name}" not found.\nAvailable: ${available}`,
@@ -903,7 +904,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
             }
           } else {
             const displayPrompts = summary
-              ? prompts.map((p) => ({ name: p.name, description: p.description }))
+              ? prompts.map((p: any) => ({ name: p.name, description: p.description }))
               : prompts;
             sections.push("--- Prompts ---", JSON.stringify(displayPrompts, null, 2));
           }
@@ -960,22 +961,13 @@ export async function startServer(opts: ServerOptions): Promise<void> {
 
         const lines: string[] = ["Discovered the following MCP server configurations:"];
 
-        // Deduplicate similar to the REPL
-        const uniqueServers = new Map<string, any>();
-        for (const s of servers) {
-          const key = `${s.name}::${s.config.command}::${(s.config.args || []).join(" ")}`;
-          if (!uniqueServers.has(key)) {
-            uniqueServers.set(key, s);
-          } else if (s.source.includes("Project")) {
-            uniqueServers.set(key, s);
-          }
-        }
-
-        const list = Array.from(uniqueServers.values()).map((s) => ({
+        const list = dedupeServers(servers).map((s) => ({
           name: s.name,
           source: s.source,
           command: s.config.command,
           args: s.config.args || [],
+          // Names only: values are often secrets, and connect_to_mcp takes env explicitly.
+          env_keys: Object.keys(s.config.env ?? {}),
         }));
 
         lines.push(JSON.stringify(list, null, 2));

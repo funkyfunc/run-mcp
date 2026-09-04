@@ -8,15 +8,18 @@
  * Design principles:
  *   - stdout: only machine-parseable JSON, no ANSI, no extra text
  *   - stderr: human-readable status (connecting, timing, errors)
- *   - Exit 0: success
- *   - Exit 1: tool error, connection failure, or server error
- *   - Exit 2: usage error (bad args, missing target command)
+ *   - Exit codes follow sysexits(3):
+ *       0   success
+ *       1   the tool reported isError, or a session/daemon error
+ *       64  usage error (bad args, missing target command)
+ *       65  malformed input data (invalid JSON arguments)
+ *       66  the target command was not found
+ *       69  the target server failed to start or connect
  */
 
 import { ResponseInterceptor } from "./interceptor.js";
 import { parseHttpieArgs } from "./parsing.js";
-import { TargetManager } from "./target-manager.js";
-import { Cassette, type CassetteMode } from "./cassette.js";
+import { TargetManager, type TransportMode } from "./target-manager.js";
 
 /** Default timeout for headless tool calls (30 seconds). */
 export const DEFAULT_HEADLESS_TIMEOUT_MS = 30_000;
@@ -27,9 +30,9 @@ export interface HeadlessOptions {
   raw?: boolean;
   showStderr?: boolean;
   mediaThresholdKb?: number;
-  cassettePath?: string;
-  cassetteMode?: CassetteMode;
-  transport?: "auto" | "http" | "sse";
+  transport?: TransportMode;
+  /** Extra environment variables for the target process (`--env KEY=VAL`). */
+  env?: Record<string, string>;
 }
 
 export type HeadlessOperation =
@@ -90,15 +93,12 @@ export async function runHeadless(
   const [command, ...args] = targetCommand;
   const target = new TargetManager(command, args, {
     transport: opts.transport,
+    env: opts.env,
   });
-  const cassette = opts.cassettePath
-    ? new Cassette(opts.cassettePath, opts.cassetteMode ?? "auto")
-    : undefined;
   const interceptor = new ResponseInterceptor({
     outDir: opts.outDir,
     defaultTimeoutMs: opts.timeoutMs ?? DEFAULT_HEADLESS_TIMEOUT_MS,
     mediaThresholdKb: opts.mediaThresholdKb,
-    cassette,
   });
 
   if (operation.type === "reconnect") {
@@ -118,21 +118,11 @@ export async function runHeadless(
     target.on("stderr", () => {});
   }
 
-  // In replay mode, interceptor-routed operations (call/read/get-prompt) are
-  // served from the cassette, so we can run fully offline without spawning the
-  // target. List operations still need a live server.
-  const replayableOffline = new Set(["call", "read", "get-prompt"]);
-  const skipConnect = cassette?.mode === "replay" && replayableOffline.has(operation.type);
-
   try {
-    if (skipConnect) {
-      process.stderr.write(`Replaying from cassette (offline)...\n`);
-    } else {
-      process.stderr.write(`Connecting to ${targetCommand.join(" ")}...\n`);
-      await target.connect();
-      const status = target.getStatus();
-      process.stderr.write(`Connected (PID: ${status.pid})\n`);
-    }
+    process.stderr.write(`Connecting to ${targetCommand.join(" ")}...\n`);
+    await target.connect();
+    const status = target.getStatus();
+    process.stderr.write(`Connected (PID: ${status.pid})\n`);
 
     const { result, hasError } = await executeOperation(target, interceptor, operation, opts);
 
@@ -159,7 +149,7 @@ export async function runHeadless(
     // A server that dies on connect explains itself on stderr — surface it here
     // rather than discarding it with the process (the agent server does the same).
     if (!opts.showStderr) {
-      await settleStderr();
+      await target.waitForStderr();
       const lines = target.getStderrLines(40);
       if (lines.length > 0) {
         process.stderr.write(`--- Target server stderr ---\n${lines.join("\n")}\n`);
@@ -197,6 +187,25 @@ export async function executeOperation(
   return outcome;
 }
 
+/**
+ * Parse a positional argument string as either a JSON object or HTTPie-style
+ * `key=value` shorthand. Exits 65 on malformed JSON.
+ */
+function parseArgsString(raw: string | undefined): Record<string, unknown> {
+  if (!raw) return {};
+  const trimmed = raw.trim();
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    try {
+      return JSON.parse(trimmed);
+    } catch (err: any) {
+      process.stderr.write(`Error: Invalid JSON arguments: ${err.message}\n`);
+      process.stderr.write(`  Received: ${raw}\n`);
+      process.exit(65);
+    }
+  }
+  return parseHttpieArgs(trimmed);
+}
+
 async function runOperation(
   target: TargetManager,
   interceptor: ResponseInterceptor,
@@ -206,22 +215,7 @@ async function runOperation(
 ): Promise<OperationOutcome> {
   switch (operation.type) {
     case "call": {
-      let parsedArgs: Record<string, unknown> = {};
-      if (operation.args) {
-        const trimmed = operation.args.trim();
-        if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-          try {
-            parsedArgs = JSON.parse(trimmed);
-          } catch (err: any) {
-            process.stderr.write(`Error: Invalid JSON arguments: ${err.message}\n`);
-            process.stderr.write(`  Received: ${operation.args}\n`);
-            process.exit(65);
-          }
-        } else {
-          parsedArgs = parseHttpieArgs(trimmed);
-        }
-      }
-
+      const parsedArgs = parseArgsString(operation.args);
       const result = await interceptor.callTool(target, operation.tool, parsedArgs);
 
       // `--raw` is the "give me everything" envelope, so it also carries what the
@@ -232,8 +226,8 @@ async function runOperation(
         (result as Record<string, unknown>).stderr = stderrSince(target, stderrStart);
       }
 
-      // Check for isError and exit 1
-      if ((result as any).isError) {
+      const hasError = (result as any).isError === true;
+      if (hasError) {
         const content = (result as any).content;
         if (Array.isArray(content)) {
           const errorText = content
@@ -244,28 +238,25 @@ async function runOperation(
             process.stderr.write(`Tool error: ${errorText}\n`);
           }
         }
-        // Still output the result for programmatic consumption
-        if (opts.raw) return { result, hasError: true };
-        return { result: (result as any).content ?? result, hasError: true };
       }
 
-      if (opts.raw) return { result, hasError: false };
-      return { result: (result as any).content ?? result, hasError: false };
+      // Still output the result on error, for programmatic consumption.
+      if (opts.raw) return { result, hasError };
+      return { result: (result as any).content ?? result, hasError };
     }
 
     case "list-tools": {
-      const { tools } = await target.listTools();
-      const scanned = tools as any[];
-      return { result: scanned, hasError: false };
+      const { tools } = await target.listAllTools();
+      return { result: tools, hasError: false };
     }
 
     case "list-resources": {
-      const { resources } = await target.listResources();
+      const { resources } = await target.listAllResources();
       return { result: resources, hasError: false };
     }
 
     case "list-prompts": {
-      const { prompts } = await target.listPrompts();
+      const { prompts } = await target.listAllPrompts();
       return { result: prompts, hasError: false };
     }
 
@@ -275,11 +266,10 @@ async function runOperation(
     }
 
     case "describe": {
-      const { tools } = await target.listTools();
-      const scanned = tools as any[];
-      const tool = (scanned as any[]).find((t) => t.name === operation.tool);
+      const { tools } = await target.listAllTools();
+      const tool = tools.find((t) => t.name === operation.tool);
       if (!tool) {
-        const available = (scanned as any[]).map((t) => t.name).join(", ");
+        const available = tools.map((t) => t.name).join(", ");
         process.stderr.write(
           `Error: Tool "${operation.tool}" not found.\n` + `Available tools: ${available}\n`,
         );
@@ -289,22 +279,9 @@ async function runOperation(
     }
 
     case "get-prompt": {
-      let parsedArgs: Record<string, string> | undefined;
-      if (operation.args) {
-        const trimmed = operation.args.trim();
-        if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-          try {
-            parsedArgs = JSON.parse(trimmed) as Record<string, string>;
-          } catch (err: any) {
-            process.stderr.write(`Error: Invalid JSON arguments: ${err.message}\n`);
-            process.stderr.write(`  Received: ${operation.args}\n`);
-            process.exit(65);
-          }
-        } else {
-          parsedArgs = parseHttpieArgs(trimmed) as Record<string, string>;
-        }
-      }
-
+      const parsedArgs = operation.args
+        ? (parseArgsString(operation.args) as Record<string, string>)
+        : undefined;
       const result = await interceptor.getPrompt(target, {
         name: operation.name,
         arguments: parsedArgs,

@@ -1,5 +1,5 @@
-import { watch, type FSWatcher } from "node:fs";
-import { relative } from "node:path";
+import { existsSync, statSync, watch, type FSWatcher } from "node:fs";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { EventEmitter } from "node:events";
 
 /** Glob-style patterns for paths that should never trigger a watch reload. */
@@ -22,6 +22,43 @@ const DEFAULT_IGNORE_PATTERNS = [
 
 /** File extensions that should never trigger a watch reload. */
 const IGNORE_EXTENSIONS = new Set([".pyc", ".pyo", ".swp", ".swo", ".swn", ".DS_Store"]);
+
+/**
+ * Decide what `--watch` should watch for a given target command.
+ *
+ * Normally the working directory, minus build outputs. But when the server
+ * runs *from* a build output (`node dist/index.js` with a separate compile
+ * step), a source save would reconnect before the rebuild lands and spawn the
+ * stale code. In that case the build directory itself is the thing to watch:
+ * the reconnect then follows the compiler, not the editor.
+ */
+export function resolveWatchRoot(
+  cwd: string,
+  targetArgs: string[],
+): { path: string; reason: "cwd" | "build-output" } {
+  for (const arg of targetArgs) {
+    const candidate = isAbsolute(arg) ? arg : resolve(cwd, arg);
+    if (!existsSync(candidate)) continue;
+    try {
+      if (!statSync(candidate).isFile()) continue;
+    } catch {
+      continue;
+    }
+
+    const rel = relative(cwd, candidate);
+    if (rel.startsWith("..") || isAbsolute(rel)) continue;
+    const segments = rel.split(sep);
+    const buildDirIndex = segments.findIndex(
+      (segment, i) => i < segments.length - 1 && DEFAULT_IGNORE_PATTERNS.includes(segment),
+    );
+    if (buildDirIndex === -1) continue;
+    return {
+      path: join(cwd, ...segments.slice(0, buildDirIndex + 1)),
+      reason: "build-output",
+    };
+  }
+  return { path: cwd, reason: "cwd" };
+}
 
 export interface FileWatcherOptions {
   /** Debounce window in ms. Defaults to 500. */

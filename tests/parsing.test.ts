@@ -12,6 +12,7 @@ import {
   suggestCommand,
   splitArgs,
   parseHttpieArgs,
+  parseEnvFlags,
 } from "../src/parsing.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -790,5 +791,33 @@ describe("interpolateString", () => {
 
   it("stringifies objects to JSON", () => {
     expect(interpolateString("echo $LAST.content[0]", context)).toBe('echo {"text":"hello"}');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// parseEnvFlags (--env KEY=VALUE)
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("parseEnvFlags", () => {
+  it("returns an empty map for no flags", () => {
+    expect(parseEnvFlags(undefined)).toEqual({});
+    expect(parseEnvFlags([])).toEqual({});
+  });
+
+  it("splits on the first '=' so values may contain '='", () => {
+    expect(parseEnvFlags(["A=1", "TOKEN=abc=def=", "EMPTY="])).toEqual({
+      A: "1",
+      TOKEN: "abc=def=",
+      EMPTY: "",
+    });
+  });
+
+  it("later duplicates win", () => {
+    expect(parseEnvFlags(["A=1", "A=2"])).toEqual({ A: "2" });
+  });
+
+  it("rejects a token without '=' or with an empty key, naming the token", () => {
+    expect(() => parseEnvFlags(["NOEQ"])).toThrow('--env expects KEY=VALUE, got "NOEQ"');
+    expect(() => parseEnvFlags(["=value"])).toThrow('got "=value"');
   });
 });

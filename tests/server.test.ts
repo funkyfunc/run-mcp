@@ -1076,7 +1076,7 @@ describe("server: advanced features and protocol compliance", () => {
     const text = getText(result);
     expect(text).toContain("Validation Result: SUCCESS");
     expect(text).toContain("mock-mcp-server");
-    expect(text).toContain("Tools Count: 15");
+    expect(text).toContain("Tools Count: 16");
   }, 25_000);
 
   it("supports deep protocol validation via validate_mcp_server", async () => {

@@ -607,6 +607,23 @@ export function parseHttpieArgs(argsString: string): Record<string, unknown> {
 }
 
 /**
+ * Parse repeated `--env KEY=VAL` flag values into an env map. The first `=`
+ * splits key from value, so values may themselves contain `=`. Throws on a
+ * token with no `=` or an empty key, naming the offending token.
+ */
+export function parseEnvFlags(values: string[] | undefined): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const token of values ?? []) {
+    const eq = token.indexOf("=");
+    if (eq <= 0) {
+      throw new Error(`--env expects KEY=VALUE, got "${token}".`);
+    }
+    env[token.slice(0, eq)] = token.slice(eq + 1);
+  }
+  return env;
+}
+
+/**
  * Resolves a simple dot or bracket notation path against an object.
  */
 function resolveJsonPath(obj: any, path: string): any {

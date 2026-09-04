@@ -29,16 +29,32 @@ For humans, the REPL mode provides a quick way to test any MCP server without wr
 
 ## Installation
 
-```bash
-npm install
-npm run build
-```
-
-To install globally (makes `run-mcp` available system-wide):
+Nothing to install for a one-off — `npx` fetches it:
 
 ```bash
-npm install -g .
+npx -y run-mcp -- node path/to/my-mcp-server.js
 ```
+
+To give your agent the tools, add it to your MCP config (`mcp.json`, `.mcp.json`, `claude_desktop_config.json`, …):
+
+```json
+{
+  "mcpServers": {
+    "run-mcp": {
+      "command": "npx",
+      "args": ["-y", "run-mcp"]
+    }
+  }
+}
+```
+
+Or install it globally so `run-mcp` is on your PATH:
+
+```bash
+npm install -g run-mcp
+```
+
+Requires Node.js 20.11 or newer. To work on `run-mcp` itself, see [Development](#development).
 
 ## Quick Start
 
@@ -48,12 +64,14 @@ npm install -g .
 # Start a REPL session with any MCP server
 run-mcp -- node path/to/my-mcp-server.js
 
-# Or use npx without installing globally
-npx . -- node path/to/my-mcp-server.js
+# Pass the environment your server needs (see "Environment variables" below)
+run-mcp --env API_KEY=sk-123 -- node path/to/my-mcp-server.js
 
-# Or start it without arguments to run the Agent Server mode!
+# Or start it without arguments to pick a server from your existing MCP configs
 run-mcp
 ```
+
+The picker reads the configs of Claude Code (all three scopes: user, project `.mcp.json`, and the per-project "local" scope that `claude mcp add` uses by default), Claude Desktop, Cursor, Windsurf, Cline, VS Code, Copilot CLI, and Gemini CLI. Each entry is labelled with where it came from, and a config's `env` block is applied when you pick it.
 
 You'll see an interactive prompt:
 
@@ -78,6 +96,7 @@ run-mcp [options] [target_command...]
 | `-t, --timeout <ms>` | Default tool call timeout in milliseconds (default: 300000) (Agent Mode only) |
 | `--max-text <chars>` | Max text response length before truncation (default: 50000) (Agent Mode only) |
 | `-m, --media-threshold <kb>` | Media size threshold in KB to save to disk (0 to always save, -1 to keep inline) |
+| `-e, --env <KEY=VALUE>` | Environment variable for the target server (repeatable). Only PATH/HOME and a few basics are inherited; anything else your server reads must be passed here. |
 | `--mcp` | Force start Agent Server mode even if run interactively without arguments |
 | `-s, --script <file>` | Read commands from a file instead of stdin (REPL Mode only) |
 | `--color <mode>` | Color output mode: always, never, auto (default: auto) |
@@ -96,6 +115,22 @@ Examples:
   $ run-mcp --out-dir ./test-output               # Agent mode with options
   $ run-mcp --out-dir ./screenshots -- node srv.js # REPL mode with options
 
+## Environment variables
+
+The target server does **not** inherit your shell's environment. Like every MCP client, `run-mcp` starts it with only a small whitelist (`PATH`, `HOME`, `SHELL`, `USER`, and their Windows equivalents), so `API_KEY=… run-mcp …` does not reach it. Pass what your server reads explicitly:
+
+```bash
+# REPL and headless: repeat --env (or -e) per variable; the first "=" splits key from value
+run-mcp --env API_KEY=sk-123 --env LOG_LEVEL=debug -- node my-server.js
+run-mcp call search q=hello --env API_KEY=sk-123 -- node my-server.js
+
+# Sessions remember the env they were started with; attach without repeating it
+run-mcp list-tools --session dev --env API_KEY=sk-123 -- node my-server.js
+run-mcp call search q=hello --session dev
+```
+
+From the agent server, pass `env` to `connect_to_mcp` (or `auto_connect.env`); it is kept across `reconnect_to_mcp`. When you pick a server from a discovered config in the REPL, that config's `env` block is applied, with `--env` values on top.
+
 ## Watch Mode
 
 When developing an MCP server, use `--watch` (or `-w`) to automatically reconnect whenever your source files change. This eliminates the manual `reconnect` step from your edit-test loop:
@@ -110,7 +145,7 @@ On each file change, `run-mcp` will:
 3. Reconnect to a fresh instance
 4. Show a diff of what primitives changed (tools added/removed/modified, resources, prompts)
 
-Common directories like `node_modules`, `.git`, `dist`, and `build` are automatically ignored.
+Common directories like `node_modules`, `.git`, `dist`, and `build` are automatically ignored. If the server runs *from* one of those (`node dist/index.js` with a separate compile step), `run-mcp` watches that directory instead of your sources, so the reconnect follows the rebuild rather than the save and never spawns stale code.
 
 ## Headless Mode (from a shell, one command at a time)
 
@@ -178,11 +213,11 @@ run-mcp validate --deep --session main
 run-mcp close-session main
 ```
 
-`--show-stderr` on a sessioned call replays the stderr the server wrote *during that call* (the daemon holds the pipe, so it can't stream live). `--out-dir`, `--timeout`, and `--media-threshold` apply per call, exactly as without a session. `--transport` is fixed when the session is created.
+`--show-stderr` on a sessioned call replays the stderr the server wrote *during that call* (the daemon holds the pipe, so it can't stream live). `--out-dir`, `--timeout`, and `--media-threshold` apply per call, exactly as without a session. `--transport` and `--env` are fixed when the session is created.
 
-**Keeping track of sessions.** `run-mcp sessions` lists what's running — name, pid, command, working directory, uptime, idle timeout — as JSON. A session remembers the command and directory it was started from: if you pass a *different* command (or the same relative command from a different directory) with an existing session name, the call is refused with both commands shown, rather than quietly answered by the wrong server. Omit the command to attach, `close-session` to replace.
+**Keeping track of sessions.** `run-mcp sessions` lists what's running — name, pid, command, working directory, env keys, uptime, idle timeout — as JSON. A session remembers the command, directory, and env it was started with: if you pass a *different* command (or the same relative command from a different directory, or a different `--env`) with an existing session name, the call is refused with the difference shown, rather than quietly answered by the wrong server. Omit the command to attach, `close-session` to replace.
 
-**Nothing leaks.** A session lives until you `close-session` it — which means a forgotten one keeps its server (and whatever the server holds, like a browser) alive until reboot. Pass `--idle-timeout <minutes>` on any sessioned call to have it close itself after that long without a command; the value shows up in `sessions`. If the server fails to start on the first sessioned call, the call exits 69 with the server's stderr, and no session is left behind.
+**Nothing leaks.** A session lives until you `close-session` it — which means a forgotten one keeps its server (and whatever the server holds, like a browser) alive until reboot. Pass `--idle-timeout <minutes>` on any sessioned call to have it close itself after that long without a command; the value shows up in `sessions`. If the server fails to start on the first sessioned call, the call exits 69 with the server's stderr, and no session is left behind. The daemon listens on a Unix socket (a named pipe on Windows) inside an owner-only directory under your temp dir, so no other user on the machine can reach your server through it.
 
 ### 🔎 Stderr as data
 
@@ -204,7 +239,6 @@ The server's stderr is the main evidence when something goes wrong, so headless 
 - `get-prompt [options] <name> [json_args] [target_command...]`
 - `stderr [options] [count] [target_command...]`
 - `reconnect [options] [target_command...]`
-- `daemon [options] <session_name> [target_command...]`
 - `sessions`
 - `close-session <session_name>`
 - `validate [options] [target_command...]`
@@ -383,7 +417,7 @@ For the detailed system architecture diagram and source module directory map, pl
 ## Development
 
 ```bash
-# Install dependencies
+# Install dependencies (Node.js 20.11+)
 npm install
 
 # Build (one-time)

@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FileWatcher } from "../src/watcher.js";
+import { FileWatcher, resolveWatchRoot } from "../src/watcher.js";
 
 let dir: string;
 let watcher: FileWatcher | null = null;
@@ -62,4 +62,34 @@ describe("FileWatcher", () => {
       expect(changed.some((f) => f.includes("touched.ts"))).toBe(true);
     }
   }, 5000);
+});
+
+describe("resolveWatchRoot", () => {
+  it("watches the working directory when the server runs from source", () => {
+    writeFileSync(join(dir, "server.js"), "");
+    expect(resolveWatchRoot(dir, ["server.js"])).toEqual({ path: dir, reason: "cwd" });
+  });
+
+  it("watches the build output when the server runs from one", () => {
+    mkdirSync(join(dir, "dist"), { recursive: true });
+    writeFileSync(join(dir, "dist", "index.js"), "");
+    expect(resolveWatchRoot(dir, ["dist/index.js"])).toEqual({
+      path: join(dir, "dist"),
+      reason: "build-output",
+    });
+    // Absolute paths and flags before the script are fine too.
+    expect(resolveWatchRoot(dir, ["--inspect", join(dir, "dist", "index.js")]).path).toBe(
+      join(dir, "dist"),
+    );
+  });
+
+  it("falls back to the working directory for args that are not files inside it", () => {
+    expect(resolveWatchRoot(dir, ["-y", "some-package", "/nonexistent/dist/x.js"])).toEqual({
+      path: dir,
+      reason: "cwd",
+    });
+    // A directory argument is not a script.
+    mkdirSync(join(dir, "dist"), { recursive: true });
+    expect(resolveWatchRoot(dir, ["dist"]).reason).toBe("cwd");
+  });
 });
