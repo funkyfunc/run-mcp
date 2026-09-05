@@ -1,5 +1,5 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
+import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { dedupeServers, discoverServers } from "./config-scanner.js";
 import { type InterceptionMetadata, ResponseInterceptor } from "./interceptor.js";
@@ -9,7 +9,7 @@ import {
   computeSnapshotDiff,
   takeSnapshot as takeSnapshotFromTarget,
 } from "./snapshot.js";
-import { TargetManager } from "./target-manager.js";
+import { describeConnectFailure, TargetManager, type ProtocolMode } from "./target-manager.js";
 import { validateProtocol } from "./validator.js";
 
 export interface ServerOptions {
@@ -20,6 +20,8 @@ export interface ServerOptions {
   scan?: boolean;
   /** Transport for http(s) targets: auto (default), http (Streamable), or sse. */
   transport?: "auto" | "http" | "sse";
+  /** Default handshake for targets (`--protocol`); a connect call can override it. */
+  protocol?: ProtocolMode;
 }
 
 /**
@@ -49,8 +51,12 @@ export interface ServerOptions {
 export async function startServer(opts: ServerOptions): Promise<void> {
   let target: TargetManager | null = null;
   let previousSnapshot: Snapshot | null = null;
-  let cachedSpawnConfig: { command: string; args: string[]; env?: Record<string, string> } | null =
-    null;
+  let cachedSpawnConfig: {
+    command: string;
+    args: string[];
+    env?: Record<string, string>;
+    protocol?: ProtocolMode;
+  } | null = null;
   /**
    * Cached tools/list of the CURRENT target, used by call_mcp_primitive's
    * pre-call validation so every tool call doesn't pay an extra round trip.
@@ -81,24 +87,24 @@ export async function startServer(opts: ServerOptions): Promise<void> {
   /** Set up stderr and disconnect listeners on the target. */
   function setupTargetListeners(t: TargetManager): void {
     t.on("stderr", (text) => {
-      mcpServer
-        .sendLoggingMessage({
-          level: "info",
-          logger: "target-stderr",
-          data: text,
-        })
-        .catch(() => {});
+      // eslint-disable-next-line @typescript-eslint/no-deprecated -- deprecated by SEP-2577 but still served for 12 months; run-mcp exists to exercise it
+      const sent = mcpServer.sendLoggingMessage({
+        level: "info",
+        logger: "target-stderr",
+        data: text,
+      });
+      sent.catch(() => {});
     });
 
     t.on("disconnected", () => {
       const pid = t.getStatus().pid;
-      mcpServer
-        .sendLoggingMessage({
-          level: "error",
-          logger: "run-mcp",
-          data: `Target server disconnected unexpectedly! (PID: ${pid})`,
-        })
-        .catch(() => {});
+      // eslint-disable-next-line @typescript-eslint/no-deprecated -- deprecated by SEP-2577 but still served for 12 months; run-mcp exists to exercise it
+      const sent = mcpServer.sendLoggingMessage({
+        level: "error",
+        logger: "run-mcp",
+        data: `Target server disconnected unexpectedly! (PID: ${pid})`,
+      });
+      sent.catch(() => {});
     });
 
     t.on("notification", (record: any) => {
@@ -115,10 +121,10 @@ export async function startServer(opts: ServerOptions): Promise<void> {
 
     t.on("sampling_request", async ({ request, respond, reject }) => {
       try {
-        const result = await mcpServer.server.request(
-          { method: "sampling/createMessage", params: request },
-          z.any(),
-        );
+        const result = await mcpServer.server.request({
+          method: "sampling/createMessage",
+          params: request,
+        });
         respond(result);
       } catch (err: any) {
         reject(err);
@@ -127,10 +133,10 @@ export async function startServer(opts: ServerOptions): Promise<void> {
 
     t.on("elicitation_request", async ({ request, respond, reject }) => {
       try {
-        const result = await mcpServer.server.request(
-          { method: "elicitation/create", params: request },
-          z.any(),
-        );
+        const result = await mcpServer.server.request({
+          method: "elicitation/create",
+          params: request,
+        });
         respond(result);
       } catch (err: any) {
         reject(err);
@@ -165,10 +171,9 @@ export async function startServer(opts: ServerOptions): Promise<void> {
    * difference between a fixable error and a dead end.
    */
   function formatConnectFailure(err: any, command: string, args: string[]): string {
-    const lines = [
-      `Failed to connect: ${err?.message ?? String(err)}`,
-      `Command: ${command} ${args.join(" ")}`,
-    ];
+    const { message, hint } = describeConnectFailure(err, command);
+    const lines = [`Failed to connect: ${message}`, `Command: ${command} ${args.join(" ")}`];
+    if (hint) lines.push(hint);
     const stderrLines = lastStderr.slice(-40);
     if (stderrLines.length > 0) {
       lines.push(
@@ -245,17 +250,20 @@ export async function startServer(opts: ServerOptions): Promise<void> {
     command?: string,
     args?: string[],
     env?: Record<string, string>,
+    protocol?: ProtocolMode,
   ): Promise<string | null> {
     if (target?.connected) return null;
 
     let cmdToUse = command;
     let argsToUse = args;
     let envToUse = env;
+    let protocolToUse = protocol;
 
     if (!cmdToUse && cachedSpawnConfig) {
       cmdToUse = cachedSpawnConfig.command;
       argsToUse = cachedSpawnConfig.args;
       envToUse = cachedSpawnConfig.env;
+      protocolToUse = protocolToUse ?? cachedSpawnConfig.protocol;
     }
 
     if (!cmdToUse) {
@@ -268,6 +276,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
     target = new TargetManager(cmdToUse, argsToUse ?? [], {
       env: envToUse,
       transport: opts.transport,
+      protocol: protocolToUse ?? opts.protocol,
     });
     setupTargetListeners(target);
     await applyRoots(target);
@@ -283,8 +292,47 @@ export async function startServer(opts: ServerOptions): Promise<void> {
     if (configuredLogLevel) {
       await target.setLoggingLevel(configuredLogLevel).catch(() => {});
     }
-    cachedSpawnConfig = { command: cmdToUse, args: argsToUse ?? [], env: envToUse };
+    cachedSpawnConfig = {
+      command: cmdToUse,
+      args: argsToUse ?? [],
+      env: envToUse,
+      protocol: protocolToUse,
+    };
     return null;
+  }
+
+  /** One line naming the era and revision the target negotiated. */
+  function describeProtocolLine(t: TargetManager): string {
+    const { era, version } = t.getProtocolInfo();
+    if (!version) return "Protocol: unknown";
+    const eraNote =
+      era === "modern"
+        ? " (modern era: server/discover, subscriptions/listen, input_required)"
+        : " (legacy era: initialize handshake — pass protocol='auto' or '2026-07-28' to test the modern path if the server serves it)";
+    return `Protocol: ${version}${eraNote}`;
+  }
+
+  /** Conduct problems the SDK forgives but a server author must hear about. */
+  function conductWarnings(t: TargetManager): string[] {
+    const lines: string[] = [];
+    const noise = t.getStdoutNoise();
+    if (noise.length > 0) {
+      lines.push(
+        "",
+        `⚠ The server wrote ${t.getStatus().stdoutNoiseCount} non-JSON line(s) to stdout. stdout is the ` +
+          "protocol channel; a stricter client would have dropped the connection. Log to stderr instead. Last lines:",
+        ...noise.slice(-5).map((l) => `  ${l}`),
+      );
+    }
+    const errors = t.getTransportErrors();
+    if (errors.length > 0) {
+      lines.push(
+        "",
+        `⚠ The transport reported ${errors.length} error(s):`,
+        ...errors.slice(-5).map((e) => `  ${e.message}`),
+      );
+    }
+    return lines;
   }
 
   /** Tools list for pre-call validation, cached per connection. */
@@ -400,14 +448,14 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         "Use this to test an MCP server you're building. " +
         "Only one connection at a time — call disconnect_from_mcp first if already connected. " +
         "Use the 'include' parameter to get tools/resources/prompts/resource_templates in the response, saving round trips.",
-      inputSchema: {
+      inputSchema: z.object({
         command: z.string().describe("Command to run (e.g. 'node', 'python', 'npx')"),
         args: z
           .array(z.string())
           .optional()
           .describe("Arguments to pass (e.g. ['src/index.js'] or ['-y', 'some-server'])"),
         env: z
-          .record(z.string())
+          .record(z.string(), z.string())
           .optional()
           .describe("Extra environment variables for the child process"),
         include: z
@@ -445,9 +493,17 @@ export async function startServer(opts: ServerOptions): Promise<void> {
             "Ask the target server to set its logging verbosity (requires the server's " +
               "'logging' capability). Persisted across reconnect_to_mcp.",
           ),
-      },
+        protocol: z
+          .string()
+          .optional()
+          .describe(
+            "Handshake to open with: 'legacy' (default; the 2025 initialize), 'auto' (probe for " +
+              "2026-07-28 and fall back), or a revision to pin such as '2026-07-28' (no fallback — " +
+              "use this to prove the modern path of a server that serves both eras). Persisted across reconnect_to_mcp.",
+          ),
+      }),
     },
-    async ({ command, args, env, include, summary, roots, log_level }) => {
+    async ({ command, args, env, include, summary, roots, log_level, protocol }) => {
       if (target?.connected) {
         return {
           content: [
@@ -470,6 +526,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         target = new TargetManager(command, args ?? [], {
           env,
           transport: opts.transport,
+          protocol: protocol ?? opts.protocol,
         });
         setupTargetListeners(target);
         // Roots must be in place before connect: a server may ask for them as
@@ -484,7 +541,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
             alreadyFormatted: true,
           });
         }
-        cachedSpawnConfig = { command, args: args ?? [], env };
+        cachedSpawnConfig = { command, args: args ?? [], env, protocol };
         const contextNotes = await applyClientContext(target);
 
         const status = target.getStatus();
@@ -504,12 +561,14 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         const lines = [
           `Connected to MCP server (PID: ${status.pid})`,
           `Command: ${command} ${(args ?? []).join(" ")}`,
+          describeProtocolLine(target),
           `Capabilities: ${capSummary.join(", ") || "none"}`,
           `Tools available: ${toolCount}`,
           "",
           "Use call_mcp_primitive to call tools, read resources, or get prompts.",
           "Use reconnect_to_mcp after editing your server's code.",
           ...contextNotes,
+          ...conductWarnings(target),
         ];
 
         // Compute diff if we have a previous snapshot and include was requested
@@ -591,7 +650,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         "disconnect_from_mcp + connect_to_mcp with one call, reuses the command it " +
         "was already started with, and diffs the tools/resources/prompts against the " +
         "previous run so you can see the effect of your edit.",
-      inputSchema: {
+      inputSchema: z.object({
         include: z
           .array(z.enum(["tools", "resources", "resource_templates", "prompts"]))
           .optional()
@@ -610,9 +669,16 @@ export async function startServer(opts: ServerOptions): Promise<void> {
           .enum(["debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"])
           .optional()
           .describe("Change the target's log level. Omit to keep the one already configured."),
-      },
+        protocol: z
+          .string()
+          .optional()
+          .describe(
+            "Change the handshake for this restart ('legacy', 'auto', or a pin like '2026-07-28'). " +
+              "Omit to keep the one the server was connected with.",
+          ),
+      }),
     },
-    async ({ include, summary, roots, log_level }) => {
+    async ({ include, summary, roots, log_level, protocol }) => {
       if (!cachedSpawnConfig) {
         return {
           content: [
@@ -628,6 +694,8 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       }
 
       const { command, args, env } = cachedSpawnConfig;
+      if (protocol !== undefined) cachedSpawnConfig.protocol = protocol;
+      const protocolToUse = cachedSpawnConfig.protocol ?? opts.protocol;
 
       if (roots !== undefined) configuredRoots = roots;
       if (log_level !== undefined) configuredLogLevel = log_level;
@@ -639,7 +707,11 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       }
       await retireTarget();
 
-      target = new TargetManager(command, args, { env, transport: opts.transport });
+      target = new TargetManager(command, args, {
+        env,
+        transport: opts.transport,
+        protocol: protocolToUse,
+      });
       setupTargetListeners(target);
       await applyRoots(target);
       try {
@@ -658,7 +730,9 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       const lines = [
         `Reconnected to MCP server (PID: ${status.pid})`,
         `Command: ${command} ${args.join(" ")}`,
+        describeProtocolLine(target),
         ...contextNotes,
+        ...conductWarnings(target),
       ];
 
       const currentSnapshot = await takeSnapshot();
@@ -699,15 +773,30 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       const status = target.getStatus();
       const caps = target.getServerCapabilities() ?? {};
 
+      const subs = target.getSubscriptionInfo();
+      const honored = Object.entries(subs.listChangedHonored ?? {})
+        .filter(([, v]) => v === true)
+        .map(([k]) => k);
       const lines = [
         `Connected: ${status.connected}`,
         `PID: ${status.pid}`,
         `Uptime: ${status.uptime.toFixed(1)}s`,
         `Command: ${status.command} ${status.args.join(" ")}`,
+        describeProtocolLine(target),
         `Capabilities: ${Object.keys(caps).join(", ") || "none"}`,
         `Stderr lines: ${status.stderrLineCount}`,
         `Last response: ${status.lastResponseTime ? new Date(status.lastResponseTime).toISOString() : "none"}`,
       ];
+      if (subs.listChangedRequested) {
+        lines.push(
+          `list_changed stream: requested ${Object.keys(subs.listChangedRequested).join(", ")}; ` +
+            `server honored ${honored.length > 0 ? honored.join(", ") : "none"}`,
+        );
+      }
+      if (subs.resourceUris.length > 0) {
+        lines.push(`Resource subscriptions: ${subs.resourceUris.join(", ")}`);
+      }
+      lines.push(...conductWarnings(target));
 
       return { content: [{ type: "text" as const, text: lines.join("\n") }] };
     },
@@ -723,7 +812,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         "List tools, resources, resource templates, and/or prompts on the connected MCP server. " +
         "Specify which types to include. Defaults to all available. " +
         "Use 'name' to filter to a specific item (e.g. describe a single tool's schema).",
-      inputSchema: {
+      inputSchema: z.object({
         type: z
           .array(z.enum(["tools", "resources", "resource_templates", "prompts"]))
           .optional()
@@ -753,7 +842,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
               "one list, so pass exactly one 'type' with it. Without a cursor every page is " +
               "fetched and the full catalog is returned.",
           ),
-      },
+      }),
     },
     async ({ type, name, summary, cursor }) => {
       if (!target?.connected) {
@@ -993,16 +1082,16 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         "If not connected, provide command/args and a connection will be opened automatically. " +
         "Use disconnect_after to tear down the connection when done, " +
         "or leave it open (default) for subsequent calls.",
-      inputSchema: {
+      inputSchema: z.object({
         // What to call
         type: z.enum(["tool", "resource", "prompt"]).describe("The MCP primitive type to invoke"),
         name: z.string().describe("Tool name, resource URI, or prompt name"),
         arguments: z
-          .record(z.unknown())
+          .record(z.string(), z.unknown())
           .optional()
           .describe("Arguments for the tool or prompt (not used for resources)"),
         args: z
-          .record(z.unknown())
+          .record(z.string(), z.unknown())
           .optional()
           .describe("Arguments for the tool or prompt (alias for 'arguments')"),
 
@@ -1015,9 +1104,15 @@ export async function startServer(opts: ServerOptions): Promise<void> {
               .optional()
               .describe("Arguments for the server command (e.g. ['src/index.js'])"),
             env: z
-              .record(z.string())
+              .record(z.string(), z.string())
               .optional()
               .describe("Extra environment variables for the server process"),
+            protocol: z
+              .string()
+              .optional()
+              .describe(
+                "Handshake to open with: 'legacy' (default), 'auto', or a pin like '2026-07-28'.",
+              ),
           })
           .optional()
           .describe(
@@ -1043,7 +1138,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
           .describe(
             "Max text response length before truncation for this call. Use -1 to disable truncation.",
           ),
-      },
+      }),
     },
     async ({
       type: primitiveType,
@@ -1063,6 +1158,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
           auto_connect?.command,
           auto_connect?.args,
           auto_connect?.env,
+          auto_connect?.protocol,
         );
         if (connectError) {
           return {
@@ -1181,6 +1277,10 @@ export async function startServer(opts: ServerOptions): Promise<void> {
                 meta.audio_saved = interceptionMeta.audioSaved;
                 meta.results_saved = interceptionMeta.resultsSaved;
                 meta.original_size_bytes = interceptionMeta.originalSizeBytes;
+                // Client input the call needed (elicitation / sampling / roots):
+                // server→client requests on a 2025-era connection, input_required
+                // rounds the SDK fulfilled on 2026-07-28.
+                meta.input_requests = interceptionMeta.inputRequests;
               }
               resultContent.unshift({
                 type: "text" as const,
@@ -1329,7 +1429,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         "Use this to verify your server actually emits what you think it does: " +
         "notifications travel outside the request/response flow, so a tool call result " +
         "will never show them.",
-      inputSchema: {
+      inputSchema: z.object({
         count: z.number().optional().describe("Return only the most recent N notifications."),
         method: z
           .string()
@@ -1345,7 +1445,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
             "Clear the buffer after reading. Useful to establish a clean baseline " +
               "before triggering the behavior you want to observe.",
           ),
-      },
+      }),
     },
     async ({ count, method, clear }) => {
       if (!target) {
@@ -1413,13 +1513,13 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         "notifications/resources/updated when it changes. Read those with " +
         "get_server_notifications. This is the only way to exercise a server's " +
         "subscription support from here.",
-      inputSchema: {
+      inputSchema: z.object({
         uri: z.string().describe("Resource URI to subscribe to"),
         unsubscribe: z
           .boolean()
           .optional()
           .describe("If true, unsubscribe from this URI instead of subscribing."),
-      },
+      }),
     },
     async ({ uri, unsubscribe }) => {
       if (!target?.connected) {
@@ -1457,15 +1557,22 @@ export async function startServer(opts: ServerOptions): Promise<void> {
             content: [{ type: "text" as const, text: `Unsubscribed from "${uri}".` }],
           };
         }
-        await target.subscribeResource({ uri });
+        const outcome = await target.subscribeResource({ uri });
+        const how =
+          outcome.era === "modern"
+            ? (outcome.honoredFilter?.resourceSubscriptions ?? []).includes(uri)
+              ? `Opened a subscriptions/listen stream for "${uri}"; the server honored the URI. `
+              : `Opened a subscriptions/listen stream, but the server did NOT honor "${uri}" in its ` +
+                "acknowledgement — it will never send updates for it. Check the server's subscription filter handling. "
+            : `Subscribed to "${uri}" (resources/subscribe). `;
         return {
           content: [
             {
               type: "text" as const,
               text:
-                `Subscribed to "${uri}". Trigger a change, then call ` +
-                "get_server_notifications(method='resources/updated') to confirm the " +
-                "server sent the update.",
+                how +
+                "Trigger a change, then call get_server_notifications(method='resources/updated') " +
+                "to confirm the server sent the update.",
             },
           ],
         };
@@ -1489,14 +1596,14 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         "When a response is truncated, its note includes a result id (e.g. 'r2') — " +
         "pass that id here with an offset to page through the full payload without " +
         "needing filesystem access. Ids are per-session.",
-      inputSchema: {
+      inputSchema: z.object({
         id: z.string().describe("Result id from the truncation note (e.g. 'r2')"),
         offset: z.number().optional().describe("Character offset to start from (default 0)"),
         length: z
           .number()
           .optional()
           .describe("Max characters to return (default: the configured max text length)"),
-      },
+      }),
     },
     async ({ id, offset, length }) => {
       const defaultLength = opts.maxTextLength ?? 50_000;
@@ -1539,12 +1646,12 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       description:
         "Get recent stderr output from the target MCP server. " +
         "Useful for debugging crashes, startup failures, or unexpected behavior.",
-      inputSchema: {
+      inputSchema: z.object({
         lines: z
           .number()
           .optional()
           .describe("Number of recent lines to return (default: all, max 200)"),
-      },
+      }),
     },
     async ({ lines }) => {
       // Falls back to the retired target's buffer: the most valuable stderr is
@@ -1566,15 +1673,19 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         };
       }
 
-      if (stderrLines.length === 0) {
+      const conduct = target ? conductWarnings(target) : [];
+
+      if (stderrLines.length === 0 && conduct.length === 0) {
         return {
           content: [{ type: "text" as const, text: "No stderr output captured." }],
         };
       }
 
-      return {
-        content: [{ type: "text" as const, text: stderrLines.join("\n") }],
-      };
+      const text = [
+        stderrLines.length > 0 ? stderrLines.join("\n") : "No stderr output captured.",
+        ...conduct,
+      ].join("\n");
+      return { content: [{ type: "text" as const, text }] };
     },
   );
 
@@ -1586,20 +1697,29 @@ export async function startServer(opts: ServerOptions): Promise<void> {
         "Attempts to spawn the target MCP server, connect to it, check its tools, " +
         "collect any stderr/errors, and shut it down cleanly. " +
         "Returns pass/fail status and captured diagnostics.",
-      inputSchema: {
+      inputSchema: z.object({
         command: z.string().describe("Command to run (e.g. 'node', 'python')"),
         args: z.array(z.string()).optional().describe("Arguments to pass"),
-        env: z.record(z.string()).optional().describe("Extra environment variables"),
+        env: z.record(z.string(), z.string()).optional().describe("Extra environment variables"),
         deep: z
           .boolean()
           .optional()
           .describe("If true, performs deep protocol and schema compliance checks"),
-      },
+        protocol: z
+          .string()
+          .optional()
+          .describe(
+            "Handshake to validate with: 'legacy' (default), 'auto', or a pin like '2026-07-28'.",
+          ),
+      }),
     },
-    async ({ command, args, env, deep }) => {
+    async ({ command, args, env, deep, protocol }) => {
+      const protocolToUse = protocol ?? opts.protocol;
       if (deep) {
         try {
-          const report = await validateProtocol(command, args ?? [], env);
+          const report = await validateProtocol(command, args ?? [], env, {
+            protocol: protocolToUse,
+          });
           const checksSummary = report.checks
             .map((c) => `[${c.status}] ${c.name}: ${c.message || "(no message)"}`)
             .join("\n");
@@ -1630,6 +1750,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
       const tempTarget = new TargetManager(command, args ?? [], {
         env,
         transport: opts.transport,
+        protocol: protocolToUse,
       });
       const stderrLines: string[] = [];
       tempTarget.on("stderr", (text: string) => {
@@ -1658,6 +1779,7 @@ export async function startServer(opts: ServerOptions): Promise<void> {
                 `Validation Result: SUCCESS\n` +
                 `Server Name: ${ver?.name ?? "unknown"}\n` +
                 `Server Version: ${ver?.version ?? "unknown"}\n` +
+                `${describeProtocolLine(tempTarget)}\n` +
                 `Tools Count: ${toolsResult.tools.length}\n` +
                 `Capabilities: ${Object.keys(caps).join(", ") || "none"}\n\n` +
                 `Captured Stderr:\n${stderrLines.join("\n") || "(none)"}`,

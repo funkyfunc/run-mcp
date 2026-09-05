@@ -1,6 +1,6 @@
 import { Ajv2020 } from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
-import { TargetManager } from "./target-manager.js";
+import { TargetManager, type ProtocolEra, type ProtocolMode } from "./target-manager.js";
 import schema from "./schema/mcp-schema.json" with { type: "json" };
 
 /**
@@ -75,6 +75,10 @@ export interface ValidationReport {
   capabilities: string[];
   /** Number of tools returned by tools/list, when it succeeded. */
   toolCount?: number;
+  /** Era the connection negotiated: "legacy" (2025 initialize) or "modern" (2026-07-28). */
+  protocolEra?: ProtocolEra;
+  /** The negotiated protocol revision. */
+  protocolVersion?: string;
 }
 
 /** Facts gathered along the way, reported alongside the checks. */
@@ -83,6 +87,8 @@ interface ReportFacts {
   serverVersion?: string;
   capabilities: string[];
   toolCount?: number;
+  protocolEra?: ProtocolEra;
+  protocolVersion?: string;
 }
 
 export async function validateProtocol(
@@ -95,6 +101,8 @@ export async function validateProtocol(
      * `validate --session`). The caller keeps ownership: it is never closed here.
      */
     target?: TargetManager;
+    /** Handshake to open with when spawning (`--protocol`). */
+    protocol?: ProtocolMode;
   } = {},
 ): Promise<ValidationReport> {
   const checks: ValidationCheck[] = [];
@@ -145,7 +153,7 @@ export async function validateProtocol(
         "Validated against the already-running session target (handshake completed earlier).",
       );
     } else {
-      target = new TargetManager(command, args, { env });
+      target = new TargetManager(command, args, { env, protocol: options.protocol });
 
       try {
         await Promise.race([
@@ -168,6 +176,25 @@ export async function validateProtocol(
       }
     }
 
+    // 1b. Which era and revision we are actually talking
+    const protocol = target.getProtocolInfo();
+    facts.protocolEra = protocol.era ?? undefined;
+    facts.protocolVersion = protocol.version ?? undefined;
+    if (protocol.era === "modern") {
+      addCheck(
+        "protocol_era",
+        "PASS",
+        `Connected on protocol ${protocol.version} (modern era: server/discover, per-request envelope, subscriptions/listen).`,
+      );
+    } else {
+      addCheck(
+        "protocol_era",
+        "PASS",
+        `Connected on protocol ${protocol.version ?? "unknown"} (legacy era: initialize handshake). ` +
+          "If the server also serves 2026-07-28, validate that path with --protocol auto or --protocol 2026-07-28.",
+      );
+    }
+
     // 2. Server Implementation Metadata Check
     const versionInfo = target.getServerVersion();
     if (versionInfo) {
@@ -188,6 +215,14 @@ export async function validateProtocol(
           `Server implementation format is invalid: ${errors}`,
         );
       }
+    } else if (protocol.era === "modern") {
+      // On 2026-07-28 identity travels as a _meta stamp on every response; a
+      // server that omits it is legal but anonymous to every client.
+      addCheck(
+        "implementation_metadata",
+        "WARN",
+        "Server stamps no identity (_meta['io.modelcontextprotocol/serverInfo']); clients will show it as anonymous.",
+      );
     } else {
       addCheck(
         "implementation_metadata",
@@ -528,6 +563,45 @@ export async function validateProtocol(
       }
     }
 
+    // 6b. Modern-era surfaces: the discover advertisement, cache hints, and
+    // whether the server honored the list_changed stream it advertised.
+    if (protocol.era === "modern" && protocol.discover) {
+      const discover = protocol.discover as unknown as {
+        supportedVersions?: string[];
+        ttlMs?: number;
+        cacheScope?: string;
+      };
+      addCheck(
+        "discover_result",
+        "PASS",
+        `server/discover offers ${(discover.supportedVersions ?? []).join(", ") || "no versions"}; ` +
+          `cache hints ttlMs=${discover.ttlMs ?? 0}, cacheScope=${discover.cacheScope ?? "private"}.`,
+      );
+      const subs = target.getSubscriptionInfo();
+      if (subs.listChangedRequested) {
+        const requested = Object.keys(subs.listChangedRequested).sort();
+        const honored = Object.entries(subs.listChangedHonored ?? {})
+          .filter(([, v]) => v === true)
+          .map(([k]) => k)
+          .sort();
+        const missing = requested.filter((k) => !honored.includes(k));
+        if (missing.length === 0) {
+          addCheck(
+            "list_changed_stream",
+            "PASS",
+            `subscriptions/listen honored every advertised list_changed type (${requested.join(", ")}).`,
+          );
+        } else {
+          addCheck(
+            "list_changed_stream",
+            "WARN",
+            `Server advertises listChanged but its subscriptions/listen did not honor: ${missing.join(", ")}. ` +
+              "Clients will never be told those lists changed.",
+          );
+        }
+      }
+    }
+
     // 7. Stderr Audit
     const stderrLines = target.getStderrLines();
     const stderrChecks = stderrLines.join("\n");
@@ -544,6 +618,40 @@ export async function validateProtocol(
       );
     } else {
       addCheck("stderr_warnings", "PASS", "No fatal runtime crash logs detected in server stderr.");
+    }
+
+    // 8. stdout is the protocol channel. The SDK skips non-JSON lines, so a
+    // server that logs to stdout still "works" here — and breaks under any
+    // stricter client. That makes it a FAIL, not a warning.
+    const noise = target.getStdoutNoise();
+    if (noise.length > 0) {
+      const sample = noise
+        .slice(0, 3)
+        .map((l) => JSON.stringify(l))
+        .join(", ");
+      addCheck(
+        "stdout_protocol_channel",
+        "FAIL",
+        `Server wrote ${target.getStatus().stdoutNoiseCount} non-JSON line(s) to stdout (e.g. ${sample}). ` +
+          "stdout carries JSON-RPC; log to stderr instead.",
+      );
+    } else {
+      addCheck("stdout_protocol_channel", "PASS", "Server wrote only JSON-RPC to stdout.");
+    }
+
+    const transportErrors = target.getTransportErrors();
+    if (transportErrors.length > 0) {
+      addCheck(
+        "transport_errors",
+        "WARN",
+        `The transport reported ${transportErrors.length} error(s): ` +
+          transportErrors
+            .slice(0, 3)
+            .map((e) => e.message)
+            .join(" | "),
+      );
+    } else {
+      addCheck("transport_errors", "PASS", "No transport-level errors.");
     }
   } catch (err: any) {
     addCheck(

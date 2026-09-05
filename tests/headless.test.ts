@@ -110,11 +110,13 @@ describe("headless: call", () => {
     expect(result.content[0].text).toBe("raw test");
   }, 15_000);
 
-  it("exits 1 when calling nonexistent tool", async () => {
-    const { stderr, exitCode } = await runCli(["call", "nonexistent_tool_xyz", ...TARGET]);
+  it("exits 64 for an unknown tool, listing the real ones with a suggestion", async () => {
+    const { stderr, exitCode } = await runCli(["call", "gret", "name=x", ...TARGET]);
 
-    expect(exitCode).toBe(1);
-    expect(stderr.toLowerCase()).toContain("error");
+    expect(exitCode).toBe(64);
+    expect(stderr).toContain('Tool "gret" not found');
+    expect(stderr).toContain('Did you mean "greet"?');
+    expect(stderr).toContain("Available tools:");
   }, 15_000);
 
   it("exits 65 with invalid JSON args", async () => {
@@ -613,6 +615,122 @@ describe("headless: session reconnect after an edit", () => {
   }, 60_000);
 });
 
+describe("headless: protocol eras", () => {
+  it("connects on the 2025 era by default and reports it", async () => {
+    const { stdout, stderr, exitCode } = await runCli(["validate", "--json", ...TARGET]);
+    expect(exitCode).toBe(0);
+    const report = JSON.parse(stdout);
+    expect(report.protocolEra).toBe("legacy");
+    expect(report.protocolVersion).toBe("2025-11-25");
+    expect(stderr).not.toContain("modern");
+  }, 20_000);
+
+  it("pins 2026-07-28 and runs the modern-era checks", async () => {
+    const { stdout, exitCode } = await runCli([
+      "validate",
+      "--deep",
+      "--json",
+      "--protocol",
+      "2026-07-28",
+      ...TARGET,
+    ]);
+    expect(exitCode).toBe(0);
+    const report = JSON.parse(stdout);
+    expect(report.protocolEra).toBe("modern");
+    expect(report.protocolVersion).toBe("2026-07-28");
+    expect(report.toolCount).toBe(16);
+    const byName = Object.fromEntries(report.checks.map((c: any) => [c.name, c]));
+    expect(byName.discover_result.status).toBe("PASS");
+    expect(byName.discover_result.message).toContain("2026-07-28");
+    expect(byName.list_changed_stream.status).toBe("PASS");
+    expect(byName.implementation_metadata.message).toContain("mock-mcp-server");
+  }, 25_000);
+
+  it("auto negotiates the modern era when the server offers it", async () => {
+    const { stderr, exitCode } = await runCli(["list-tools", "--protocol", "auto", ...TARGET]);
+    expect(exitCode).toBe(0);
+    expect(stderr).toContain("protocol 2026-07-28 (modern era)");
+  }, 20_000);
+
+  it("coaches when a modern-only server refuses the legacy handshake", async () => {
+    const legacy = await runCli(["list-tools", "--env", "MOCK_LEGACY=reject", ...TARGET]);
+    expect(legacy.exitCode).toBe(69);
+    expect(legacy.stderr).toContain("Unsupported protocol version");
+    expect(legacy.stderr).toContain("--protocol auto");
+
+    const auto = await runCli([
+      "list-tools",
+      "--protocol",
+      "auto",
+      "--env",
+      "MOCK_LEGACY=reject",
+      ...TARGET,
+    ]);
+    expect(auto.exitCode).toBe(0);
+    expect(auto.stderr).toContain("modern era");
+  }, 30_000);
+
+  it("rejects a malformed --protocol value", async () => {
+    const { stderr, exitCode } = await runCli(["list-tools", "--protocol", "soon", ...TARGET]);
+    expect(exitCode).toBe(64);
+    expect(stderr).toContain("--protocol expects");
+  }, 15_000);
+
+  it("answers input_required deterministically and reports it, on both eras", async () => {
+    for (const extra of [[], ["--protocol", "2026-07-28"]]) {
+      const { stdout, exitCode } = await runCli([
+        "call",
+        "request_elicitation",
+        "--raw",
+        ...extra,
+        ...TARGET,
+      ]);
+      expect(exitCode).toBe(0);
+      const envelope = JSON.parse(stdout);
+      // Headless has no human: elicitation is declined, and the call still completes.
+      expect(envelope.content[0].text).toContain('"action":"decline"');
+      expect(envelope.input_requests).toEqual({ elicitation: 1, sampling: 0, roots: 0, total: 1 });
+      expect(envelope.protocol).toBe(extra.length ? "2026-07-28" : "2025-11-25");
+    }
+  }, 40_000);
+});
+
+describe("headless: stdout is the protocol channel", () => {
+  // A server that logs to stdout: the SDK skips the lines, run-mcp must not.
+  const noisy = [
+    "--",
+    "node",
+    "-e",
+    `console.log('Starting up...'); console.log('debug: x'); import(${JSON.stringify(
+      resolve(import.meta.dirname, "fixtures/dist/mock-server.js"),
+    )})`,
+  ];
+
+  it("fails validate on stdout pollution and names the lines", async () => {
+    const { stdout, exitCode } = await runCli(["validate", "--deep", "--json", ...noisy]);
+    expect(exitCode).toBe(1);
+    const report = JSON.parse(stdout);
+    const check = report.checks.find((c: any) => c.name === "stdout_protocol_channel");
+    expect(check.status).toBe("FAIL");
+    expect(check.message).toContain("2 non-JSON line(s)");
+    expect(check.message).toContain("Starting up...");
+  }, 20_000);
+
+  it("carries the lines in call --raw and warns on stderr", async () => {
+    const { stdout, stderr, exitCode } = await runCli([
+      "call",
+      "echo",
+      "text=hi",
+      "--raw",
+      ...noisy,
+    ]);
+    expect(exitCode).toBe(0);
+    const envelope = JSON.parse(stdout);
+    expect(envelope.stdout_noise).toEqual(["Starting up...", "debug: x"]);
+    expect(stderr).toContain("Warning: The server wrote 2 non-JSON line(s) to stdout");
+  }, 20_000);
+});
+
 describe("headless: session hygiene", () => {
   it("a server that dies on the first sessioned call reports its stderr and leaves no session", async () => {
     const { STARTUP_CRASH_CMD, STARTUP_CRASH_ARGS } = await import("./helpers.js");
@@ -763,6 +881,39 @@ describe("headless: session hygiene", () => {
       expect(changed.exitCode).toBe(64);
       expect(changed.stderr).toContain("env differs for: RUN_MCP_SESSION_SECRET");
       expect(changed.stderr).not.toContain("leaked-value-xyz");
+    } finally {
+      await runCli(["close-session", session]);
+    }
+  }, 30_000);
+
+  it("records the protocol a session was started with and refuses a different one", async () => {
+    const session = `proto-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    try {
+      const first = await runCli([
+        "list-tools",
+        "--session",
+        session,
+        "--protocol",
+        "2026-07-28",
+        ...TARGET,
+      ]);
+      expect(first.exitCode).toBe(0);
+      const listed = JSON.parse((await runCli(["sessions"])).stdout);
+      expect(listed.find((s: any) => s.name === session).protocol).toBe("2026-07-28");
+
+      const attach = await runCli(["call", "echo", "text=hi", "--session", session]);
+      expect(attach.exitCode).toBe(0);
+      const other = await runCli([
+        "call",
+        "echo",
+        "text=x",
+        "--session",
+        session,
+        "--protocol",
+        "legacy",
+      ]);
+      expect(other.exitCode).toBe(64);
+      expect(other.stderr).toContain("running protocol: 2026-07-28");
     } finally {
       await runCli(["close-session", session]);
     }

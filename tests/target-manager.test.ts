@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { TargetManager } from "../src/target-manager.js";
+import { describeConnectFailure, parseProtocolMode, TargetManager } from "../src/target-manager.js";
 import { MOCK_SERVER_ARGS, MOCK_SERVER_CMD, waitFor } from "./helpers.js";
 
 process.env.TSX_DISABLE_CACHE = "1";
@@ -23,6 +23,92 @@ afterEach(async () => {
 // ═══════════════════════════════════════════════════════════════════════════
 // Connection lifecycle
 // ═══════════════════════════════════════════════════════════════════════════
+
+describe("parseProtocolMode / describeConnectFailure (pure)", () => {
+  it("accepts legacy, auto, and a dated pin; rejects anything else with coaching", () => {
+    expect(parseProtocolMode("legacy")).toBe("legacy");
+    expect(parseProtocolMode("auto")).toBe("auto");
+    expect(parseProtocolMode("2026-07-28")).toBe("2026-07-28");
+    expect(() => parseProtocolMode("modern")).toThrow("--protocol expects");
+    expect(() => parseProtocolMode("2026")).toThrow('got "2026"');
+  });
+
+  it("turns the SDK's era errors into the next thing to try", () => {
+    const refused = describeConnectFailure(
+      Object.assign(new Error("Unsupported protocol version: 2025-11-25"), { code: -32022 }),
+      "node",
+    );
+    expect(refused.hint).toContain("--protocol auto");
+    const pinMiss = describeConnectFailure(
+      Object.assign(new Error("Version negotiation failed"), { code: "ERA_NEGOTIATION_FAILED" }),
+      "node",
+    );
+    expect(pinMiss.hint).toContain("pinned revision was not offered");
+    const missing = describeConnectFailure(new Error("spawn nope ENOENT"), "nope");
+    expect(missing.message).toContain('command "nope" not found');
+    expect(describeConnectFailure(new Error("boom"), "node").hint).toBeNull();
+  });
+});
+
+describe("protocol eras", () => {
+  it("negotiates the era it is asked for against a dual-era server", async () => {
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
+    await target.connect();
+    expect(target.getProtocolInfo()).toMatchObject({ era: "legacy", version: "2025-11-25" });
+    expect(target.getProtocolInfo().discover).toBeNull();
+    expect(target.getSubscriptionInfo().listChangedRequested).toBeNull();
+    await target.close();
+
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS, { protocol: "2026-07-28" });
+    await target.connect();
+    const info = target.getProtocolInfo();
+    expect(info).toMatchObject({ era: "modern", version: "2026-07-28" });
+    expect(info.discover?.supportedVersions).toContain("2026-07-28");
+    // The list_changed stream was opened for every advertised type and honored.
+    const subs = target.getSubscriptionInfo();
+    expect(subs.listChangedRequested).toEqual({
+      toolsListChanged: true,
+      promptsListChanged: true,
+      resourcesListChanged: true,
+    });
+    expect(subs.listChangedHonored).toMatchObject({ toolsListChanged: true });
+    expect(target.getStatus().protocolEra).toBe("modern");
+  }, 20_000);
+
+  it("subscribes per resource over listen on the modern era and tears it down", async () => {
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS, { protocol: "2026-07-28" });
+    await target.connect();
+    const outcome = await target.subscribeResource({ uri: "docs://readme" });
+    expect(outcome.era).toBe("modern");
+    expect(outcome.honoredFilter?.resourceSubscriptions).toEqual(["docs://readme"]);
+    expect(target.getSubscriptionInfo().resourceUris).toEqual(["docs://readme"]);
+
+    await target.callTool("touch_resource", { uri: "docs://readme" });
+    await waitFor(() =>
+      target!.getNotifications().some((n) => n.method === "notifications/resources/updated"),
+    );
+    await target.unsubscribeResource({ uri: "docs://readme" });
+    expect(target.getSubscriptionInfo().resourceUris).toEqual([]);
+  }, 20_000);
+
+  it("counts the client input a call needed", async () => {
+    target = new TargetManager(MOCK_SERVER_CMD, MOCK_SERVER_ARGS, { protocol: "2026-07-28" });
+    target.on("elicitation_request", ({ respond }) =>
+      respond({ action: "accept", content: { name: "Ada" } }),
+    );
+    await target.connect();
+    const result = await target.callTool("request_elicitation");
+    expect((result.content as any[])[0].text).toContain("Ada");
+    expect(target.getLastCallInputRequests()).toEqual({
+      elicitation: 1,
+      sampling: 0,
+      roots: 0,
+      total: 1,
+    });
+    await target.callTool("echo", { text: "plain" });
+    expect(target.getLastCallInputRequests().total).toBe(0);
+  }, 20_000);
+});
 
 describe("connection lifecycle", () => {
   it("connects to a target MCP server", async () => {

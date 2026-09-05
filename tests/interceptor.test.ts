@@ -13,6 +13,7 @@ function slowMockTarget(ms: number, response: Record<string, unknown>) {
     callTool: vi
       .fn()
       .mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve(response), ms))),
+    getLastCallInputRequests: () => ({ elicitation: 0, sampling: 0, roots: 0, total: 0 }),
   } as any;
 }
 

@@ -33,6 +33,33 @@ describe("Protocol Validator", () => {
     expect(report.toolCount).toBe(16);
   }, 15_000);
 
+  it("reports the era, and the modern-era surfaces when pinned to 2026-07-28", async () => {
+    const legacy = await validateProtocol(MOCK_SERVER_CMD, MOCK_SERVER_ARGS);
+    expect(legacy.protocolEra).toBe("legacy");
+    expect(legacy.protocolVersion).toBe("2025-11-25");
+    expect(legacy.checks.find((c) => c.name === "protocol_era")?.message).toContain(
+      "--protocol auto",
+    );
+    expect(legacy.checks.some((c) => c.name === "discover_result")).toBe(false);
+
+    const modern = await validateProtocol(MOCK_SERVER_CMD, MOCK_SERVER_ARGS, undefined, {
+      protocol: "2026-07-28",
+    });
+    expect(modern.status).toBe("PASS");
+    expect(modern.protocolEra).toBe("modern");
+    expect(modern.protocolVersion).toBe("2026-07-28");
+    expect(modern.serverName).toBe("mock-mcp-server");
+    const names = modern.checks.map((c) => c.name);
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "discover_result",
+        "list_changed_stream",
+        "stdout_protocol_channel",
+        "transport_errors",
+      ]),
+    );
+  }, 30_000);
+
   it("flags broken outputSchemas (invalid schema, required prop not in properties)", async () => {
     const scriptPath = join(tmpdir(), `bad-output-schema-server-${Date.now()}.mjs`);
     const code = `

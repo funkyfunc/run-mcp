@@ -22,9 +22,10 @@ import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
-import { TargetManager, type TransportMode } from "./target-manager.js";
+import { TargetManager, type ProtocolMode, type TransportMode } from "./target-manager.js";
 import { ResponseInterceptor } from "./interceptor.js";
 import {
+  answerClientInputHeadlessly,
   DEFAULT_HEADLESS_TIMEOUT_MS,
   executeOperation,
   type HeadlessOperation,
@@ -46,6 +47,8 @@ export interface SessionData {
   cwd: string;
   /** Extra env the target was spawned with (`--env`). */
   env: Record<string, string>;
+  /** Handshake the daemon opens with (`--protocol`); absent means legacy. */
+  protocol?: ProtocolMode;
   /** Epoch ms. */
   startedAt: number;
   /** Auto-close after this long without a request; absent = never. */
@@ -65,6 +68,7 @@ export interface SessionFailure {
 
 export interface SessionSpawnOptions {
   transport?: TransportMode;
+  protocol?: ProtocolMode;
   idleTimeoutMs?: number;
   env?: Record<string, string>;
 }
@@ -180,8 +184,13 @@ function differingEnvKeys(a: Record<string, string>, b: Record<string, string>):
  */
 export function describeSessionMismatch(
   name: string,
-  session: Pick<SessionData, "command" | "cwd" | "env">,
-  asked: { command?: string[]; cwd: string; env?: Record<string, string> },
+  session: Pick<SessionData, "command" | "cwd" | "env" | "protocol">,
+  asked: {
+    command?: string[];
+    cwd: string;
+    env?: Record<string, string>;
+    protocol?: ProtocolMode;
+  },
 ): string | null {
   const problems: string[] = [];
 
@@ -204,11 +213,18 @@ export function describeSessionMismatch(
     }
   }
 
+  if (asked.protocol && asked.protocol !== (session.protocol ?? "legacy")) {
+    problems.push(
+      `running protocol: ${session.protocol ?? "legacy"}`,
+      `asked protocol:   ${asked.protocol}`,
+    );
+  }
+
   if (problems.length === 0) return null;
   return [
     `Session "${name}" is already running a different server.`,
     ...problems.map((p) => `  ${p}`),
-    `Either omit the command (and --env) to use the running server, run \`run-mcp close-session ${name}\` first, ` +
+    `Either omit the command (and --env/--protocol) to use the running server, run \`run-mcp close-session ${name}\` first, ` +
       "or pick another session name.",
   ].join("\n");
 }
@@ -269,6 +285,7 @@ export async function spawnSessionDaemon(
   const binPath = resolve(import.meta.dirname, "./index.js");
   const daemonArgs = ["daemon", name];
   if (opts.transport) daemonArgs.push("--transport", opts.transport);
+  if (opts.protocol) daemonArgs.push("--protocol", opts.protocol);
   if (opts.idleTimeoutMs) daemonArgs.push("--idle-timeout-ms", String(opts.idleTimeoutMs));
   for (const [key, value] of Object.entries(opts.env ?? {})) {
     daemonArgs.push("--env", `${key}=${value}`);
@@ -342,7 +359,15 @@ export async function runSessionDaemon(
   const commandLine = targetCmd.join(" ");
   const startedAt = Date.now();
   const env = opts.env ?? {};
-  const spawnTarget = () => new TargetManager(command, args, { transport: opts.transport, env });
+  const spawnTarget = () => {
+    const t = new TargetManager(command, args, {
+      transport: opts.transport,
+      protocol: opts.protocol,
+      env,
+    });
+    answerClientInputHeadlessly(t);
+    return t;
+  };
 
   // Restrict the dir and files to the owner: the socket inside is the only
   // way to drive the target, and other local users must not find it.
@@ -376,6 +401,7 @@ export async function runSessionDaemon(
     command: targetCmd,
     cwd: process.cwd(),
     env,
+    ...(opts.protocol && opts.protocol !== "legacy" ? { protocol: opts.protocol } : {}),
     startedAt,
     ...(idleTimeoutMs ? { idleTimeoutMs } : {}),
   });
@@ -427,7 +453,13 @@ export async function runSessionDaemon(
     const current = await takeSnapshot(next);
     const changes = computeSnapshotDiff(previous, current).filter((line) => line !== "");
     return {
-      result: { reconnected: true, pid: next.getStatus().pid, command: commandLine, changes },
+      result: {
+        reconnected: true,
+        pid: next.getStatus().pid,
+        command: commandLine,
+        protocol: next.getProtocolInfo().version,
+        changes,
+      },
       hasError: false,
     };
   };

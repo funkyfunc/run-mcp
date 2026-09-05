@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { resolve } from "node:path";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { Client } from "@modelcontextprotocol/client";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   MOCK_SERVER_ARGS,
@@ -266,6 +266,55 @@ describe("server: notifications and subscriptions", () => {
     });
     expect(getText(notes)).toContain("docs://readme");
   }, 30_000);
+
+  it("on 2026-07-28 subscribes through a listen stream and reports what the server honored", async () => {
+    const c = await startRunMcpServer();
+    const connected = await connectToMockServer(c, { protocol: "2026-07-28" });
+    expect(getText(connected)).toContain("Protocol: 2026-07-28 (modern era");
+
+    const sub = await c.callTool({
+      name: "subscribe_to_resource",
+      arguments: { uri: "docs://config" },
+    });
+    expect(sub.isError).toBeFalsy();
+    expect(getText(sub)).toContain("subscriptions/listen");
+    expect(getText(sub)).toContain("honored the URI");
+
+    await c.callTool({
+      name: "call_mcp_primitive",
+      arguments: { type: "tool", name: "touch_resource", arguments: { uri: "docs://config" } },
+    });
+    const notes = await c.callTool({
+      name: "get_server_notifications",
+      arguments: { method: "resources/updated" },
+    });
+    expect(getText(notes)).toContain("docs://config");
+
+    const status = await c.callTool({ name: "mcp_server_status", arguments: {} });
+    expect(getText(status)).toContain("list_changed stream: requested");
+    expect(getText(status)).toContain("server honored toolsListChanged");
+    expect(getText(status)).toContain("Resource subscriptions: docs://config");
+  }, 30_000);
+
+  it("reports how much client input a call needed, on both eras", async () => {
+    for (const protocol of ["legacy", "2026-07-28"]) {
+      const c = await startRunMcpServer();
+      // The host (this test client) declares no elicitation capability, so the
+      // forwarded request fails and the server answers accordingly — what
+      // matters here is that run-mcp counted the request.
+      await connectToMockServer(c, { protocol });
+      const result = await c.callTool({
+        name: "call_mcp_primitive",
+        arguments: { type: "tool", name: "what_roots", include_metadata: true },
+      });
+      const meta = JSON.parse(getText(result).replace("--- metadata ---\n", ""));
+      expect(meta.input_requests.roots).toBe(1);
+      expect(meta.input_requests.total).toBe(1);
+      expect((result.content as any[])?.[1]?.text).toBe("[]");
+      await client!.close();
+      await transport!.close();
+    }
+  }, 40_000);
 
   it("reports plainly when nothing matched, with a hint", async () => {
     const c = await startRunMcpServer();
@@ -899,8 +948,7 @@ describe("server: agent experience improvements", () => {
 
     // Listen for logging notifications
     let logReceived: any = null;
-    const { LoggingMessageNotificationSchema } = await import("@modelcontextprotocol/sdk/types.js");
-    c.setNotificationHandler(LoggingMessageNotificationSchema, (notification) => {
+    c.setNotificationHandler("notifications/message", (notification) => {
       logReceived = notification;
     });
 

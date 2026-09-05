@@ -521,6 +521,15 @@ async function cmdToolsCall(
     elapsed,
     toolName,
   });
+  const input = target.getLastCallInputRequests();
+  if (input.total > 0) {
+    const parts = [
+      input.elicitation ? `${input.elicitation} elicitation` : "",
+      input.sampling ? `${input.sampling} sampling` : "",
+      input.roots ? `${input.roots} roots` : "",
+    ].filter(Boolean);
+    console.log(pc.dim(`  Client input requested during this call: ${parts.join(", ")}`));
+  }
 
   const content = (result as any).content;
   if (Array.isArray(content)) {
@@ -1264,9 +1273,22 @@ async function cmdResourcesSubscribe(target: TargetManager, rest: string): Promi
   }
 
   try {
-    await target.subscribeResource({ uri });
+    const outcome = await target.subscribeResource({ uri });
     console.log(pc.green(`  ✓ Subscribed to: ${uri}`));
-    console.log(pc.dim("  You'll see notifications when this resource changes."));
+    if (outcome.era === "modern") {
+      const honored = outcome.honoredFilter?.resourceSubscriptions ?? [];
+      if (honored.includes(uri)) {
+        console.log(pc.dim("  Opened a subscriptions/listen stream; the server honored the URI."));
+      } else {
+        console.log(
+          pc.yellow(
+            "  The server accepted the stream but did not honor this URI — it will never send updates for it.",
+          ),
+        );
+      }
+    } else {
+      console.log(pc.dim("  You'll see notifications when this resource changes."));
+    }
   } catch (err: any) {
     console.error(pc.red(`  ✗ Subscribe failed: ${err.message}`));
   }
@@ -1441,6 +1463,26 @@ function cmdStatus(target: TargetManager): void {
   console.log(`  ${pc.dim("Last response:")}  ${lastRespStr}`);
   console.log(`  ${pc.dim("Stderr lines:")}   ${s.stderrLineCount.toLocaleString()}`);
   console.log(`  ${pc.dim("Reconnects:")}     ${s.reconnectAttempts}/${s.maxReconnectAttempts}`);
+  console.log(
+    `  ${pc.dim("Protocol:")}       ${s.protocolVersion ?? "unknown"}${s.protocolEra ? pc.dim(` (${s.protocolEra} era)`) : ""}`,
+  );
+  const subs = target.getSubscriptionInfo();
+  if (subs.listChangedRequested) {
+    const honored = Object.entries(subs.listChangedHonored ?? {})
+      .filter(([, v]) => v === true)
+      .map(([k]) => k);
+    console.log(
+      `  ${pc.dim("Listen stream:")}  ${honored.length > 0 ? honored.join(", ") : pc.yellow("nothing honored")}`,
+    );
+  }
+  if (s.stdoutNoiseCount > 0) {
+    console.log(
+      `  ${pc.dim("stdout noise:")}   ${pc.yellow(`${s.stdoutNoiseCount} non-JSON line(s) — stdout is the protocol channel`)}`,
+    );
+  }
+  if (s.transportErrorCount > 0) {
+    console.log(`  ${pc.dim("Transport errs:")} ${pc.yellow(String(s.transportErrorCount))}`);
+  }
   console.log(`  ${pc.dim("Command:")}        ${s.command} ${s.args.join(" ")}`);
   console.log();
 }

@@ -1,7 +1,7 @@
 {
   "name": "run-mcp",
-  "version": "2.2.0",
-  "description": "A thin MCP client for humans and agents — run any Model Context Protocol server, call its tools, read its stderr, and reconnect after each edit. REPL, headless CLI, or an MCP server your agent drives. No client config edits, no restarts.",
+  "version": "3.0.0",
+  "description": "A thin MCP client for humans and agents \u2014 run any Model Context Protocol server, call its tools, read its stderr, and reconnect after each edit. Speaks both protocol eras (2025 and 2026-07-28). REPL, headless CLI, or an MCP server your agent drives. No client config edits, no restarts.",
   "homepage": "https://github.com/funkyfunc/run-mcp#readme",
   "bugs": {
     "url": "https://github.com/funkyfunc/run-mcp/issues"
@@ -61,16 +61,19 @@
   },
   "dependencies": {
     "@inquirer/prompts": "^8.3.2",
-    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@modelcontextprotocol/server": "^2.0.0",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "commander": "^13.1.0",
     "picocolors": "^1.1.1",
     "tree-kill": "^1.2.2",
-    "zod": "^3.24.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@modelcontextprotocol/node": "^2.0.0",
+    "@modelcontextprotocol/server-legacy": "^2.0.0",
     "@types/node": "^22.13.14",
     "eslint": "^10.6.0",
     "eslint-config-prettier": "^10.1.8",

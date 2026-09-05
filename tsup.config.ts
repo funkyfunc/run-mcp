@@ -11,7 +11,13 @@ export default defineConfig({
   clean: true,
   sourcemap: false,
   dts: false,
-  external: ["@modelcontextprotocol/sdk", "commander", "picocolors", "zod"],
+  external: [
+    "@modelcontextprotocol/client",
+    "@modelcontextprotocol/server",
+    "commander",
+    "picocolors",
+    "zod",
+  ],
   define: {
     PKG_VERSION: JSON.stringify(pkg.version),
   },

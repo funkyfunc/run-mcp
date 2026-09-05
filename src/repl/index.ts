@@ -4,8 +4,8 @@ import { colors as pc } from "../colors.js";
 import { ResponseInterceptor } from "../interceptor.js";
 import { groupToolsByPrefix, interpolateString } from "../parsing.js";
 import { type Snapshot, computeSnapshotDiff, takeSnapshot } from "../snapshot.js";
-import type { ServerNotification } from "../target-manager.js";
-import { TargetManager } from "../target-manager.js";
+import type { ProtocolMode, ServerNotification } from "../target-manager.js";
+import { describeConnectFailure, TargetManager } from "../target-manager.js";
 import { FileWatcher, resolveWatchRoot } from "../watcher.js";
 import {
   activeRl,
@@ -33,6 +33,7 @@ interface ReplOptions {
   openMedia?: boolean;
   watch?: boolean;
   transport?: "auto" | "http" | "sse";
+  protocol?: ProtocolMode;
   env?: Record<string, string>;
 }
 
@@ -144,6 +145,7 @@ export async function startRepl(targetCommand: string[], opts: ReplOptions): Pro
   const [command, ...args] = targetCommand;
   const target = new TargetManager(command, args, {
     transport: opts.transport,
+    protocol: opts.protocol,
     env: opts.env,
   });
   const interceptor = new ResponseInterceptor({
@@ -166,6 +168,22 @@ export async function startRepl(targetCommand: string[], opts: ReplOptions): Pro
     }
   });
 
+  // The SDK silently skips non-JSON stdout lines; the human wants to know.
+  target.on("stdout_noise", (line: string) => {
+    console.error(
+      pc.yellow(`  ⚠ stdout is the protocol channel, but the server wrote: `) +
+        sanitizeServerText(line),
+    );
+  });
+  target.on("transport_error", ({ message }: { message: string }) => {
+    console.error(pc.yellow(`  ⚠ transport error: ${sanitizeServerText(message)}`));
+  });
+  target.on("subscription_closed", ({ uri, reason }: { uri: string | null; reason: string }) => {
+    if (reason === "local") return;
+    const what = uri ? `subscription to ${uri}` : "list_changed stream";
+    console.log(pc.yellow(`\n  ⟳ The server closed the ${what} (${reason}).`));
+  });
+
   // Connect to target
   console.log(pc.cyan("⟳ Connecting to target MCP server..."));
   console.log(pc.dim(`  Command: ${targetCommand.join(" ")}`));
@@ -173,19 +191,24 @@ export async function startRepl(targetCommand: string[], opts: ReplOptions): Pro
   try {
     await target.connect();
   } catch (err: any) {
-    const msg = err.message ?? String(err);
-    if (msg.includes("ENOENT") || msg.includes("spawn")) {
-      console.error(pc.red(`✗ Failed to start server: command "${command}" not found.`));
-      console.error(pc.dim(`  Check that "${command}" is installed and in your PATH.`));
-    } else {
-      console.error(pc.red(`✗ Failed to connect: ${msg}`));
-      console.error(pc.dim(`  Check that the target command starts a valid MCP server on stdio.`));
+    const { message, hint } = describeConnectFailure(err, command);
+    console.error(pc.red(`✗ Failed to connect: ${message}`));
+    console.error(
+      pc.dim(`  ${hint ?? "Check that the target command starts a valid MCP server on stdio."}`),
+    );
+    const stderrLines = target.getStderrLines(20);
+    if (stderrLines.length > 0) {
+      console.error(pc.dim("  --- Target server stderr ---"));
+      for (const line of stderrLines) console.error(pc.dim(`  ${line}`));
     }
     process.exit(1);
   }
 
   const status = target.getStatus();
-  console.log(pc.green(`✓ Connected (PID: ${status.pid})`));
+  const protocolNote = status.protocolVersion
+    ? ` · protocol ${status.protocolVersion}${status.protocolEra ? ` (${status.protocolEra})` : ""}`
+    : "";
+  console.log(pc.green(`✓ Connected (PID: ${status.pid})`) + pc.dim(protocolNote));
 
   // Enable auto-reconnect for interactive mode (not script mode)
   if (!isScriptMode) {

@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
-import type { TargetManager } from "./target-manager.js";
+import type { InputRequestCounts, TargetManager } from "./target-manager.js";
 
 /** Matches a large base64 blob in text content (1000+ chars of base64 alphabet). */
 const BASE64_PATTERN = /^[A-Za-z0-9+/]{1000,}={0,2}$/;
@@ -33,6 +33,12 @@ export interface InterceptionMetadata {
   /** Oversized text results spilled to disk (navigable via read_result). */
   resultsSaved: number;
   originalSizeBytes: number;
+  /**
+   * Client input the server asked for during the call (elicitation, sampling,
+   * roots) — server→client requests on a 2025-era connection, `input_required`
+   * rounds fulfilled by the SDK on 2026-07-28.
+   */
+  inputRequests: InputRequestCounts;
 }
 
 interface ContentItem {
@@ -75,6 +81,7 @@ export class ResponseInterceptor {
       audioSaved: 0,
       resultsSaved: 0,
       originalSizeBytes: 0,
+      inputRequests: { elicitation: 0, sampling: 0, roots: 0, total: 0 },
     };
   }
 
@@ -216,6 +223,7 @@ export class ResponseInterceptor {
 
     // Race the actual call against a timeout
     const result = await this._raceWithTimeout(targetCall, timeout, name);
+    metadata.inputRequests = target.getLastCallInputRequests();
 
     // Process content array if present — modifies items in-place
     const content = (result as any).content;

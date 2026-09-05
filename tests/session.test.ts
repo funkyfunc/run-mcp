@@ -91,6 +91,26 @@ describe("assertValidSessionName", () => {
   });
 });
 
+describe("describeSessionMismatch (protocol)", () => {
+  it("accepts an attach with no protocol, or the same one, and refuses a different one", () => {
+    const modern = { ...running, protocol: "2026-07-28" as const };
+    expect(describeSessionMismatch("dev", modern, { cwd: "/proj/a" })).toBeNull();
+    expect(
+      describeSessionMismatch("dev", modern, { cwd: "/proj/a", protocol: "2026-07-28" }),
+    ).toBeNull();
+    const msg = describeSessionMismatch("dev", modern, { cwd: "/proj/a", protocol: "legacy" });
+    expect(msg).toContain("running protocol: 2026-07-28");
+    expect(msg).toContain("asked protocol:   legacy");
+    // A session recorded before protocols existed is a legacy session.
+    expect(
+      describeSessionMismatch("dev", running, { cwd: "/proj/a", protocol: "legacy" }),
+    ).toBeNull();
+    expect(describeSessionMismatch("dev", running, { cwd: "/proj/a", protocol: "auto" })).toContain(
+      "running protocol: legacy",
+    );
+  });
+});
+
 describe("getSocketPath", () => {
   it("lives inside the owner-only session directory (or a named pipe on Windows)", () => {
     const path = getSocketPath("dev");

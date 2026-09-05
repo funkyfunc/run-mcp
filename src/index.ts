@@ -18,7 +18,7 @@ import {
   SessionError,
   spawnSessionDaemon,
 } from "./session.js";
-import type { TransportMode } from "./target-manager.js";
+import { parseProtocolMode, type ProtocolMode, type TransportMode } from "./target-manager.js";
 import { validateProtocol, type ValidationReport } from "./validator.js";
 import { colors } from "./colors.js";
 
@@ -87,6 +87,22 @@ const TRANSPORT_OPTION = [
   "Transport for http(s) targets: auto (default), http (Streamable HTTP), sse",
 ] as const;
 
+const PROTOCOL_OPTION = [
+  "--protocol <mode>",
+  "Handshake to open with: legacy (default, the 2025 initialize), auto (probe for 2026-07-28, " +
+    "fall back to legacy), or a revision to pin such as 2026-07-28 (no fallback)",
+] as const;
+
+/** `--protocol` value → mode, or exit 64 on garbage. */
+function parseProtocolOption(value: string | undefined): ProtocolMode | undefined {
+  if (value === undefined) return undefined;
+  try {
+    return parseProtocolMode(value);
+  } catch (err: any) {
+    fail(`Error: ${err.message}`, 64);
+  }
+}
+
 // ─── Sessions (client side) ──────────────────────────────────────────────────
 
 interface SessionCallOpts extends HeadlessOptions {
@@ -107,6 +123,7 @@ async function handleHeadlessSession(
       command: activeTargetCommand,
       cwd: process.cwd(),
       env: opts.env,
+      protocol: opts.protocol,
     });
     if (mismatch) fail(`Error: ${mismatch}`, 64);
   } else {
@@ -120,6 +137,7 @@ async function handleHeadlessSession(
     }
     session = await spawnSessionDaemon(sessionName, activeTargetCommand, {
       transport: opts.transport,
+      protocol: opts.protocol,
       idleTimeoutMs: opts.idleTimeoutMs,
       env: opts.env,
     });
@@ -148,6 +166,7 @@ interface HeadlessOpts {
   mediaThreshold?: string;
   session?: string;
   transport?: string;
+  protocol?: string;
   idleTimeout?: string;
   env?: string[];
 }
@@ -161,6 +180,7 @@ function parseHeadlessOpts(opts: HeadlessOpts): SessionCallOpts {
     showStderr: opts.showStderr,
     mediaThresholdKb: opts.mediaThreshold ? Number.parseInt(opts.mediaThreshold, 10) : undefined,
     transport: opts.transport as TransportMode | undefined,
+    protocol: parseProtocolOption(opts.protocol),
     env: parseEnvOption(opts.env),
   };
 }
@@ -202,6 +222,7 @@ function registerHeadlessCommand(config: HeadlessCommandConfig) {
       "With --session: close the session after this long without a command (default: never)",
     )
     .option(...TRANSPORT_OPTION)
+    .option(...PROTOCOL_OPTION)
     .allowUnknownOption();
 
   for (const opt of config.extraOptions ?? []) {
@@ -340,6 +361,7 @@ program
   .argument("<session_name>", "Session name")
   .argument("[target_command...]", "Target server command")
   .option(...TRANSPORT_OPTION)
+  .option(...PROTOCOL_OPTION)
   .option(...ENV_OPTION, collect)
   .option("--idle-timeout-ms <ms>", "Exit after this long without a request")
   .description("Start run-mcp in background session daemon mode (spawned by --session)")
@@ -348,7 +370,7 @@ program
     async (
       sessionName: string,
       targetCommand: string[],
-      opts: { transport?: string; idleTimeoutMs?: string; env?: string[] },
+      opts: { transport?: string; protocol?: string; idleTimeoutMs?: string; env?: string[] },
     ) => {
       const targetCmd = activeTargetCommand ?? targetCommand;
       if (!targetCmd || targetCmd.length === 0) {
@@ -356,6 +378,7 @@ program
       }
       await runSessionDaemon(sessionName, targetCmd, {
         transport: opts.transport as TransportMode | undefined,
+        protocol: parseProtocolOption(opts.protocol),
         idleTimeoutMs: opts.idleTimeoutMs ? Number.parseInt(opts.idleTimeoutMs, 10) : undefined,
         env: parseEnvOption(opts.env),
       });
@@ -375,6 +398,7 @@ program
       command: s.command.join(" "),
       cwd: s.cwd,
       env_keys: Object.keys(s.env ?? {}),
+      protocol: s.protocol ?? "legacy",
       started_at: new Date(s.startedAt).toISOString(),
       uptime: formatUptime(now - s.startedAt),
       idle_timeout: s.idleTimeoutMs ? formatUptime(s.idleTimeoutMs) : null,
@@ -402,21 +426,31 @@ program
   .option("--json", "Format output as JSON")
   .option("--session <name>", "Validate the server already running behind a session")
   .option(...ENV_OPTION, collect)
+  .option(...PROTOCOL_OPTION)
   .allowUnknownOption()
   .action(
     async (
       targetCommand: string[],
-      opts: { deep?: boolean; json?: boolean; session?: string; env?: string[] },
+      opts: {
+        deep?: boolean;
+        json?: boolean;
+        session?: string;
+        env?: string[];
+        protocol?: string;
+      },
     ) => {
       const target = activeTargetCommand ?? targetCommand ?? [];
       if (!opts.session && target.length === 0) {
         fail("Error: Target server command must be provided.", 64);
       }
       const env = parseEnvOption(opts.env);
+      const protocol = parseProtocolOption(opts.protocol);
 
       /** Run the checks against a fresh spawn, or the session's live target. */
       const runValidation = async (): Promise<ValidationReport> => {
-        if (!opts.session) return validateProtocol(target[0], target.slice(1), env);
+        if (!opts.session) {
+          return validateProtocol(target[0], target.slice(1), env, { protocol });
+        }
         const session = await getSession(opts.session);
         if (!session) {
           fail(
@@ -476,6 +510,8 @@ program
                 success: true,
                 serverName: report.serverName ?? "unknown",
                 serverVersion: report.serverVersion ?? "unknown",
+                protocolVersion: report.protocolVersion ?? null,
+                protocolEra: report.protocolEra ?? null,
                 capabilities: report.capabilities,
                 toolCount: report.toolCount,
               },
@@ -487,6 +523,9 @@ program
           console.log(colors.green("Validation Result: SUCCESS"));
           console.log(
             `  Server: ${report.serverName ?? "unknown"} (version: ${report.serverVersion ?? "unknown"})`,
+          );
+          console.log(
+            `  Protocol: ${report.protocolVersion ?? "unknown"}${report.protocolEra ? ` (${report.protocolEra} era)` : ""}`,
           );
           console.log(`  Capabilities: ${report.capabilities.join(", ") || "none"}`);
           console.log(`  Tools: ${report.toolCount ?? 0}`);
@@ -543,6 +582,7 @@ program
     "Scan the current workspace and parent directories for any JSON files containing mcpServers",
   )
   .option(...TRANSPORT_OPTION)
+  .option(...PROTOCOL_OPTION)
   .option(
     "-w, --watch",
     "Watch the current directory for file changes and auto-reconnect (REPL Mode only)",
@@ -557,6 +597,7 @@ Examples:
   $ run-mcp -s test.txt -- node my-server.js      # Run a script in REPL mode
   $ run-mcp -- npx -y some-mcp-server             # Test an npx server
   $ run-mcp --env API_KEY=sk-123 -- node srv.js   # Pass an env var to the server
+  $ run-mcp --protocol 2026-07-28 -- node srv.js  # Pin the 2026-07-28 revision (test the modern path)
   $ run-mcp --out-dir ./test-output               # Agent mode with options
   $ run-mcp --out-dir ./screenshots -- node srv.js # REPL mode with options
 
@@ -648,10 +689,12 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
         watch?: boolean;
         scan?: boolean;
         transport?: string;
+        protocol?: string;
       },
     ) => {
       const target = activeTargetCommand ?? targetCommand ?? [];
       const cliEnv = parseEnvOption(opts.env);
+      const protocol = parseProtocolOption(opts.protocol);
       const replOptions = {
         script: opts.script,
         outDir: opts.outDir,
@@ -661,6 +704,7 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
         openMedia: opts.openMedia,
         watch: opts.watch,
         transport: opts.transport as TransportMode | undefined,
+        protocol,
       };
 
       // A target command starts the REPL.
@@ -680,6 +724,7 @@ Shortcuts: tl td tc ts rl rr rt rs ru pl pg (see help for details)`,
             : undefined,
           scan: opts.scan,
           transport: opts.transport as TransportMode | undefined,
+          protocol,
         });
         return;
       }

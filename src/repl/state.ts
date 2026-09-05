@@ -1,5 +1,5 @@
 import type { Interface as ReadlineInterface } from "node:readline";
-import type { ServerCapabilities } from "@modelcontextprotocol/sdk/types.js";
+import type { ServerCapabilities } from "@modelcontextprotocol/server";
 
 export interface CallRecord {
   toolName: string;

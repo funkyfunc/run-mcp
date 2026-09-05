@@ -82,7 +82,7 @@ All three interfaces feed into the same interception pipeline. See `README.md` f
 | Module                  | File(s)                 | Responsibility |
 | ----------------------- | ----------------------- | -------------- |
 | **CLI Entry**           | `src/index.ts`          | Commander-based CLI. Routes to REPL (target command provided), headless subcommands (`call`, `list-tools`, etc.), or Agent Server (no args / `--mcp`). Registers headless subcommands via `registerHeadlessCommand()`. |
-| **TargetManager**       | `src/target-manager.ts` | Spawns the target MCP server, manages MCP Client connection (stdio, or for http(s) URLs: Streamable HTTP with SSE fallback — `transport` option / `--transport`), auto-reconnect with loop protection, captures stderr, tracks process lifecycle. |
+| **TargetManager**       | `src/target-manager.ts` | Spawns the target MCP server, manages the MCP Client connection (stdio, or for http(s) URLs: Streamable HTTP with SSE fallback — `transport` option / `--transport`), negotiates the protocol era (`protocol` option / `--protocol`: legacy, auto, or a pinned revision; `getProtocolInfo()`), opens modern-era `subscriptions/listen` streams (`getSubscriptionInfo()`), counts client input per call (`getLastCallInputRequests()`), tees the child's stdout for non-JSON lines (`getStdoutNoise()`), captures transport errors (`getTransportErrors()`) and stderr, auto-reconnects with loop protection. `describeConnectFailure()` is the one place connect errors turn into coaching. |
 | **ResponseInterceptor** | `src/interceptor.ts`    | Wraps `callTool` with timeouts (timers cleared on settle), extracts base64 images/audio to disk, detects raw base64 text blobs, and spills oversized text to disk (full payload saved; reply keeps the head + a per-session result id, navigable via `read_result` / `readSpilledResult()`). Configurable via `InterceptorOptions`. |
 | **REPL**                | `src/repl/`             | Interactive readline interface across 8 files: `commands.ts` (command routing), `completer.ts` (tab completion), `history.ts` (persistent history), `index.ts` (entry point), `state.ts` (shared state + `KNOWN_COMMANDS`), `ui.ts` (formatting/output), `wizard.ts` (interactive arg scaffolding), `approval.ts` (pure sampling/elicitation approval decisions — unit-tested). `src/repl.ts` is a re-export barrel. |
 | **Agent Server**        | `src/server.ts`         | MCP Server exposing 12 tools (`connect_to_mcp`, `reconnect_to_mcp`, `disconnect_from_mcp`, `mcp_server_status`, `call_mcp_primitive`, `list_mcp_primitives`, `get_server_notifications`, `subscribe_to_resource`, `read_result`, `get_mcp_server_stderr`, `list_available_mcp_servers`, `validate_mcp_server`) for dynamic MCP server testing. Connect failures carry the target's stderr inline — see the failure-path note below. Uses `registerTool()` with Zod schemas. |
@@ -94,6 +94,48 @@ All three interfaces feed into the same interception pipeline. See `README.md` f
 | **Parsing**             | `src/parsing.ts`        | Pure functions: command line splitting, argument parsing, JSON formatting, HTTPie-style args (`key=val`, `key:=json`), Levenshtein distance, typo suggestions. |
 | **Config Scanner**      | `src/config-scanner.ts` | Discovers MCP server configurations across VS Code, Cursor, Claude Desktop, Windsurf, Copilot, Gemini CLI, and local workspace files. Powers `list_available_mcp_servers` and the interactive picker. |
 | **Colors**              | `src/colors.ts`         | Color constants and helpers using `picocolors` for consistent terminal styling across REPL and headless output. |
+
+### Protocol Eras (SDK v2) — Rules
+
+run-mcp is built on the MCP TypeScript SDK **v2** (`@modelcontextprotocol/client`
++ `@modelcontextprotocol/server`, zod 4). The SDK speaks two eras from one
+`Client`: **legacy** (every revision through 2025-11-25: `initialize`,
+unsolicited notifications, server→client requests) and **modern** (2026-07-28:
+`server/discover`, `subscriptions/listen`, in-band `input_required`). A server
+author using `serveStdio` serves both and cannot tell from inside a tool which
+one a client took — so run-mcp must make it visible and controllable.
+
+- **The default handshake is legacy, and stays legacy.** The SDK's own guidance
+  for spawn-per-invocation tools: `auto` costs a probe (a sibling process on
+  stdio) per connect and changes what a legacy server observes. `--protocol`
+  / the `protocol` parameter is the explicit opt-in. Never flip the default.
+- **Show the era everywhere a connection is described** (banner, status,
+  connect replies, validate, `--raw`). A legacy-connected caller is told how
+  to test the modern path. If you add a surface that describes a connection,
+  add the era.
+- **Every client-role surface needs both era paths.** Subscriptions:
+  `resources/subscribe` on legacy, a per-URI `listen` on modern (report
+  `honoredFilter`). List-changed notifications: unsolicited on legacy, the
+  stream opened in `_openListChangedStream()` on modern. Client input:
+  the same `setRequestHandler` registrations serve both; only the counting is
+  ours.
+- **Deprecated-but-served APIs are used on purpose.** Sampling, roots, and
+  logging are deprecated by SEP-2577 but served for at least twelve months;
+  run-mcp exists to exercise them. Each use carries an
+  `eslint-disable-next-line @typescript-eslint/no-deprecated` with that reason.
+  Don't remove the uses, and don't disable the rule globally — it is how we
+  learn about the next deprecation.
+- **stdout is the protocol channel.** The v2 transport skips non-JSON stdout
+  lines silently. `TargetManager._teeStdout()` reports them; `validate` fails
+  on them. Any new interface must surface `getStdoutNoise()` and
+  `getTransportErrors()`.
+- **The bundled JSON schema stays pinned to 2025-11-25.** The client hands
+  back neutral result shapes on every era; modern-era specifics are checked
+  through SDK accessors (`getDiscoverResult()`, `getServerVersion()`,
+  `getSubscriptionInfo()`), not by validating raw wire bytes.
+- run-mcp's **own** agent server serves the legacy era to its host on purpose
+  (every host speaks it; the host-facing relays would each need a modern
+  equivalent first). Revisit when a host negotiates modern.
 
 ### The Target's Environment
 
@@ -186,7 +228,7 @@ If an AI Agent is trying to provide parameters to a mock tool and accidentally l
 ### TypeScript & ESM
 
 - **Pure ESM** — `"type": "module"` in package.json. All imports use `.js` extensions (TypeScript resolves them to `.ts` at compile time).
-- **tsup for bundling** — Produces a single `dist/index.js` (~370KB; ajv, ajv-formats, and @inquirer/prompts are bundled in, while `@modelcontextprotocol/sdk`, `commander`, `picocolors`, and `zod` stay external). No source maps in dist.
+- **tsup for bundling** — Produces a single `dist/index.js` (ajv, ajv-formats, and @inquirer/prompts are bundled in, while `@modelcontextprotocol/client`, `@modelcontextprotocol/server`, `commander`, `picocolors`, and `zod` stay external). No source maps in dist.
 - **tsc for type-checking only** — `tsconfig.json` has `noEmit: true`. Run `npm run typecheck`.
 - **Strict mode** — `strict: true` in tsconfig. No implicit any.
 
@@ -299,7 +341,7 @@ All headless subcommands automatically get shared options (`--out-dir`, `--timeo
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `tests/parsing.test.ts`        | Pure parsing functions, JSON formatting, HTTPie-style args, Levenshtein distance, typo suggestions                                    |
 | `tests/interceptor.test.ts`    | Image extraction, audio extraction, base64 detection, truncation, timeout behavior (mocked, no child processes)                       |
-| `tests/target-manager.test.ts` | Full integration: spawns the mock server, tests connect/disconnect/listTools/callTool/auto-reconnect                          |
+| `tests/target-manager.test.ts` | Full integration: spawns the mock server, tests connect/disconnect/listTools/callTool/auto-reconnect, both protocol eras, listen subscriptions, input-request counting |
 | `tests/e2e.test.ts`            | End-to-end: TargetManager + ResponseInterceptor against the mock server                                                               |
 | `tests/server.test.ts`         | Agent MCP Server: tool surface (call_mcp_primitive, list_mcp_primitives), auto-connect, disconnect_after, reconnect diff, diagnostics |
 | `tests/headless.test.ts`       | Headless CLI subcommands: call, list-tools, list-resources, describe, `--env`, sessions (spawn, reconnect, mismatch, idle timeout)  |
@@ -396,7 +438,7 @@ Tool count assertions (`Tools Count: 16`) live in `tests/server.test.ts` and `te
 | ---------- | ----------------------------------------------- |
 | `greeting` | Takes a `name` argument, returns a user message |
 
-The mock server uses the **non-deprecated** `McpServer.registerTool()` API. Tests run it via `tsx` (no compilation step) — see `tests/helpers.ts` for the shared spawn configuration.
+The mock server is built with `McpServer.registerTool()` and served through `serveStdio(buildServer)`, so it answers **both protocol eras** from one factory; `MOCK_LEGACY=reject` (pass it with `--env`) makes it modern-only. Its client-input tools (`request_sampling`, `request_elicitation`, `what_roots`) are written once in the `inputRequired` style — the SDK's shim serves them to legacy clients. `npm run build:fixtures` bundles it to `tests/fixtures/dist/`; tests fall back to `tsx` when that is absent — see `tests/helpers.ts`.
 
 ### Adding Tests
 

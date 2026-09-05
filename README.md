@@ -103,6 +103,7 @@ run-mcp [options] [target_command...]
 | `--open-media` | Automatically open intercepted images and audio files using the host OS viewer |
 | `--scan` | Scan the current workspace and parent directories for any JSON files containing mcpServers |
 | `--transport <mode>` | Transport for http(s) targets: auto (default), http (Streamable HTTP), sse |
+| `--protocol <mode>` | Handshake to open with: legacy (default, the 2025 initialize), auto (probe for 2026-07-28, fall back to legacy), or a revision to pin such as 2026-07-28 (no fallback) |
 | `-w, --watch` | Watch the current directory for file changes and auto-reconnect (REPL Mode only) |
 | `-h, --help` | display help for command |
 <!-- OPTIONS_END -->
@@ -130,6 +131,27 @@ run-mcp call search q=hello --session dev
 ```
 
 From the agent server, pass `env` to `connect_to_mcp` (or `auto_connect.env`); it is kept across `reconnect_to_mcp`. When you pick a server from a discovered config in the REPL, that config's `env` block is applied, with `--env` values on top.
+
+## Protocol revisions: 2025 vs 2026-07-28
+
+MCP has two **eras**. Every revision through 2025-11-25 opens with an `initialize` handshake, pushes notifications unsolicited, and lets a server send `elicitation/create` / `sampling/createMessage` / `roots/list` requests to the client. Revision **2026-07-28** starts the modern era: a `server/discover` probe instead of `initialize`, change notifications only over a `subscriptions/listen` stream the client opens, and client input requested **in-band** by returning `input_required` from a tool. A server built on SDK v2 with `serveStdio` serves both from one factory, and a client that connects the old way gets the old behaviour — including the SDK's legacy shim for `input_required` — without any sign that the modern path was never exercised.
+
+`run-mcp` makes the era explicit and lets you choose it:
+
+```bash
+run-mcp -- node my-server.js                          # legacy handshake (default) — the banner says so
+run-mcp --protocol auto -- node my-server.js          # probe; modern if the server offers it, else legacy
+run-mcp --protocol 2026-07-28 -- node my-server.js    # modern only; fails loudly if the server can't
+run-mcp validate --deep --protocol 2026-07-28 -- node my-server.js
+```
+
+- **The era shows up everywhere:** the REPL banner and `status`, headless `Connected` lines and the `--raw` envelope's `protocol` field, `connect_to_mcp` / `mcp_server_status`, and `validate` (`protocolEra`, `protocolVersion`).
+- **Sessions remember it:** `--protocol` is fixed when the session is created; a later call asking for a different one is refused, like a different command or `--env`.
+- **Subscriptions follow the era.** On a modern connection `run-mcp` opens a `listen` stream for every `listChanged` type your server advertises, and `resources/subscribe` / `subscribe_to_resource` open a per-URI stream. What the server *honored* is reported, so a filter it accepted but will never deliver on is visible.
+- **Client input is counted.** `input_required` rounds (modern) and server→client requests (legacy) both go through the same elicitation/sampling/roots handlers; every call reports how many it needed (`input_requests` in `include_metadata` and `call --raw`, a line under the REPL result). Headless mode answers deterministically — elicitation declined, sampling refused — instead of hanging.
+- **The default stays legacy** on purpose: a spawn-per-invocation tool must not pay a probe on every connect, and a probe would change what a legacy server sees. Pass `auto` or a pin when you mean it.
+
+Sampling, roots, and the `logging` capability are deprecated as of 2026-07-28 but stay in the spec for at least twelve months; `run-mcp` keeps exercising them.
 
 ## Watch Mode
 
@@ -226,6 +248,10 @@ The server's stderr is the main evidence when something goes wrong, so headless 
 - `run-mcp call <tool> --raw` includes a `stderr` array in the result envelope: the lines written during that call (in one-shot mode: everything since the server was spawned, startup output included).
 - `run-mcp stderr -- node server.js` prints what a fresh spawn writes at startup.
 - A server that dies during connect has its stderr printed under `--- Target server stderr ---`, instead of just `Connection closed`.
+
+### 🚨 stdout is the protocol channel
+
+The single most common stdio bug is a `console.log` in the server: stdout carries JSON-RPC, so any other line corrupts the channel. The SDK's transport skips such lines silently, which means the server "works" under `run-mcp` and breaks under a stricter client. `run-mcp` watches the child's stdout itself and reports every non-JSON line: a yellow warning in the REPL, `stdout_noise` in `call --raw` plus a `Warning:` on stderr in headless mode, a section in `mcp_server_status` and `get_mcp_server_stderr`, and a **FAIL** in `validate` (`stdout_protocol_channel`). Transport-level errors the SDK only reports through a callback (a message that parsed as JSON but isn't valid JSON-RPC, a buffer overflow) are captured the same way (`transport_errors`).
 
 ### Available Headless Subcommands
 
@@ -393,7 +419,12 @@ an agent can exercise them:
   (`tools/list_changed`, `resources/updated`, log messages). These travel outside
   the request/response flow, so a tool result will never reveal them.
 - **Subscriptions** — `subscribe_to_resource`, then trigger a change and confirm
-  with `get_server_notifications(method='resources/updated')`.
+  with `get_server_notifications(method='resources/updated')`. On a 2026-07-28
+  connection this opens a `subscriptions/listen` stream and reports what the
+  server honored.
+- **Protocol era** — pass `protocol: "2026-07-28"` to `connect_to_mcp` to test
+  the modern path of a server that serves both eras; the reply names the era it
+  got. See [Protocol revisions](#protocol-revisions-2025-vs-2026-07-28).
 
 ## Agent Server Mode — How It Works
 

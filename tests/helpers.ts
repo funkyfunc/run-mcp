@@ -43,7 +43,10 @@ import { vi } from "vitest";
 
 /** Mock TargetManager exposing a canned callTool response (unit tests). */
 export function mockTarget(response: Record<string, unknown>) {
-  return { callTool: vi.fn().mockResolvedValue(response) } as any;
+  return {
+    callTool: vi.fn().mockResolvedValue(response),
+    getLastCallInputRequests: () => ({ elicitation: 0, sampling: 0, roots: 0, total: 0 }),
+  } as any;
 }
 
 /** Unique temp path (collision-safe across tests entering the same ms). */

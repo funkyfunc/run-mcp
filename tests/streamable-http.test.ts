@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { SSEServerTransport } from "@modelcontextprotocol/server-legacy/sse";
+import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
+import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { TargetManager } from "../src/target-manager.js";
 
@@ -18,7 +18,7 @@ function buildMcpServer(): McpServer {
   const server = new McpServer({ name: "streamable-fixture", version: "1.0.0" });
   server.registerTool(
     "echo",
-    { description: "Echo text back", inputSchema: { text: z.string() } },
+    { description: "Echo text back", inputSchema: z.object({ text: z.string() }) },
     async ({ text }) => ({ content: [{ type: "text", text }] }),
   );
   return server;
@@ -33,7 +33,7 @@ beforeEach(async () => {
     void (async () => {
       // Stateless: a fresh McpServer + transport per request.
       const mcp = buildMcpServer();
-      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
       res.on("close", () => {
         transport.close();
         mcp.close();

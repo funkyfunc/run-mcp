@@ -5,6 +5,89 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-09-04
+
+Built on MCP TypeScript SDK **v2** and aware of protocol revision
+**2026-07-28**. The point of the release: a server author on the new SDK can
+now see which protocol era run-mcp is talking to their server, force the
+modern one, and exercise the surfaces that only exist there. Also fixed on
+the way: the most common stdio bug (logging to stdout) no longer goes
+unreported.
+
+### Breaking
+
+- **SDK v2.** run-mcp now depends on `@modelcontextprotocol/client` and
+  `@modelcontextprotocol/server` (2.x) instead of `@modelcontextprotocol/sdk`
+  (1.x), and on zod 4. Nothing changes for servers built on SDK v1 — the
+  default handshake is still the 2025 `initialize`, byte for byte.
+- **An unknown tool name is a usage error (exit 64), not a tool error (exit 1),**
+  in headless `call`, with the available tools and a "did you mean" suggestion.
+  The SDK now rejects unknown tools at the protocol level instead of returning
+  an `isError` result, so the old exit code would have meant "the server
+  answered", which it did not.
+- Node.js 20.11+ was already required; SDK v2 requires Node 20 as well.
+
+### Added
+
+- **`--protocol legacy|auto|<revision>`** on the REPL, every headless subcommand,
+  `validate`, and sessions, plus a `protocol` parameter on `connect_to_mcp`,
+  `reconnect_to_mcp`, `auto_connect`, and `validate_mcp_server`. `legacy`
+  (default) is the 2025 handshake; `auto` probes with `server/discover` and
+  falls back; a pin such as `2026-07-28` is modern-only and fails loudly
+  otherwise — which is how you prove the modern path of a server that serves
+  both eras. A session records its protocol and refuses an attach that asks
+  for a different one. The SDK's guidance for spawn-per-invocation tools is
+  followed: `auto` is never the default.
+- **The negotiated era and revision are shown everywhere:** the REPL banner
+  and `status`, headless `Connected` lines and the `--raw` envelope
+  (`protocol`), `connect_to_mcp` / `reconnect_to_mcp` / `mcp_server_status`,
+  and `validate` (`protocolEra`, `protocolVersion`, and a `protocol_era` check
+  that tells a legacy-connected caller how to test the modern path).
+- **Modern-era subscriptions.** On a 2026-07-28 connection nothing arrives
+  unsolicited, so run-mcp opens a `subscriptions/listen` stream for every
+  `listChanged` type the server advertises right after connect, and
+  `subscribe_to_resource` / `resources/subscribe` open a per-URI stream instead
+  of the removed `resources/subscribe` RPC. The server's `honoredFilter` is
+  reported (status, validate's `list_changed_stream` check, the subscribe
+  reply), so "the server took the stream but will never send updates for this
+  URI" is visible instead of silent.
+- **Client input is counted per call.** `input_required` rounds on 2026-07-28
+  and server→client requests on 2025 both go through run-mcp's existing
+  elicitation/sampling/roots handlers; each call now reports how many of each
+  it needed: `input_requests` in `include_metadata` and in `call --raw`, and a
+  line under the REPL result block. Headless mode answers deterministically
+  (elicitation declined, sampling refused) instead of hanging.
+- **stdout pollution is reported.** The SDK skips non-JSON stdout lines
+  silently. run-mcp now watches the child's stdout and reports every such line:
+  a yellow warning in the REPL, `stdout_noise` in `call --raw` plus a stderr
+  warning in headless mode, a section in `mcp_server_status` /
+  `get_mcp_server_stderr` / connect replies, and a **FAIL** in `validate`
+  (`stdout_protocol_channel`). Transport-level errors the SDK only hands to an
+  `onerror` callback (run-mcp never registered one) are captured the same way
+  (`transport_errors`, a WARN in validate).
+- `validate` on a modern connection also reports the `server/discover`
+  advertisement and its cache hints (`discover_result`), and warns when a
+  server stamps no identity.
+- Coaching for the two new connect failures: a modern-only server refusing the
+  2025 handshake says to retry with `--protocol auto`; a pin the server does
+  not offer says so.
+
+### Changed
+
+- The mock fixture is served through `serveStdio` and answers both eras from
+  one factory (`MOCK_LEGACY=reject` makes it modern-only); its client-input
+  tools are written once in the `inputRequired` style and served to 2025
+  clients by the SDK's shim. The stdio read buffer cap is raised from the
+  SDK's 10 MB to 256 MB so an oversized tool result reaches the interceptor
+  instead of closing the connection. List verbs bypass the SDK's response
+  cache so the harness always shows the live server.
+- The bundled JSON schema stays pinned to 2025-11-25 on purpose: the SDK hands
+  back neutral result shapes on every era, and those are the 2025 definitions;
+  modern-era specifics are checked through the SDK's accessors.
+- run-mcp's own agent server still serves the 2025 era to its host. Every host
+  speaks it today, and the host-facing forwarding paths (logging, notifications,
+  sampling/elicitation relays) would each need a modern-era equivalent first.
+
 ## [2.2.0] - 2026-09-03
 
 A fresh-eyes review of the whole repo, applied. One real gap closed (`--env`),
